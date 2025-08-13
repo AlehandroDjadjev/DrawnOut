@@ -1,10 +1,10 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status, permissions
+from rest_framework import status, permissions, generics
 from django.shortcuts import get_object_or_404
 
-from .models import LessonSession, Utterance
-from .serializers import LessonSessionSerializer, UtteranceSerializer
+from .models import LessonSession, Utterance, Lesson
+from .serializers import LessonSessionSerializer, UtteranceSerializer, LessonSerializer
 from .services import TutorEngine
 
 
@@ -124,4 +124,18 @@ class SessionDetailView(APIView):
         session = get_object_or_404(LessonSession, pk=session_id)
         return Response(LessonSessionSerializer(session).data)
 
+
+class LessonCreateView(generics.CreateAPIView):
+    queryset = Lesson.objects.all()
+    serializer_class = LessonSerializer
+    permission_classes = [permissions.IsAdminUser]
+
+class LessonGetView(APIView):
+    def get(self, request, lesson_id):
+        try:
+            lesson = Lesson.objects.get(id=lesson_id)
+            serializer = LessonSerializer(lesson)
+            return Response(serializer.data)
+        except Lesson.DoesNotExist:
+            return Response({"error": "Lesson not found"}, status=status.HTTP_404_NOT_FOUND)
 

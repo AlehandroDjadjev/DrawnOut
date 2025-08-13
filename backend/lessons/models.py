@@ -22,4 +22,9 @@ class Utterance(models.Model):
     audio_file = models.FileField(upload_to='tts/', null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+class Lesson(models.Model):
+    title = models.CharField(max_length=50)
+    plan = models.TextField()
+    thumbnail = models.ImageField(upload_to="thumbnails/")
+
 
