@@ -1,0 +1,21 @@
+﻿# Keep only Python source in version control (backend)
+
+# Ignore everything by default
+*
+
+# But keep this file and directories so exceptions below can match
+!.gitignore
+!*/
+
+# Keep Python files anywhere under backend
+!**/*.py
+
+# Local environment and secrets (also covered by *)
+.env
+drawnout-*.json
+
+# Explicit junk
+*.sqlite3
+__pycache__/
+*.pyc
+/media/
