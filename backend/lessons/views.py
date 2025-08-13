@@ -138,4 +138,9 @@ class LessonGetView(APIView):
             return Response(serializer.data)
         except Lesson.DoesNotExist:
             return Response({"error": "Lesson not found"}, status=status.HTTP_404_NOT_FOUND)
+        
+
+class LessonsListView(generics.ListAPIView):
+    queryset = Lesson.objects.all()
+    serializer_class = LessonSerializer
 
