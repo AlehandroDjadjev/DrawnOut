@@ -6,6 +6,7 @@
 # But keep this file and directories so exceptions below can match
 !.gitignore
 !*/
+!requirements.txt
 
 # Keep Python files anywhere under backend
 !**/*.py
