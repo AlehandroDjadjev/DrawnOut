@@ -1,6 +1,6 @@
 from django.urls import path
 from django.views.decorators.csrf import csrf_exempt
-from .views import StartLessonView, NextSegmentView, RaiseHandView, SessionDetailView, LiveChatView, LiveSDPView, LiveTokenView, DiagnosticsView
+from .views import StartLessonView, NextSegmentView, RaiseHandView, SessionDetailView, LessonCreateView, LessonGetView, LessonsListView, LiveChatView, LiveSDPView, LiveTokenView, DiagnosticsView
 
 
 urlpatterns = [
@@ -12,6 +12,7 @@ urlpatterns = [
     path('<int:session_id>/live/', csrf_exempt(LiveChatView.as_view()), name='lesson-live'),
     path('token/', csrf_exempt(LiveTokenView.as_view()), name='lesson-live-token'),
     path('diagnostics/', csrf_exempt(DiagnosticsView.as_view()), name='lesson-diagnostics'),
+    path('create/', LessonCreateView.as_view(), name='lesson-create'),
+    path('lesson/<int:lesson_id>', LessonGetView.as_view(), name='lesson-get'),
+    path('list/', LessonsListView.as_view(), name='lessons-list'),
 ]
-
-

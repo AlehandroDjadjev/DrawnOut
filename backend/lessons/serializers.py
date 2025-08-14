@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import LessonSession, Utterance
+from .models import LessonSession, Utterance, Lesson
 
 
 class UtteranceSerializer(serializers.ModelSerializer):
@@ -20,4 +20,13 @@ class LessonSessionSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['user', 'created_at', 'updated_at']
 
+class LessonSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Lesson
+        fields = ['title', 'thumbnail', 'plan']
+
+    def create(self, validated_data):
+        lesson = Lesson(**validated_data)
+        lesson.save()
+        return lesson
 
