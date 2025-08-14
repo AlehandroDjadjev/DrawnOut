@@ -1,0 +1,927 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>DrawnOut Test UI</title>
+	<style>
+		body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 2rem; }
+		section { max-width: 900px; margin: 0 auto; }
+		label { display: block; margin: 0.5rem 0 0.25rem; }
+		button { cursor: pointer; padding: 0.5rem 0.9rem; }
+		#log { white-space: pre-wrap; background: #f6f8fa; border: 1px solid #e5e7eb; padding: 0.75rem; border-radius: 6px; }
+		.utt { padding: 0.35rem 0; border-bottom: 1px solid #eee; }
+		.utt b { display: inline-block; width: 70px; }
+		.audio { display: inline-block; margin-left: 0.5rem; }
+		.rec { color: #b91c1c; font-weight: 600; margin-left: 0.5rem; display: none; }
+	</style>
+</head>
+<body>
+<section>
+	<h1>DrawnOut Test UI</h1>
+	<p>Start a lesson, ask a question, advance to next step. Audio files will appear when TTS succeeds.</p>
+
+	<div>
+		<label for="topic">Topic</label>
+		<input id="topic" type="text" value="Pythagorean Theorem" style="width: 100%; max-width: 420px;" />
+	</div>
+	<div style="margin: 0.75rem 0;">
+		<button id="startBtn">Start Lesson</button>
+		<button id="nextBtn" disabled style="display:none">Next Segment</button>
+	</div>
+		<div style="margin: 0.25rem 0 1rem;">
+			<button id="diagBtn">Run Diagnostics</button>
+			<button id="liveTestBtn">Test Live Connect</button>
+		</div>
+	<div>
+		<label for="question">Question</label>
+		<input id="question" type="text" placeholder="Type a question" style="width: 100%; max-width: 520px;" />
+		<button id="askBtn" disabled>Ask</button>
+		<button id="recordBtn" disabled>Record Question</button><span id="recDot" class="rec">● Recording...</span>
+		<button id="raiseBtn" disabled>Raise Hand (Live)</button>
+	</div>
+
+	<div id="livePanel" style="display:none; margin-top: 1rem; padding: 0.75rem; border: 1px solid #e5e7eb; border-radius: 6px;">
+		<div style="margin-bottom: 0.5rem; font-weight:600;">Live (Gemini)</div>
+		<button id="liveEndBtn">Stop</button>
+	</div>
+
+	<h3>Session</h3>
+	<div id="session"></div>
+
+	<h3>Utterances</h3>
+	<div id="utterances"></div>
+
+	<h3>Log</h3>
+	<div id="log"></div>
+</section>
+
+<section style="margin-top:2rem; padding-top:1rem; border-top:1px solid #eee;">
+	<h2>Gemini Live — SDK (Browser)</h2>
+	<div class="row" style="display:flex; gap:.75rem; align-items:center;">
+		<button id="sdkStart">Start (SDK)</button>
+		<button id="sdkStop" disabled>Stop</button>
+		<span>Status: <span id="sdkStatus">idle</span></span>
+	</div>
+	<div class="log" id="sdkLog" style="white-space: pre-wrap; background:#fafafa; border:1px solid #eee; padding:1rem; border-radius:8px; height:180px; overflow:auto; margin-top:.5rem;"></div>
+</section>
+
+<script>
+(function(){
+	const apiBase = location.origin + '/api/lessons';
+	let sessionId = null;
+	let mediaRecorder = null;
+	let recordedChunks = [];
+	let playbackQueue = [];
+	let playingAudio = null;
+	let playedTutorIds = new Set();
+	let autoNextTimer = null;
+	let questionWindowOpen = false;
+	let lastSession = null;
+	let inLive = false;
+	let wantLive = false;
+	let liveForOneSegment = false;
+		let ws = null;
+		let pc = null;
+		let remoteAudio = null;
+		// Gemini Live (client-to-server over WebSocket)
+		let geminiWs = null;
+		let geminiAudioCtx = null;
+		let geminiMicStream = null;
+		let geminiScriptNode = null;
+		let geminiDownsampleCarry = null;
+		// Server bridge audio: contexts and queues
+		let micCtx = null;
+		let micWorkletNode = null;
+		let playCtx = null;
+		let livePlaybackQueue = [];
+		let livePlaying = false;
+
+	const el = {
+		startBtn: document.getElementById('startBtn'),
+		nextBtn: document.getElementById('nextBtn'),
+		askBtn: document.getElementById('askBtn'),
+		recordBtn: document.getElementById('recordBtn'),
+		topic: document.getElementById('topic'),
+		question: document.getElementById('question'),
+		session: document.getElementById('session'),
+		utterances: document.getElementById('utterances'),
+		log: document.getElementById('log'),
+		recDot: document.getElementById('recDot'),
+		raiseBtn: document.getElementById('raiseBtn'),
+		livePanel: document.getElementById('livePanel'),
+		liveInput: document.getElementById('liveInput'),
+		liveSendBtn: document.getElementById('liveSendBtn'),
+			liveEndBtn: document.getElementById('liveEndBtn'),
+			diagBtn: document.getElementById('diagBtn'),
+			liveTestBtn: document.getElementById('liveTestBtn'),
+	};
+
+	function updateQuestionControls(){
+		const canInteract = !!sessionId && questionWindowOpen && !inLive;
+		el.askBtn.disabled = !canInteract;
+		el.recordBtn.disabled = !canInteract;
+		el.raiseBtn.disabled = !sessionId || inLive || wantLive;
+		el.livePanel.style.display = inLive ? 'block' : 'none';
+		if (el.liveSendBtn) el.liveSendBtn.style.display = 'none';
+		if (el.liveInput) el.liveInput.style.display = 'none';
+		el.liveEndBtn.disabled = !inLive;
+	}
+
+	function log(line){ el.log.textContent += line + '\n'; }
+		window.addEventListener('error', (e) => { log('[window.error] ' + (e?.message || 'unknown error')); });
+		window.addEventListener('unhandledrejection', (e) => { log('[unhandledrejection] ' + (e?.reason?.message || String(e?.reason || 'unknown'))); });
+	function renderSession(s){
+		el.session.textContent = JSON.stringify({
+			id: s.id,
+			topic: s.topic,
+			current_step_index: s.current_step_index,
+			is_waiting_for_question: s.is_waiting_for_question,
+			is_completed: s.is_completed,
+		}, null, 2);
+		el.nextBtn.disabled = !s || s.is_completed;
+		updateQuestionControls();
+	}
+	function mediaUrl(path){
+		if (!path) return '';
+		if (/^https?:\/\//i.test(path)) return path;
+		if (path.startsWith('/')) return location.origin + path;
+		const cleaned = path.replace(/^media\//, '');
+		return location.origin + '/media/' + cleaned;
+	}
+
+	function renderUtterances(s){
+		el.utterances.innerHTML = '';
+		(s.utterances || []).forEach(u => {
+			const row = document.createElement('div');
+			row.className = 'utt';
+			row.innerHTML = `<b>${u.role}:</b> ${u.text || ''}`;
+			if (u.audio_file){
+				const audio = document.createElement('audio');
+				audio.className = 'audio';
+				audio.controls = true;
+				audio.src = mediaUrl(u.audio_file);
+				row.appendChild(audio);
+			}
+			el.utterances.appendChild(row);
+		});
+
+		// enqueue any new tutor audios/text for playback
+		const newItems = (s.utterances || [])
+			.filter(u => u.role === 'tutor' && !playedTutorIds.has(u.id))
+			.map(u => ({ id: u.id, url: u.audio_file ? mediaUrl(u.audio_file) : '', text: u.text || '' }));
+		if (newItems.length){
+			playbackQueue.push(...newItems);
+			if (!playingAudio){
+				playNextInQueue();
+			}
+		}
+
+	}
+
+	let voicesLoaded = false;
+	function waitForVoices(){
+		return new Promise(resolve => {
+			const have = window.speechSynthesis.getVoices();
+			if (have && have.length){ voicesLoaded = true; resolve(); return; }
+			window.speechSynthesis.onvoiceschanged = () => { voicesLoaded = true; resolve(); };
+			// Fallback timeout in case onvoiceschanged never fires
+			setTimeout(() => resolve(), 500);
+		});
+	}
+
+	function chooseVoice(){
+		const preferred = [
+			'Google US English Female',
+			'Microsoft Aria Online (Natural) - English (United States)',
+			'Microsoft Jenny Online (Natural) - English (United States)',
+			'Samantha', 'Jenny', 'en-US-Wavenet-F', 'en-US-Neural2-F'
+		];
+		const voices = window.speechSynthesis.getVoices();
+		for (const name of preferred){
+			const v = voices.find(v => v.name && v.name.indexOf(name) !== -1);
+			if (v) return v;
+		}
+		return voices.find(v => /female/i.test(v.name || '')) || voices[0] || null;
+	}
+
+	function speak(text){
+		try{
+			if ('speechSynthesis' in window){
+				return new Promise(async resolve => {
+					if (!voicesLoaded){ await waitForVoices(); }
+					const utt = new SpeechSynthesisUtterance(text);
+					utt.lang = 'en-US';
+					utt.rate = 1.0; utt.pitch = 1.0;
+					const voice = chooseVoice();
+					if (voice) utt.voice = voice;
+					utt.onend = resolve;
+					utt.onerror = resolve;
+					window.speechSynthesis.speak(utt);
+				});
+			}
+		}catch{}
+		return Promise.resolve();
+	}
+
+	function playNextInQueue(){
+		if (!playbackQueue.length){
+			playingAudio = null;
+			// end of a segment cluster; allow question or auto-next
+			maybeScheduleAutoNext();
+			return;
+		}
+		const item = playbackQueue.shift();
+		playedTutorIds.add(item.id);
+		if (item.url){
+			const audio = new Audio(item.url);
+			playingAudio = audio;
+			audio.onended = () => { playingAudio = null; playNextInQueue(); };
+			audio.onerror = () => { playingAudio = null; playNextInQueue(); };
+			audio.play().catch(() => { playingAudio = null; speak(item.text).then(playNextInQueue); });
+		}else{
+			playingAudio = { type: 'tts' };
+			speak(item.text).then(() => { playingAudio = null; playNextInQueue(); });
+		}
+	}
+
+		function maybeScheduleAutoNext(){
+		if (autoNextTimer){ clearTimeout(autoNextTimer); autoNextTimer = null; }
+		if (!lastSession || lastSession.is_completed) return;
+		if (questionWindowOpen) return;
+		if (inLive) return;
+		// allow a brief window to press Raise Hand; otherwise auto-advance
+		if (wantLive){
+			// Start SDK live at end of flagged segment (one-turn)
+			try{
+				// reflect entering live mode in UI regardless of SDK internals
+				inLive = true; el.livePanel.style.display = 'block'; updateQuestionControls();
+				if (window.startSdkLive){ window.startSdkLive(true).catch(e => log('Live (SDK) error: ' + (e?.message || e))); }
+				else { log('SDK not loaded; cannot start live.'); }
+			}catch(e){ log('Live (SDK) error: ' + (e && e.message ? e.message : String(e))); }
+		} else {
+			el.raiseBtn.disabled = false;
+			autoNextTimer = setTimeout(async () => {
+				el.raiseBtn.disabled = true;
+				await requestNext();
+			}, 1200);
+		}
+	}
+
+	async function requestNext(){
+		if (!sessionId) return;
+		const s = await postJson(`${apiBase}/${sessionId}/next/`);
+		lastSession = s;
+		renderSession(s);
+		renderUtterances(s);
+		log('Advanced to step ' + s.current_step_index);
+	}
+
+	async function postJson(url, data){
+		const res = await fetch(url, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(data || {})
+		});
+		const body = await res.json().catch(()=>({}));
+		if(!res.ok){ throw new Error(body.detail || 'Request failed'); }
+		return body;
+	}
+	async function getJson(url){
+		const res = await fetch(url);
+		return res.json();
+	}
+
+  if (el.startBtn) el.startBtn.onclick = async () => {
+		try{
+			el.startBtn.disabled = true;
+			const topic = el.topic.value || 'Pythagorean Theorem';
+			const s = await postJson(`${apiBase}/start/`, { topic });
+			sessionId = s.id;
+			lastSession = s;
+			renderSession(s);
+			renderUtterances(s);
+			log('Session started: ' + sessionId);
+			updateQuestionControls();
+		}catch(err){ log('Start error: ' + err.message); }
+		finally{ el.startBtn.disabled = false; }
+  };
+
+  if (el.nextBtn) el.nextBtn.onclick = async () => {
+		if(!sessionId) return;
+		try{
+			el.nextBtn.disabled = true;
+			await requestNext();
+		}catch(err){ log('Next error: ' + err.message); }
+		finally{ el.nextBtn.disabled = false; }
+  };
+
+  if (el.askBtn) el.askBtn.onclick = async () => {
+		if(!sessionId) return;
+		try{
+			el.askBtn.disabled = true;
+			const q = el.question.value;
+			if(!q){ log('Type a question first.'); return; }
+			const s = await postJson(`${apiBase}/${sessionId}/raise-hand/`, { question: q });
+			lastSession = s;
+			renderSession(s);
+			renderUtterances(s);
+			el.question.value = '';
+			log('Question sent');
+			questionWindowOpen = false;
+			updateQuestionControls();
+		}catch(err){ log('Ask error: ' + err.message); }
+		finally{ el.askBtn.disabled = false; }
+  };
+
+	async function toggleRecording(){
+		if (mediaRecorder && mediaRecorder.state !== 'inactive'){
+			mediaRecorder.stop();
+			return;
+		}
+		try{
+			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			recordedChunks = [];
+			mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+			mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
+			mediaRecorder.onstop = async () => {
+				try{
+					const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+					const form = new FormData();
+					form.append('audio', blob, 'question.webm');
+					const res = await fetch(`${apiBase}/${sessionId}/raise-hand/`, { method: 'POST', body: form });
+					const s = await res.json();
+					if (!res.ok) throw new Error(s.detail || 'Upload failed');
+					lastSession = s;
+					renderSession(s);
+					renderUtterances(s);
+					log('Recorded question sent');
+				}catch(err){ log('Record error: ' + err.message); }
+				finally{
+					el.recDot.style.display = 'none';
+					el.recordBtn.textContent = 'Record Question';
+					questionWindowOpen = false;
+					updateQuestionControls();
+				}
+			};
+			mediaRecorder.start();
+			el.recDot.style.display = 'inline';
+			el.recordBtn.textContent = 'Stop Recording';
+			log('Recording...');
+		}catch(err){
+			log('Mic error: ' + err.message);
+		}
+	}
+
+  if (el.recordBtn) el.recordBtn.onclick = () => {
+		if(!sessionId){ log('Start a session first.'); return; }
+		toggleRecording();
+  };
+
+  if (el.raiseBtn) el.raiseBtn.onclick = () => {
+		if (!sessionId) return;
+		wantLive = true;
+		liveForOneSegment = true;
+		try{ window.__liveForOneSegment = true; }catch{}
+		updateQuestionControls();
+		log('Raise hand: will listen once the current segment ends.');
+  };
+
+  async function startLiveSocket(){
+    if (inLive) return;
+    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${scheme}://${location.host}/ws/live/${sessionId}/`);
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = async () => {
+      inLive = true; el.livePanel.style.display = 'block'; updateQuestionControls();
+      log('Live connected (server bridge).');
+      ws.send(JSON.stringify({ type: 'start' }));
+      try{
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000, echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
+        // Try AudioWorklet first
+        let workletOk = false;
+        try{
+          micCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+          const workletSrc = `class MicCapture extends AudioWorkletProcessor {\n`
+            + `  constructor(){ super(); this._carry = new Float32Array(0); }\n`
+            + `  process(inputs){\n`
+            + `    const input = inputs[0]; if (!input || !input[0]) return true;\n`
+            + `    const f32 = input[0];\n`
+            + `    const sr = sampleRate || 48000;\n`
+            + `    const target = 16000;\n`
+            + `    const ratio = sr / target;\n`
+            + `    const samples = new Float32Array(this._carry.length + f32.length);\n`
+            + `    samples.set(this._carry, 0); samples.set(f32, this._carry.length);\n`
+            + `    const outLen = Math.floor(samples.length / ratio);\n`
+            + `    const i16 = new Int16Array(outLen);\n`
+            + `    for (let i=0;i<outLen;i++){ let s = samples[Math.floor(i*ratio)]; s = Math.max(-1, Math.min(1, s)); i16[i] = s<0 ? s*0x8000 : s*0x7FFF; }\n`
+            + `    const remainStart = Math.floor(outLen * ratio);\n`
+            + `    this._carry = samples.subarray(remainStart).slice();\n`
+            + `    this.port.postMessage(i16.buffer, [i16.buffer]);\n`
+            + `    return true;\n`
+            + `  }\n`
+            + `}\n`
+            + `registerProcessor('mic-capture', MicCapture);`;
+          const blobUrl = URL.createObjectURL(new Blob([workletSrc], { type: 'application/javascript' }));
+          await micCtx.audioWorklet.addModule(blobUrl);
+          const srcNode = micCtx.createMediaStreamSource(stream);
+          micWorkletNode = new AudioWorkletNode(micCtx, 'mic-capture', { numberOfInputs: 1, numberOfOutputs: 0 });
+          // Simple VAD for early commit
+          let srvVadLastVoiceMs = 0;
+          let srvVadVoicedFrames = 0;
+          let srvCommitCooldownMs = 1200;
+          let srvLastCommitMs = 0;
+          micWorkletNode.port.onmessage = (ev) => {
+            try{
+              if (!ws || ws.readyState !== 1) return;
+              const buf = new Int16Array(ev.data);
+              // RMS-based VAD
+              let sum = 0;
+              for (let i=0;i<buf.length;i++){ const v = buf[i] / 32768; sum += v*v; }
+              const rms = Math.sqrt(sum / Math.max(1, buf.length));
+              const now = Date.now();
+              if (rms > 0.02){ srvVadLastVoiceMs = now; srvVadVoicedFrames++; }
+              // Early commit: if we had voice and now ~250ms of silence
+              if (srvVadVoicedFrames > 12 && (now - srvVadLastVoiceMs) > 250 && (now - srvLastCommitMs) > srvCommitCooldownMs){
+                try{ ws.send(JSON.stringify({ type: 'commit' })); srvLastCommitMs = now; }catch{}
+                // After first commit, tighten cooldown
+                srvCommitCooldownMs = 800;
+                // Reset voiced counter so we can detect a new turn
+                srvVadVoicedFrames = 0;
+              }
+              ws.send(new Uint8Array(buf.buffer));
+            }catch{}
+          };
+          // Fallback safety commit a bit earlier than before
+          setTimeout(() => { try{ if(ws && ws.readyState===1) ws.send(JSON.stringify({ type: 'commit' })); }catch{} }, 450);
+          // Also offer a manual commit if user presses Enter in question box
+          if (el.question){
+            el.question.addEventListener('keydown', (e) => {
+              if (e.key === 'Enter'){ try{ if(ws && ws.readyState===1) ws.send(JSON.stringify({ type: 'commit' })); }catch{} }
+            });
+          }
+          srcNode.connect(micWorkletNode);
+          await micCtx.resume();
+          workletOk = true;
+        }catch(e){ log('Worklet load error: ' + (e && e.message ? e.message : String(e))); }
+
+        if (!workletOk){
+          // Fallback to ScriptProcessorNode
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          const src = ctx.createMediaStreamSource(stream);
+          const node = ctx.createScriptProcessor(4096, 1, 1);
+          // VAD variables for fallback
+          let fbVadLastVoiceMs = 0;
+          let fbVadVoicedFrames = 0;
+          let fbLastCommitMs = 0;
+          node.onaudioprocess = (e) => {
+            if (!ws || ws.readyState !== 1) return;
+            const f32 = e.inputBuffer.getChannelData(0);
+            const i16 = new Int16Array(f32.length);
+            let sum = 0;
+            for (let i=0;i<f32.length;i++){ let s = Math.max(-1, Math.min(1, f32[i])); sum += s*s; i16[i] = s<0 ? s*0x8000 : s*0x7FFF; }
+            const rms = Math.sqrt(sum / Math.max(1, f32.length));
+            const now = Date.now();
+            if (rms > 0.02){ fbVadLastVoiceMs = now; fbVadVoicedFrames++; }
+            if (fbVadVoicedFrames > 8 && (now - fbVadLastVoiceMs) > 250 && (now - fbLastCommitMs) > 700){
+              try{ ws.send(JSON.stringify({ type: 'commit' })); fbLastCommitMs = now; }catch{}
+              fbVadVoicedFrames = 0;
+            }
+            ws.send(new Uint8Array(i16.buffer));
+          };
+          src.connect(node).connect(ctx.destination);
+          setTimeout(() => { try{ if(ws && ws.readyState===1) ws.send(JSON.stringify({ type: 'commit' })); }catch{} }, 500);
+        }
+      }catch(err){ log('Mic error: ' + err.message); }
+    };
+
+    ws.onmessage = (ev) => {
+      if (ev.data instanceof ArrayBuffer){
+        const bytes = new Int16Array(ev.data);
+        livePlaybackQueue.push(bytes);
+        if (!livePlaying) playNextLiveChunk();
+        return;
+      }
+      try{
+        const m = JSON.parse(ev.data);
+        if (m.event === 'connected') log('Gemini live: ' + (m.gemini ? 'ready' : 'unavailable'));
+        if (m.event === 'live_started') log('Live session started on server');
+        if (m.event === 'audio_progress') log('Audio chunks: ' + m.chunks + (m.bytes? (' bytes=' + m.bytes) : ''));
+        if (m.event === 'turn_complete') {
+          log('Live: turn complete');
+          if (liveForOneSegment) {
+            // End live and advance to next segment automatically
+            try{ if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'stop' })); }catch{}
+            try{ if (ws) ws.close(); }catch{}
+            inLive = false; wantLive = false; updateQuestionControls();
+            liveForOneSegment = false;
+            // Advance lesson
+            requestNext().catch(()=>{});
+          }
+        }
+      }catch{}
+    };
+    ws.onclose = () => { inLive = false; wantLive = false; updateQuestionControls(); log('Live closed.'); };
+    ws.onerror = (e) => { log('Live socket error'); console.error('live ws error', e); };
+  }
+
+	function playNextLiveChunk(){
+		if (!livePlaybackQueue.length){ livePlaying = false; return; }
+		livePlaying = true;
+		try{
+			if (!playCtx) playCtx = new (window.AudioContext || window.webkitAudioContext)();
+			playCtx.resume && playCtx.resume();
+			const bytes = livePlaybackQueue.shift();
+			const pcm = new Float32Array(bytes.length);
+			for (let i=0;i<bytes.length;i++){ pcm[i] = Math.max(-1, Math.min(1, bytes[i] / 0x8000)); }
+			const buffer = playCtx.createBuffer(1, pcm.length, 24000);
+			buffer.getChannelData(0).set(pcm);
+			const src = playCtx.createBufferSource();
+			src.buffer = buffer;
+			src.connect(playCtx.destination);
+			src.onended = () => { playNextLiveChunk(); };
+			src.start();
+		}catch(e){ livePlaying = false; }
+	}
+
+		async function startLiveGemini(){
+			if (inLive) return;
+			inLive = true; updateQuestionControls();
+			try{
+				const tk = await fetch(`${location.origin}/api/lessons/token/`).then(r=>r.json());
+				if (!tk?.token) throw new Error('No live token');
+				geminiWs = new WebSocket(`wss://generativelanguage.googleapis.com/v1alpha/live:connect?key=${encodeURIComponent(tk.token)}`);
+				geminiWs.binaryType = 'arraybuffer';
+				geminiWs.onopen = async () => {
+					log('Gemini Live connected');
+					// Configure session: audio out, friendly tone
+          geminiWs.send(JSON.stringify({
+            setup: {
+              model: 'models/gemini-2.0-flash-live-001',
+              response_modalities: ['AUDIO'],
+              system_instruction: 'You are a helpful assistant and answer in a friendly tone.'
+            }
+          }));
+					// Send a brief text prompt right away to elicit an audio reply (useful when only streaming mic audio otherwise)
+					try{ geminiWs.send(JSON.stringify({ realtime_input: { text: 'Hello! Please respond briefly so I can verify audio streaming.' } })); }catch{}
+					// Microphone capture and 48k->16k downsample to PCM16
+					geminiAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+					try{ await geminiAudioCtx.resume(); }catch{}
+					geminiMicStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true }});
+					const src = geminiAudioCtx.createMediaStreamSource(geminiMicStream);
+					geminiScriptNode = geminiAudioCtx.createScriptProcessor(4096, 1, 1);
+					geminiScriptNode.onaudioprocess = (ev) => {
+						if (!geminiWs || geminiWs.readyState !== 1) return;
+						const input = ev.inputBuffer.getChannelData(0);
+						const targetRate = 16000;
+						const sourceRate = geminiAudioCtx.sampleRate;
+						const ratio = sourceRate / targetRate;
+						let carry = geminiDownsampleCarry || new Float32Array(0);
+						const samples = new Float32Array(carry.length + input.length);
+						samples.set(carry, 0); samples.set(input, carry.length);
+						const outLen = Math.floor(samples.length / ratio);
+						const out = new Int16Array(outLen);
+						for (let i=0;i<outLen;i++){
+							const idx = Math.floor(i * ratio);
+							let s = samples[idx];
+							s = Math.max(-1, Math.min(1, s));
+							out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+						}
+						const remain = samples.subarray(Math.floor(outLen * ratio));
+						geminiDownsampleCarry = remain.slice();
+						// Base64 encode Int16 PCM
+						const u8 = new Uint8Array(out.buffer);
+						let b64 = '';
+						for (let i=0;i<u8.length;i+=0x8000){ b64 += String.fromCharCode.apply(null, u8.subarray(i, i+0x8000)); }
+            b64 = btoa(b64);
+            geminiWs.send(JSON.stringify({ realtime_input: { audio: { data: b64, mime_type: 'audio/pcm;rate=16000' } } }));
+					};
+					src.connect(geminiScriptNode).connect(geminiAudioCtx.destination);
+					// If the model requires an explicit turn signal for audio-only, nudge with a short text after ~1.2s
+					setTimeout(() => {
+						try{ if (geminiWs && geminiWs.readyState === 1) { geminiWs.send(JSON.stringify({ realtime_input: { text: 'Please reply briefly to end this turn.' } })); } }catch{}
+					}, 1200);
+					// Also allow pressing Enter in the question box to nudge a reply
+					if (el.question){
+						el.question.addEventListener('keydown', (e) => {
+							if (e.key === 'Enter'){
+								try{ if (geminiWs && geminiWs.readyState === 1) { geminiWs.send(JSON.stringify({ realtime_input: { text: 'Thanks! Please respond now.' } })); } }catch{}
+							}
+						});
+					}
+					el.livePanel.style.display = 'block';
+					updateQuestionControls();
+				};
+				geminiWs.onmessage = (ev) => {
+					// Audio frames may arrive as binary; control as JSON
+						if (ev.data instanceof ArrayBuffer){
+							log(`Gemini: binary ${ev.data.byteLength || 0} bytes`);
+						try{
+							const bytes = new Int16Array(ev.data);
+							const len = bytes.length;
+							const pcm = new Float32Array(len);
+							for (let i=0;i<len;i++){ pcm[i] = Math.max(-1, Math.min(1, bytes[i] / 0x8000)); }
+								const ctx = geminiAudioCtx || new (window.AudioContext || window.webkitAudioContext)();
+								try{ ctx.resume && ctx.resume(); }catch{}
+							const buffer = ctx.createBuffer(1, pcm.length, 24000);
+							buffer.getChannelData(0).set(pcm);
+							const src = ctx.createBufferSource();
+							src.buffer = buffer; src.connect(ctx.destination); src.start();
+						}catch(e){ /* ignore playback errors */ }
+						return;
+					}
+					try{
+						const m = JSON.parse(ev.data);
+						if (m?.serverContent?.turnComplete) log('Live: turn complete');
+					}catch{}
+				};
+				geminiWs.onerror = () => { log('Gemini Live error'); cleanupGeminiLive(); };
+				geminiWs.onclose = () => { log('Gemini Live closed'); cleanupGeminiLive(); };
+			}catch(err){ cleanupGeminiLive(); throw err; }
+		}
+
+		function cleanupGeminiLive(){
+			try{ geminiScriptNode && geminiScriptNode.disconnect(); }catch{}
+			try{ geminiAudioCtx && geminiAudioCtx.close(); }catch{}
+			try{ geminiMicStream && geminiMicStream.getTracks().forEach(t=>t.stop()); }catch{}
+			try{ geminiWs && geminiWs.close(); }catch{}
+			geminiScriptNode = null; geminiAudioCtx = null; geminiMicStream = null; geminiWs = null; geminiDownsampleCarry = null;
+			inLive = false; wantLive = false; updateQuestionControls();
+		}
+
+  if (el.liveEndBtn) el.liveEndBtn.onclick = async () => {
+			if (!inLive) return;
+	    // Stop SDK live if active
+	    try{ if (window.stopSdkLive) { await window.stopSdkLive(); } }catch{}
+	    // Also stop server-bridge WS if it was used
+	    try{ if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: 'stop' })); } }catch{}
+	    try{ if (ws) { ws.close(); } }catch{}
+	    inLive = false; wantLive = false; updateQuestionControls(); log('Live stopped');
+	    // Advance lesson only when user pressed Stop (end of question segment)
+	    try{ await requestNext(); }catch{}
+  };
+
+  // Allow SDK to notify when one-turn live ends
+  try{
+    window.__afterLiveTurn = async function(){
+      inLive = false; wantLive = false; liveForOneSegment = false;
+      updateQuestionControls();
+      try { await requestNext(); } catch {}
+    };
+  }catch{}
+
+  // Wire diagnostics buttons and refresh existing session on load
+  if (el.diagBtn) el.diagBtn.addEventListener('click', async () => {
+    try{
+      const res = await fetch(`${apiBase}/diagnostics/`);
+      const body = await res.json();
+      log('Diagnostics: ' + JSON.stringify(body, null, 2));
+    }catch(err){ log('Diagnostics error: ' + err.message); }
+  });
+  if (el.liveTestBtn) el.liveTestBtn.addEventListener('click', async () => {
+    try{
+      const tk = await fetch(`${location.origin}/api/lessons/token/`).then(r=>r.json());
+      log(`Live token mode=${tk?.mode || 'unknown'} len=${(tk?.token || '').length}`);
+      if (!tk?.token){ log('No token'); return; }
+      const url = `wss://generativelanguage.googleapis.com/v1alpha/live:connect?key=${encodeURIComponent(tk.token)}`;
+      log('Connecting to ' + url.replace(/key=[^&]+/,'key=***'));
+      const ws = new WebSocket(url);
+      let opened = false;
+      let tick = 0;
+      const stateTimer = setInterval(() => {
+        tick += 1;
+        log(`LiveTest: readyState=${ws.readyState} (0=CONNECTING,1=OPEN,2=CLOSING,3=CLOSED)`);
+        if (!opened && tick === 7){
+          log('LiveTest: no onopen after ~7s; closing test socket');
+          try{ ws.close(); }catch{}
+        }
+      }, 1000);
+      ws.onopen = () => {
+        opened = true;
+        log('LiveTest: open');
+        try{ ws.send(JSON.stringify({ setup: { model: 'models/gemini-2.0-flash-live-001', response_modalities: ['AUDIO'], system_instruction: 'hello' } })); }catch{}
+        setTimeout(()=>{ try{ ws.close(); }catch{} }, 1500);
+      };
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === 'string'){
+          log('LiveTest msg: ' + ev.data.slice(0, 200));
+        }else{
+          log(`LiveTest binary ${ev.data?.byteLength || 0} bytes`);
+        }
+      };
+      ws.onerror = () => { log('LiveTest: error (see console/network)'); };
+      ws.onclose = (e) => { clearInterval(stateTimer); log(`LiveTest: close code=${e.code} reason=${e.reason || ''} wasClean=${e.wasClean}`); if (!opened) log('Hint: handshake failed'); };
+
+      // Also test REST with same key to surface CORS/auth quickly
+      try{
+        const modelsUrl = `https://generativelanguage.googleapis.com/v1/models?key=${encodeURIComponent(tk.token)}`;
+        const resp = await fetch(modelsUrl);
+        log(`REST models: status=${resp.status}`);
+      }catch(restErr){ log('REST models error: ' + (restErr?.message || restErr)); }
+    }catch(err){ log('LiveTest error: ' + err.message); }
+  });
+
+  window.addEventListener('load', async () => {
+		if(sessionId){
+			try{ const s = await getJson(`${apiBase}/${sessionId}/`); lastSession = s; renderSession(s); renderUtterances(s); } catch{}
+		}
+			// Expose direct Gemini Live starter for console testing
+			try{ window.startLiveGemini = startLiveGemini; }catch{}
+	});
+})();
+</script>
+
+<script type="module">
+import { GoogleGenAI, Modality } from 'https://esm.sh/@google/genai';
+
+const sdkStartBtn = document.getElementById('sdkStart');
+const sdkStopBtn = document.getElementById('sdkStop');
+const sdkStatusEl = document.getElementById('sdkStatus');
+const sdkLogEl = document.getElementById('sdkLog');
+
+function sdkLog(msg){ sdkLogEl.textContent += msg + "\n"; sdkLogEl.scrollTop = sdkLogEl.scrollHeight; }
+function setSdkStatus(s){ sdkStatusEl.textContent = s; }
+
+let sdkAudioCtx = null;
+let sdkMicStream = null;
+let sdkSourceNode = null;
+let sdkProcessor = null;
+let sdkSession = null;
+let sdkPlayQueue = [];
+
+function base64ToInt16(b64){
+	const bin = atob(b64);
+	const len = bin.length;
+	const bytes = new Uint8Array(len);
+	for (let i=0;i<len;i++){ bytes[i] = bin.charCodeAt(i); }
+	return new Int16Array(bytes.buffer);
+}
+
+function int16ToBase64(int16){
+	const u8 = new Uint8Array(int16.buffer);
+	let b64 = '';
+	for (let i=0;i<u8.length;i+=0x8000){ b64 += String.fromCharCode.apply(null, u8.subarray(i, i+0x8000)); }
+	return btoa(b64);
+}
+
+async function playPCM16(int16, sampleRate){
+	if (!sdkAudioCtx) sdkAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+	try{ await sdkAudioCtx.resume(); }catch{}
+	const f32 = new Float32Array(int16.length);
+	for (let i=0;i<int16.length;i++){ f32[i] = Math.max(-1, Math.min(1, int16[i] / 0x8000)); }
+	const buffer = sdkAudioCtx.createBuffer(1, f32.length, sampleRate);
+	buffer.getChannelData(0).set(f32);
+	const src = sdkAudioCtx.createBufferSource();
+	src.buffer = buffer;
+	src.connect(sdkAudioCtx.destination);
+	const when = sdkPlayQueue.length ? sdkPlayQueue[sdkPlayQueue.length-1].when + sdkPlayQueue[sdkPlayQueue.length-1].buffer.duration : (sdkAudioCtx.currentTime + 0.02);
+	sdkPlayQueue.push({ when, buffer });
+	src.start(when);
+	src.onended = () => { sdkPlayQueue.shift(); };
+}
+
+async function sdkStart(){
+	setSdkStatus('requesting mic...');
+	const t = await fetch('/api/lessons/token/').then(r=>r.json()).catch(()=>({}));
+	if(!t || !t.token){ throw new Error('No token'); }
+	if (!GoogleGenAI || !Modality){
+		sdkLog('SDK not available in browser. Falling back to server bridge or direct WS.');
+		setSdkStatus('error');
+		return;
+	}
+	const ai = new GoogleGenAI({ apiKey: t.token });
+	sdkSession = await ai.live.connect({
+		model: 'gemini-2.0-flash-live-001',
+		config: { responseModalities: [Modality.AUDIO], systemInstruction: 'You are a friendly voice assistant.' },
+		callbacks: {
+			onopen(){
+				sdkLog('session open'); setSdkStatus('connected');
+				// Nudge: brief text to elicit an audio reply even if only streaming mic
+				try{ sdkSession?.sendRealtimeInput({ text: 'Hello there! Please respond briefly.' }); }catch{}
+				setTimeout(() => { try{ sdkSession?.sendRealtimeInput({ text: 'Please reply now to confirm audio.' }); }catch{} }, 1200);
+			},
+			onmessage(msg){
+				if (msg?.data){
+					sdkLog(`rx audio (base64 len=${msg.data.length})`);
+					try{ playPCM16(base64ToInt16(msg.data), 24000); }catch(e){ sdkLog('play error: ' + (e?.message||e)); }
+				}
+				if (msg?.serverContent?.turnComplete) { sdkLog('turn complete'); }
+				if (msg?.error) sdkLog('live error: ' + JSON.stringify(msg.error));
+			},
+			onerror(e){ sdkLog('error: ' + (e?.message || e)); },
+			onclose(){ sdkLog('session closed'); setSdkStatus('closed'); }
+		}
+	});
+
+	// Mic → 16kHz PCM16 mono → base64
+	sdkAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+	try{ await sdkAudioCtx.resume(); }catch{}
+	sdkMicStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
+	sdkSourceNode = sdkAudioCtx.createMediaStreamSource(sdkMicStream);
+	const silent = sdkAudioCtx.createGain();
+	silent.gain.value = 0.0;
+	const workletOk = !!(sdkAudioCtx.audioWorklet && sdkAudioCtx.audioWorklet.addModule);
+	if (workletOk){
+		const workletUrl = URL.createObjectURL(new Blob([`
+class PCM16Worklet extends AudioWorkletProcessor {
+  constructor(){ super(); this._carry = new Float32Array(0); }
+  process(inputs){
+    const inputCh = inputs[0][0];
+    if (!inputCh) return true;
+    const sr = sampleRate || 48000;
+    const target = 16000;
+    const ratio = sr / target;
+    // Concatenate carry + current frame
+    const samples = new Float32Array(this._carry.length + inputCh.length);
+    samples.set(this._carry, 0);
+    samples.set(inputCh, this._carry.length);
+    const outLen = Math.floor(samples.length / ratio);
+    const i16 = new Int16Array(outLen);
+    for (let i = 0; i < outLen; i++){
+      let s = samples[Math.floor(i * ratio)];
+      s = Math.max(-1, Math.min(1, s));
+      i16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    // Keep the remaining fractional samples for next block
+    const remainStart = Math.floor(outLen * ratio);
+    this._carry = samples.subarray(remainStart).slice();
+    // Post raw PCM16@16k buffer to main thread
+    this.port.postMessage(i16.buffer, [i16.buffer]);
+    return true;
+  }
+}
+registerProcessor('pcm16-worklet', PCM16Worklet);
+`], { type: 'application/javascript' }));
+		await sdkAudioCtx.audioWorklet.addModule(workletUrl);
+		sdkProcessor = new AudioWorkletNode(sdkAudioCtx, 'pcm16-worklet');
+		sdkProcessor.port.onmessage = (e) => {
+			try{
+				const int16 = new Int16Array(e.data);
+				const b64 = int16ToBase64(int16);
+				sdkSession?.sendRealtimeInput({ audio: { data: b64, mimeType: 'audio/pcm;rate=16000' } });
+			}catch(err){ /* ignore */ }
+		};
+		sdkSourceNode.connect(sdkProcessor).connect(silent).connect(sdkAudioCtx.destination);
+	}else{
+		const script = (sdkProcessor = sdkAudioCtx.createScriptProcessor(4096, 1, 1));
+		script.onaudioprocess = (e) => {
+			if (!sdkSession) return;
+			const f32 = e.inputBuffer.getChannelData(0);
+			const i16 = new Int16Array(f32.length);
+			for (let i=0;i<f32.length;i++){
+				let s = Math.max(-1, Math.min(1, f32[i]));
+				i16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+			}
+			const b64 = int16ToBase64(i16);
+			try{ sdkSession.sendRealtimeInput({ audio: { data: b64, mimeType: 'audio/pcm;rate=16000' } }); }catch{}
+		};
+		sdkSourceNode.connect(script).connect(silent).connect(sdkAudioCtx.destination);
+	}
+
+	sdkStartBtn.disabled = true;
+	sdkStopBtn.disabled = false;
+	setSdkStatus('live');
+}
+
+async function sdkStop(){
+	sdkStartBtn.disabled = false;
+	sdkStopBtn.disabled = true;
+	setSdkStatus('stopping...');
+	try{ sdkProcessor && sdkProcessor.disconnect(); }catch{}
+	try{ sdkSourceNode && sdkSourceNode.disconnect(); }catch{}
+	try{ sdkMicStream && sdkMicStream.getTracks().forEach(t=>t.stop()); }catch{}
+	try{ sdkSession && sdkSession.close(); }catch{}
+	try{ sdkAudioCtx && sdkAudioCtx.close(); }catch{}
+	sdkProcessor = null; sdkSourceNode = null; sdkMicStream = null; sdkSession = null; sdkAudioCtx = null; sdkPlayQueue = [];
+	setSdkStatus('idle');
+}
+
+sdkStartBtn.onclick = () => sdkStart().catch(e => { sdkLog('start error: ' + (e?.message || e)); setSdkStatus('error'); });
+sdkStopBtn.onclick = () => sdkStop();
+
+</script>
+
+<script>
+// Bridge helpers so non-module code can start/stop SDK live
+try{
+  window.startSdkLive = async function(oneTurn){
+    try{
+      if (oneTurn) { try{ window.__liveForOneSegment = true; }catch{} }
+      const btn = document.getElementById('sdkStart');
+      if (btn && typeof btn.click === 'function') {
+        // reuse sdkStart wired to the button; robust in browsers
+        btn.click();
+      }
+    }catch(e){ console.error('startSdkLive error', e); }
+  };
+  window.stopSdkLive = async function(){
+    try{
+      const btn = document.getElementById('sdkStop');
+      if (btn && typeof btn.click === 'function') { btn.click(); }
+    }catch(e){ console.error('stopSdkLive error', e); }
+  };
+}catch{}
+</script>
+ </body>
+ </html>
+
