@@ -7,11 +7,17 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 
 from google.cloud import texttospeech
+
+try:
+    import google.generativeai as genai  # pip package: google-generativeai
+except Exception:
+    genai = None
 from openai import OpenAI
 
 
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 GOOGLE_APPLICATION_CREDENTIALS = os.getenv('GOOGLE_APPLICATION_CREDENTIALS', '')
+GOOGLE_AI_API_KEY = os.getenv('GOOGLE_AI_API_KEY', '')
 
 
 @dataclass
@@ -30,6 +36,18 @@ class TutorEngine:
             self.tts_client = texttospeech.TextToSpeechClient()  # relies on GOOGLE_APPLICATION_CREDENTIALS
         except Exception:
             self.tts_client = None
+
+        # Gemini text chat configuration (non-streaming fallback to "Live")
+        self.gemini_available = bool(GOOGLE_AI_API_KEY and genai)
+        if self.gemini_available:
+            try:
+                genai.configure(api_key=GOOGLE_AI_API_KEY)
+            except Exception:
+                self.gemini_available = False
+
+        # In-memory live chat sessions keyed by lesson session id
+        # Note: ephemeral and per-process; OK for local dev
+        self._live_chats: dict[int, object] = {}
 
     # --- Lesson Planning ---
     def build_lesson_plan(self, topic: str) -> List[str]:
@@ -159,5 +177,39 @@ class TutorEngine:
             except Exception:
                 continue
         return None
+
+    # --- Gemini Live (text-chat fallback) ---
+    def start_live_chat(self, lesson_session_id: int) -> bool:
+        if not self.gemini_available:
+            return False
+        try:
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            chat = model.start_chat(history=[])
+            self._live_chats[lesson_session_id] = chat
+            return True
+        except Exception:
+            return False
+
+    def live_message(self, lesson_session_id: int, user_text: str) -> str | None:
+        chat = self._live_chats.get(lesson_session_id)
+        if not chat:
+            # try to start implicitly
+            started = self.start_live_chat(lesson_session_id)
+            if not started:
+                return None
+            chat = self._live_chats.get(lesson_session_id)
+        try:
+            resp = chat.send_message(user_text)
+            # google-generativeai returns .text
+            return (getattr(resp, 'text', None) or str(resp)).strip()
+        except Exception:
+            return None
+
+    def end_live_chat(self, lesson_session_id: int) -> None:
+        if lesson_session_id in self._live_chats:
+            try:
+                del self._live_chats[lesson_session_id]
+            except Exception:
+                pass
 
 

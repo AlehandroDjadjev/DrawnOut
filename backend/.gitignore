@@ -7,9 +7,12 @@
 !.gitignore
 !*/
 !requirements.txt
+!templates/
+!templates/index.html
 
 # Keep Python files anywhere under backend
 !**/*.py
+!**/*.html
 
 # Local environment and secrets (also covered by *)
 .env
