@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 from channels.generic.websocket import AsyncWebsocketConsumer
+from vectordbquire import retrieve_from_vector_db
 
 class LiveConsumer(AsyncWebsocketConsumer):
     """Server-side bridge between browser and Gemini Live API.
@@ -83,7 +84,30 @@ class LiveConsumer(AsyncWebsocketConsumer):
             elif t == 'text':
                 await self._ensure_live_started()
                 if self._session:
-                    await self._session.send_realtime_input(text=str(msg.get('text', '')))  # type: ignore
+                    user_text = str(msg.get('text', ''))
+                    try:
+                        results = await asyncio.to_thread(retrieve_from_vector_db, user_text, 3)
+                        if results:
+                            context_parts = []
+                            for r in results:
+                                ctx = f"Title: {r.get('title', '')}\nPlan: {r.get('plan', '')}"
+                                context_parts.append(ctx)
+                            context_text = "\n\n".join(context_parts)
+                        else:
+                            context_text = ""
+                    except Exception as e:
+                        context_text = ""
+                        await self._send_json({
+                        'event': 'error',
+                        'detail': f'Vector DB retrieval failed: {e}'
+                    })
+
+                    full_prompt = user_text
+                    if context_text:
+                        full_prompt += f"\n\nRelevant context:\n{context_text}"
+
+                    await self._session.send_realtime_input(text=full_prompt)
+
         elif bytes_data is not None and self._collecting:
             # Forward PCM16@16k chunk to Gemini
             if not self._session:
