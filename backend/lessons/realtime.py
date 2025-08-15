@@ -2,7 +2,12 @@ import os
 import json
 import asyncio
 from channels.generic.websocket import AsyncWebsocketConsumer
-from vectordbquire import retrieve_from_vector_db
+try:
+    # Prefer package-relative import; fallback to no-op if unavailable
+    from .vectordbquire import retrieve_from_vector_db  # type: ignore
+except Exception:  # pragma: no cover - optional dep
+    def retrieve_from_vector_db(query: str, k: int = 3):
+        return []
 
 class LiveConsumer(AsyncWebsocketConsumer):
     """Server-side bridge between browser and Gemini Live API.

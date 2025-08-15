@@ -6,7 +6,9 @@ import 'dart:ui' as ui;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:opencv_dart/opencv_dart.dart' as cv;
+import 'vectorizer.dart';
+import 'assistant_api.dart';
+import 'package:just_audio/just_audio.dart';
 
 void main() => runApp(const App());
 
@@ -79,420 +81,6 @@ class VectorObject {
   });
 }
 
-class Vectorizer {
-  static Future<List<List<Offset>>> vectorize({
-    required Uint8List bytes,
-    double worldScale = 1.0,
-    String edgeMode = 'Canny',    // 'Canny' or 'DoG'
-    int blurK = 5,                // odd
-    double cannyLo = 50,
-    double cannyHi = 160,
-    double dogSigma = 1.2,
-    double dogK = 1.6,
-    double dogThresh = 6.0,
-    double epsilon =  1.1187500000000001,
-    double resampleSpacing = 1.410714285714286,
-    double minPerimeter = 19.839285714285793,
-    bool retrExternalOnly = true,
-
-    // NEW knobs
-    double angleThresholdDeg = 30,
-    int angleWindow = 4,              // samples for windowed angle
-    int smoothPasses = 3,             // 0..3
-    bool mergeParallel = true,
-    double mergeMaxDist = 12.0,       // px/world units
-    double minStrokeLen = 8.70,       // px/world units
-    int minStrokePoints = 6,          // drop tiny fragments
-  }) async {
-    if (bytes.isEmpty) {
-      throw StateError('No image bytes provided.');
-    }
-
-    // 1) Decode to Mat (BGR) and prefilter
-    final src = cv.imdecode(bytes, cv.IMREAD_COLOR);
-
-    // Guard: imdecode failed → empty Mat
-    if (src.cols == 0 || src.rows == 0) {
-      src.dispose();
-      throw StateError(
-        'Failed to decode image (unsupported/empty data). '
-        'Try PNG or JPEG (avoid HEIC/WEBP on Windows).',
-      );
-    }
-
-    final gray = cv.cvtColor(src, cv.COLOR_BGR2GRAY);
-
-    // Ensure blurK is odd and >= 3
-    final oddBlurK = (blurK.isOdd ? blurK : blurK + 1).clamp(3, 99);
-
-    // Soft blur to reduce speckle before edges
-    final blur = cv.gaussianBlur(gray, (oddBlurK, oddBlurK), 0);
-
-    // 2) Edge map
-    cv.Mat edge;
-    if (edgeMode == 'DoG') {
-      final g1 = cv.gaussianBlur(gray, (0, 0), dogSigma);
-      final g2 = cv.gaussianBlur(gray, (0, 0), dogSigma * dogK);
-      final diff = cv.subtract(g1, g2);            // signed DoG
-      final absd = cv.convertScaleAbs(diff);       // uint8 |DoG|
-      final (_, th) = cv.threshold(absd, dogThresh, 255, cv.THRESH_BINARY);
-      edge = th;
-      g1.dispose(); g2.dispose(); diff.dispose(); absd.dispose();
-    } else {
-      edge = cv.canny(blur, cannyLo, cannyHi);
-    }
-
-    // 3) Contours
-    final mode = retrExternalOnly ? cv.RETR_EXTERNAL : cv.RETR_LIST;
-    final (contours, _) = cv.findContours(edge, mode, cv.CHAIN_APPROX_NONE);
-
-    // 4) Build stroke candidates (in world coords, origin center)
-    final imgW = src.cols, imgH = src.rows;
-    final cx = imgW / 2.0, cy = imgH / 2.0;
-
-    final rawStrokes = <List<Offset>>[];
-
-    for (final cnt in contours) {
-      final peri = cv.arcLength(cnt, false);
-      if (peri < minPerimeter) continue;
-
-      final approx = cv.approxPolyDP(cnt, epsilon, false);
-      // resample in image coords (top-left origin)
-      final polyImg = _resampleCv(approx, spacing: resampleSpacing);
-      if (polyImg.length < 2) continue;
-
-      // to world coords (center origin)
-      var polyWorld = polyImg
-          .map((p) => Offset((p.dx - cx) * worldScale, (p.dy - cy) * worldScale))
-          .toList();
-
-      // smoothing passes to preserve circles/curves
-      if (smoothPasses > 0) {
-        polyWorld = _smoothPolyline(polyWorld, passes: smoothPasses);
-      }
-
-      // split by angle with window to avoid noisy splits on curves
-      final parts = _splitByAngleWindow(
-        polyWorld,
-        thresholdDeg: angleThresholdDeg,
-        window: angleWindow,
-        minSegmentLen: minStrokeLen,
-        minPoints: minStrokePoints,
-      );
-
-      for (final s in parts) {
-        if (s.length >= minStrokePoints && _polyLen(s) >= minStrokeLen) {
-          rawStrokes.add(s);
-        }
-      }
-    }
-
-    // 5) Merge near-parallel duplicate outlines into a single centerline
-    final merged = mergeParallel
-        ? _mergeParallelStrokes(rawStrokes,
-            maxDist: mergeMaxDist,
-            maxAngleDiffDeg: 12.0,
-            minOverlapFrac: 0.45)
-        : rawStrokes;
-
-    // 6) Sort left-to-right then by length desc, then greedy endpoint order
-    merged.sort((a, b) {
-      final minAx = a.map((p) => p.dx).reduce(math.min);
-      final minBx = b.map((p) => p.dx).reduce(math.min);
-      if (minAx != minBx) return minAx.compareTo(minBx);
-      final lenA = _polyLen(a), lenB = _polyLen(b);
-      return lenB.compareTo(lenA);
-    });
-    final ordered = _orderGreedy(merged);
-
-    // Cleanup
-    src.dispose(); gray.dispose(); blur.dispose(); edge.dispose();
-
-    return ordered;
-  }
-
-  // --- Helpers ----------------------------------------------------------------
-
-  // Resample cv.VecPoint to evenly spaced Offsets (image coords)
-  static List<Offset> _resampleCv(cv.VecPoint pts, {required double spacing}) {
-    if (pts.length == 0) return const [];
-    final out = <Offset>[];
-    Offset prev = Offset(pts[0].x.toDouble(), pts[0].y.toDouble());
-    out.add(prev);
-    double acc = 0.0;
-    for (int i = 1; i < pts.length; i++) {
-      final cur = Offset(pts[i].x.toDouble(), pts[i].y.toDouble());
-      final seg = (cur - prev).distance;
-      if (seg < 1e-6) continue;
-      final dir = (cur - prev) / seg;
-      double remain = seg;
-      while (acc + remain >= spacing) {
-        final t = (spacing - acc);
-        prev = prev + dir * t;
-        out.add(prev);
-        remain -= t;
-        acc = 0.0;
-      }
-      acc += remain;
-      prev = cur;
-    }
-    if ((out.last - prev).distance > 1e-3) out.add(prev);
-    return out;
-  }
-
-  // Simple corner-preserving smoothing (Chaikin-like / tri-weight), repeated
-  static List<Offset> _smoothPolyline(List<Offset> pts, {int passes = 1}) {
-    if (pts.length < 3 || passes <= 0) return pts;
-    var a = List<Offset>.from(pts);
-    for (int p = 0; p < passes; p++) {
-      final b = List<Offset>.from(a);
-      for (int i = 1; i < a.length - 1; i++) {
-        final prev = a[i - 1];
-        final cur = a[i];
-        final next = a[i + 1];
-        b[i] = Offset(
-          (prev.dx + 2 * cur.dx + next.dx) / 4.0,
-          (prev.dy + 2 * cur.dy + next.dy) / 4.0,
-        );
-      }
-      a = b;
-    }
-    return a;
-  }
-
-  // Windowed angle split to avoid false breaks on noisy curves
-  static List<List<Offset>> _splitByAngleWindow(
-    List<Offset> pts, {
-    required double thresholdDeg,
-    required int window,
-    required double minSegmentLen,
-    required int minPoints,
-  }) {
-    if (pts.length < 3) return [pts];
-    final w = window.clamp(1, 20);
-    final threshRad = thresholdDeg * math.pi / 180.0;
-
-    final segs = <List<Offset>>[];
-    var cur = <Offset>[pts.first];
-    double curLen = 0.0;
-
-    // Precompute segment lengths
-    final segLen = List<double>.filled(pts.length, 0.0);
-    for (int i = 1; i < pts.length; i++) {
-      segLen[i] = (pts[i] - pts[i - 1]).distance;
-    }
-
-    for (int i = 1; i < pts.length - 1; i++) {
-      cur.add(pts[i]);
-      curLen += segLen[i];
-
-      final i0 = (i - w).clamp(0, pts.length - 1);
-      final i1 = (i + w).clamp(0, pts.length - 1);
-      final v1 = pts[i] - pts[i0];
-      final v2 = pts[i1] - pts[i];
-      final ang = _angleBetween(v1, v2).abs();
-
-      final shouldSplit = (ang > threshRad) &&
-          (curLen >= minSegmentLen || cur.length >= minPoints);
-
-      if (shouldSplit) {
-        // finalize current
-        if (cur.length >= 2) segs.add(cur);
-        cur = [pts[i]];
-        curLen = 0.0;
-      }
-    }
-    cur.add(pts.last);
-    if (cur.length >= 2) segs.add(cur);
-
-    // Filter tiny segments
-    return segs
-        .where((s) => s.length >= minPoints && _polyLen(s) >= minSegmentLen)
-        .toList();
-  }
-
-  static double _angleBetween(Offset a, Offset b) {
-    final dot = a.dx * b.dx + a.dy * b.dy;
-    final ma = a.distance, mb = b.distance;
-    if (ma == 0 || mb == 0) return 0.0;
-    final c = (dot / (ma * mb)).clamp(-1.0, 1.0);
-    return math.acos(c);
-    // 0 → straight, pi → U-turn
-  }
-
-  static double _polyLen(List<Offset> s) {
-    double L = 0.0;
-    for (int i = 1; i < s.length; i++) L += (s[i] - s[i - 1]).distance;
-    return L;
-  }
-
-  // Merge pairs of near-parallel strokes that run side-by-side (double outlines)
-  static List<List<Offset>> _mergeParallelStrokes(
-    List<List<Offset>> strokes, {
-    required double maxDist,
-    required double maxAngleDiffDeg,
-    required double minOverlapFrac,
-  }) {
-    if (strokes.length < 2) return strokes;
-
-    final list = List<List<Offset>>.from(strokes);
-    final used = List<bool>.filled(list.length, false);
-
-    final out = <List<Offset>>[];
-    final maxAngle = maxAngleDiffDeg * math.pi / 180.0;
-
-    // Try greedy pairwise merges
-    for (int i = 0; i < list.length; i++) {
-      if (used[i]) continue;
-      var a = list[i];
-      bool mergedAny = false;
-
-      for (int j = i + 1; j < list.length; j++) {
-        if (used[j]) continue;
-        final b = list[j];
-
-        // quick bbox proximity check
-        final ra = _bounds(a);
-        final rb = _bounds(b);
-        if (!ra.inflate(maxDist * 1.2).overlaps(rb)) continue;
-
-        // direction similarity
-        final da = a.last - a.first;
-        final db = b.last - b.first;
-        final ang = _angleBetween(da, db);
-        if (ang > maxAngle && (math.pi - ang) > maxAngle) continue; // not parallel-ish
-
-        // coarse alignment by endpoints (decide if b should be reversed)
-        final distFF = (a.first - b.first).distance + (a.last - b.last).distance;
-        final distFR = (a.first - b.last).distance + (a.last - b.first).distance;
-        final bAligned = (distFR < distFF) ? b.reversed.toList() : b;
-
-        // sample-average distance
-        final (avgDist, overlapFrac) = _avgAlignedDistance(a, bAligned, samples: 32);
-        if (avgDist <= maxDist && overlapFrac >= minOverlapFrac) {
-          // merge into centerline by averaging pointwise (resampled to same N)
-          final merged = _averageCenterline(a, bAligned, samples: 64);
-          a = merged;
-          used[j] = true;
-          mergedAny = true;
-        }
-      }
-
-      out.add(a);
-      used[i] = true;
-      if (mergedAny) {
-        // optional: could re-run merge attempts with later strokes
-      }
-    }
-
-    return out;
-  }
-
-  static Rect _bounds(List<Offset> s) {
-    double minx = double.infinity, miny = double.infinity, maxx = -double.infinity, maxy = -double.infinity;
-    for (final p in s) {
-      if (p.dx < minx) minx = p.dx;
-      if (p.dy < miny) miny = p.dy;
-      if (p.dx > maxx) maxx = p.dx;
-      if (p.dy > maxy) maxy = p.dy;
-    }
-    return Rect.fromLTRB(minx, miny, maxx, maxy);
-  }
-
-  static (double avgDist, double overlapFrac) _avgAlignedDistance(
-    List<Offset> a,
-    List<Offset> b, {
-    int samples = 32,
-  }) {
-    final n = samples.clamp(4, 512);
-    double sum = 0.0;
-    int overlap = 0;
-    for (int k = 0; k < n; k++) {
-      final ta = k / (n - 1);
-      final tb = ta;
-      final pa = _sampleAlong(a, ta);
-      final pb = _sampleAlong(b, tb);
-      if (pa == null || pb == null) continue;
-      sum += (pa - pb).distance;
-      overlap++;
-    }
-    final avg = overlap > 0 ? sum / overlap : double.infinity;
-    final frac = overlap / n;
-    return (avg, frac);
-  }
-
-  static List<Offset> _averageCenterline(
-    List<Offset> a,
-    List<Offset> b, {
-    int samples = 64,
-  }) {
-    final n = samples.clamp(4, 2048);
-    final out = <Offset>[];
-    for (int k = 0; k < n; k++) {
-      final t = k / (n - 1);
-      final pa = _sampleAlong(a, t);
-      final pb = _sampleAlong(b, t);
-      if (pa != null && pb != null) {
-        out.add(Offset((pa.dx + pb.dx) * 0.5, (pa.dy + pb.dy) * 0.5));
-      }
-    }
-    return out.isEmpty ? a : out;
-  }
-
-  // Sample along polyline by arc-length parameter t∈[0,1]
-  static Offset? _sampleAlong(List<Offset> s, double t) {
-    if (s.length < 2) return null;
-    final total = _polyLen(s);
-    if (total == 0) return s.first;
-    final target = (t.clamp(0.0, 1.0)) * total;
-
-    double acc = 0.0;
-    for (int i = 1; i < s.length; i++) {
-      final seg = (s[i] - s[i - 1]).distance;
-      if (acc + seg >= target) {
-        final r = (target - acc) / seg;
-        return Offset(
-          s[i - 1].dx + (s[i].dx - s[i - 1].dx) * r,
-          s[i - 1].dy + (s[i].dy - s[i - 1].dy) * r,
-        );
-      }
-      acc += seg;
-    }
-    return s.last;
-  }
-
-  // Greedy endpoint ordering to reduce pen-up travel
-  static List<List<Offset>> _orderGreedy(List<List<Offset>> base) {
-    if (base.isEmpty) return base;
-    final remaining = List<List<Offset>>.from(base);
-    final result = <List<Offset>>[];
-
-    var current = remaining.removeAt(0);
-    result.add(current);
-
-    while (remaining.isNotEmpty) {
-      final end = current.last;
-      int bestIdx = 0;
-      double bestDist = double.infinity;
-      bool reverse = false;
-
-      for (int i = 0; i < remaining.length; i++) {
-        final r = remaining[i];
-        final dStart = (r.first - end).distance;
-        final dEnd = (r.last - end).distance;
-        if (dStart < bestDist) { bestDist = dStart; bestIdx = i; reverse = false; }
-        if (dEnd   < bestDist) { bestDist = dEnd;   bestIdx = i; reverse = true;  }
-      }
-      var next = remaining.removeAt(bestIdx);
-      if (reverse) {
-        next = next.reversed.toList();
-      }
-      result.add(next);
-      current = next;
-    }
-    return result;
-  }
-}
 
 class SketchPlayer extends StatefulWidget {
   final StrokePlan plan;
@@ -777,6 +365,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   final _xCtrl = TextEditingController(text: '0');
   final _yCtrl = TextEditingController(text: '0');
   final _wCtrl = TextEditingController(text: '800');
+  final _textCtrl = TextEditingController(text: 'Hello world');
 
   // --- Vectorizer defaults mirrored in UI ---
   String _edgeMode = 'Canny';
@@ -789,7 +378,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   double _epsilon = 1.1187500000000001;
   double _resample = 1.410714285714286;
   double _minPerim = 19.839285714285793;
-  bool _externalOnly = true;
+  bool _externalOnly = false;
   double _worldScale = 1.0;
 
   // Playback/style (unchanged)
@@ -811,6 +400,13 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   double _minStrokePoints = 6;    // int
 
   bool _busy = false;
+  double _textFontSize = 160.0;
+  // Assistant
+  final _apiUrlCtrl = TextEditingController(text: 'http://localhost:8000');
+  AssistantApiClient? _api;
+  int? _sessionId;
+  final _questionCtrl = TextEditingController();
+  final _player = AudioPlayer();
 
   void _showError(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -820,7 +416,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
   @override
   void dispose() {
-    _xCtrl.dispose(); _yCtrl.dispose(); _wCtrl.dispose();
+    _xCtrl.dispose(); _yCtrl.dispose(); _wCtrl.dispose(); _textCtrl.dispose();
+    _apiUrlCtrl.dispose(); _questionCtrl.dispose(); _player.dispose();
     super.dispose();
   }
 
@@ -902,6 +499,87 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     }
   }
 
+  Future<Uint8List> _renderTextImageBytes(String text, double fontSize) async {
+    final style = const TextStyle(color: Colors.black);
+    final tp = TextPainter(
+      text: TextSpan(text: text, style: style.copyWith(fontSize: fontSize)),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final pad = 10.0;
+    final w = (tp.width + pad * 2).ceil();
+    final h = (tp.height + pad * 2).ceil();
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()));
+    canvas.drawRect(Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()), Paint()..color = Colors.white);
+    tp.paint(canvas, Offset(pad, pad));
+    final pic = recorder.endRecording();
+    final img = await pic.toImage(w, h);
+    final data = await img.toByteData(format: ui.ImageByteFormat.png);
+    return data!.buffer.asUint8List();
+  }
+
+  Future<void> _sketchText() async {
+    final text = _textCtrl.text.trim();
+    if (text.isEmpty) {
+      _showError('Enter some text first.');
+      return;
+    }
+    setState(() { _busy = true; });
+    try {
+      final png = await _renderTextImageBytes(text, _textFontSize);
+
+      // Text-optimized vectorization parameters to reduce gaps and over-sketchiness
+      final strokes = await Vectorizer.vectorize(
+        bytes: png,
+        worldScale: _worldScale,
+        edgeMode: 'Canny',     // consistent edges for glyphs
+        blurK: 3,               // light blur
+        cannyLo: 30,
+        cannyHi: 120,
+        dogSigma: _dogSigma,
+        dogK: _dogK,
+        dogThresh: _dogThresh,
+        epsilon: 0.8,           // tighter approximation
+        resampleSpacing: 1.0,   // denser sampling to avoid tiny breaks
+        minPerimeter: (_minPerim * 0.6).clamp(6.0, 1e9),
+        retrExternalOnly: false,
+
+        // Keep contours intact; avoid splitting curves aggressively
+        angleThresholdDeg: 85,
+        angleWindow: 3,
+        smoothPasses: 1,
+        mergeParallel: true,    // centerline for more handwriting-like strokes
+        mergeMaxDist: 10.0,
+        minStrokeLen: 4.0,
+        minStrokePoints: 3,
+      );
+
+      // Normalize direction (left-to-right) and order strokes by leftmost x
+      final normalized = strokes.map((s) {
+        if (s.isEmpty) return s;
+        return s.first.dx <= s.last.dx ? s : s.reversed.toList();
+      }).toList();
+      normalized.sort((a, b) {
+        final ax = a.map((p) => p.dx).reduce(math.min);
+        final bx = b.map((p) => p.dx).reduce(math.min);
+        return ax.compareTo(bx);
+      });
+
+      // Stitch nearby endpoints to close small gaps, scaled by font size
+      final stitched = _stitchStrokes(normalized, maxGap: (_textFontSize * 0.08).clamp(3.0, 18.0));
+
+      final offset = _raster?.worldCenter ?? Offset.zero;
+      final placed = stitched.map((s) => s.map((p) => p + offset).toList()).toList();
+      _plan = StrokePlan(placed);
+    } catch (e, st) {
+      debugPrint('SketchText error: $e\n$st');
+      _showError(e.toString());
+    } finally {
+      if (mounted) setState(() { _busy = false; });
+    }
+  }
+
   // Commit the current animated sketch to the board memory.
   void _commitCurrentSketch() {
     if (_plan == null) return;
@@ -917,6 +595,37 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       _board.add(obj);
       _plan = null; // leave only the committed version
     });
+  }
+
+  // Simple post-process to connect stroke endpoints that are very close,
+  // reducing visual gaps in contours.
+  List<List<Offset>> _stitchStrokes(List<List<Offset>> strokes, {double maxGap = 3.0}) {
+    if (strokes.isEmpty) return strokes;
+    final remaining = List<List<Offset>>.from(strokes);
+    final out = <List<Offset>>[];
+    var current = remaining.removeAt(0);
+    while (remaining.isNotEmpty) {
+      int bestIdx = -1;
+      bool reverse = false;
+      double best = maxGap;
+      for (int i = 0; i < remaining.length; i++) {
+        final s = remaining[i];
+        final dStart = (s.first - current.last).distance;
+        final dEnd = (s.last - current.last).distance;
+        if (dStart < best) { best = dStart; bestIdx = i; reverse = false; }
+        if (dEnd   < best) { best = dEnd;   bestIdx = i; reverse = true;  }
+      }
+      if (bestIdx == -1) {
+        out.add(current);
+        current = remaining.removeAt(0);
+      } else {
+        var s = remaining.removeAt(bestIdx);
+        if (reverse) s = s.reversed.toList();
+        current = [...current, ...s];
+      }
+    }
+    out.add(current);
+    return out;
   }
 
   void _clearBoard() {
@@ -1020,6 +729,87 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
               ),
             ],
           ),
+          const SizedBox(height: 16),
+          const Divider(height: 24),
+          Text('AI Tutor', style: t.textTheme.titleLarge),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _apiUrlCtrl,
+            decoration: const InputDecoration(labelText: 'Backend URL (e.g. http://localhost:8000)'),
+          ),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _busy ? null : () async {
+                  setState(() { _busy = true; });
+                  try {
+                    _api = AssistantApiClient(_apiUrlCtrl.text.trim());
+                    final data = await _api!.startLesson(topic: 'Handwriting practice');
+                    _sessionId = data['id'] as int?;
+                    await _maybePlayLastTutorAudio(data);
+                  } catch (e) {
+                    _showError(e.toString());
+                  } finally { setState(() { _busy = false; }); }
+                },
+                icon: const Icon(Icons.play_circle),
+                label: const Text('Start Lesson'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _busy || _sessionId == null ? null : () async {
+                  setState(() { _busy = true; });
+                  try {
+                    final data = await _api!.nextSegment(_sessionId!);
+                    await _maybePlayLastTutorAudio(data);
+                  } catch (e) { _showError(e.toString()); }
+                  finally { setState(() { _busy = false; }); }
+                },
+                icon: const Icon(Icons.skip_next),
+                label: const Text('Next'),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _questionCtrl,
+            decoration: const InputDecoration(labelText: 'Ask a question'),
+          ),
+          Row(children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _busy || _sessionId == null ? null : () async {
+                  setState(() { _busy = true; });
+                  try {
+                    final data = await _api!.raiseHand(_sessionId!, question: _questionCtrl.text.trim());
+                    await _maybePlayLastTutorAudio(data);
+                  } catch (e) { _showError(e.toString()); }
+                  finally { setState(() { _busy = false; }); }
+                },
+                icon: const Icon(Icons.record_voice_over),
+                label: const Text('Ask'),
+              ),
+            ),
+          ]),
+          const Divider(height: 24),
+          Text('Text', style: t.textTheme.titleLarge),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _textCtrl,
+            decoration: const InputDecoration(labelText: 'Enter text'),
+          ),
+          _slider('Font size (px)', 20.0, 400.0, _textFontSize, (v) => setState(() => _textFontSize = v)),
+          Row(children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _busy ? null : _sketchText,
+                icon: const Icon(Icons.draw),
+                label: const Text('Sketch Text'),
+              ),
+            ),
+          ]),
           const SizedBox(height: 16),
           Text('Placement (world coords, origin center)', style: t.textTheme.titleMedium),
           const SizedBox(height: 8),
@@ -1204,6 +994,23 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         ],
       ),
     );
+  }
+
+  Future<void> _maybePlayLastTutorAudio(Map<String, dynamic> sessionData) async {
+    try {
+      final utterances = (sessionData['utterances'] as List?) ?? const [];
+      if (utterances.isEmpty) return;
+      // find last tutor utterance with audio_file
+      for (var i = utterances.length - 1; i >= 0; i--) {
+        final u = utterances[i] as Map;
+        if (u['role'] == 'tutor' && (u['audio_file'] ?? '').toString().isNotEmpty) {
+          final url = u['audio_file'].toString();
+          await _player.setUrl(url);
+          await _player.play();
+          break;
+        }
+      }
+    } catch (_) {}
   }
 
   Widget _numField(TextEditingController c, String label) {

@@ -11,6 +11,8 @@ dependencies:
     sdk: flutter
   file_picker: ^8.0.0
   opencv_dart: ^1.4.3  
+  http: ^1.2.1
+  just_audio: ^0.9.36
 
 dev_dependencies:
   flutter_test:
