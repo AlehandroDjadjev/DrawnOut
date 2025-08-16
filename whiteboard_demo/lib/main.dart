@@ -3,12 +3,15 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'vectorizer.dart';
 import 'assistant_api.dart';
-import 'package:just_audio/just_audio.dart';
+import 'assistant_audio.dart';
+import 'sdk_live_bridge.dart';
+import 'planner.dart';
 
 void main() => runApp(const App());
 
@@ -351,8 +354,9 @@ class WhiteboardPage extends StatefulWidget {
 }
 
 class _WhiteboardPageState extends State<WhiteboardPage> {
-  static const double canvasW = 1600;
-  static const double canvasH = 1000;
+  static const double canvasW = 1600; // fallback/default
+  static const double canvasH = 1000; // fallback/default
+  Size? _canvasSize;                   // live size from LayoutBuilder
 
   // NEW: persistent board of committed vectors
   final List<VectorObject> _board = [];
@@ -382,10 +386,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   double _worldScale = 1.0;
 
   // Playback/style (unchanged)
-  double _seconds = 6;
-  int _passes = 2;
+  double _seconds = 60;
+  int _passes = 1;
   double _opacity = 0.8;
-  double _width = 3;
+  double _width = 5;
   double _jitterAmp = 0;
   double _jitterFreq = 0.02;
   bool _showRasterUnder = true;
@@ -400,13 +404,37 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   double _minStrokePoints = 6;    // int
 
   bool _busy = false;
-  double _textFontSize = 160.0;
+  double _textFontSize = 60.0;
   // Assistant
   final _apiUrlCtrl = TextEditingController(text: 'http://localhost:8000');
   AssistantApiClient? _api;
   int? _sessionId;
   final _questionCtrl = TextEditingController();
-  final _player = AudioPlayer();
+  // handled by assistant_audio on each platform
+  bool _inLive = false;
+  bool _wantLive = false;
+  Timer? _autoNextTimer;
+  // Orchestrator
+  final _actionsCtrl = TextEditingController(text: '{\n  "whiteboard_actions": [\n    { "type": "heading", "text": "Sample Topic" },\n    { "type": "bullet", "level": 1, "text": "Key idea one" },\n    { "type": "bullet", "level": 1, "text": "Key idea two" }\n  ]\n}');
+
+  // Layout state for orchestrator
+  _LayoutState? _layout;
+  // Adjustable layout config (defaults match code below)
+  double _cfgMarginTop = 60, _cfgMarginRight = 64, _cfgMarginBottom = 60, _cfgMarginLeft = 64;
+  double _cfgLineHeight = 1.25, _cfgGutterY = 14;
+  double _cfgIndent1 = 32, _cfgIndent2 = 64, _cfgIndent3 = 96;
+  double _cfgHeading = 60, _cfgBody = 60, _cfgTiny = 60;
+  int _cfgColumnsCount = 1; double _cfgColumnsGutter = 48;
+  // Centerline controls
+  double _clThreshold = 60.0;            // px
+  double _clEpsilon = 0.6;               // simplify tighter
+  double _clResample = 0.8;              // denser sampling
+  double _clMergeFactor = 0.9;           // merge distance = factor * font
+  double _clMergeMin = 12.0;             // clamp
+  double _clMergeMax = 36.0;             // clamp
+  double _clSmoothPasses = 3.0;          // 0..4
+  bool _preferOutlineHeadings = true;    // headings keep double outline
+  bool _sketchPreferOutline = false;     // sketch text: default centerline
 
   void _showError(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -415,9 +443,36 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    // Mirror index.html end-of-segment behavior
+    setAssistantOnQueueEmpty(() async {
+      // If user pressed Raise Hand, start SDK live when the current segment ends
+      if (_wantLive && !_inLive) {
+        setState(() { _inLive = true; });
+        await startSdkLive(oneTurn: false);
+        return;
+      }
+      // Otherwise auto-advance after a short window
+      if (!_inLive && _sessionId != null && _api != null) {
+        try { _autoNextTimer?.cancel(); } catch (_) {}
+        _autoNextTimer = Timer(const Duration(milliseconds: 1200), () async {
+          try {
+            final data = await _api!.nextSegment(_sessionId!);
+            enqueueAssistantAudioFromSession(data);
+          } catch (_) {}
+        });
+      }
+    });
+  }
+
+  @override
   void dispose() {
     _xCtrl.dispose(); _yCtrl.dispose(); _wCtrl.dispose(); _textCtrl.dispose();
-    _apiUrlCtrl.dispose(); _questionCtrl.dispose(); _player.dispose();
+    _apiUrlCtrl.dispose(); _questionCtrl.dispose();
+    try { _autoNextTimer?.cancel(); } catch (_) {}
+    _actionsCtrl.dispose();
+    disposeAssistantAudio();
     super.dispose();
   }
 
@@ -530,6 +585,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       final png = await _renderTextImageBytes(text, _textFontSize);
 
       // Text-optimized vectorization parameters to reduce gaps and over-sketchiness
+      final centerlineMode = !_sketchPreferOutline && _textFontSize < _clThreshold;
+      final mergeDist = centerlineMode ? (_textFontSize * _clMergeFactor).clamp(_clMergeMin, _clMergeMax) : 10.0;
       final strokes = await Vectorizer.vectorize(
         bytes: png,
         worldScale: _worldScale,
@@ -540,17 +597,17 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         dogSigma: _dogSigma,
         dogK: _dogK,
         dogThresh: _dogThresh,
-        epsilon: 0.8,           // tighter approximation
-        resampleSpacing: 1.0,   // denser sampling to avoid tiny breaks
+        epsilon: centerlineMode ? _clEpsilon : 0.8,
+        resampleSpacing: centerlineMode ? _clResample : 1.0,
         minPerimeter: (_minPerim * 0.6).clamp(6.0, 1e9),
         retrExternalOnly: false,
 
         // Keep contours intact; avoid splitting curves aggressively
         angleThresholdDeg: 85,
         angleWindow: 3,
-        smoothPasses: 1,
-        mergeParallel: true,    // centerline for more handwriting-like strokes
-        mergeMaxDist: 10.0,
+        smoothPasses: centerlineMode ? _clSmoothPasses.round() : 1,
+        mergeParallel: true,
+        mergeMaxDist: mergeDist,
         minStrokeLen: 4.0,
         minStrokePoints: 3,
       );
@@ -595,6 +652,224 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       _board.add(obj);
       _plan = null; // leave only the committed version
     });
+  }
+
+  // ========== Whiteboard Orchestrator ==========
+  Future<void> _ensureLayout() async {
+    _layout ??= _makeLayout();
+  }
+
+  _LayoutState _makeLayout() {
+    final cfg = _buildLayoutConfigForSize(_canvasSize?.width ?? canvasW, _canvasSize?.height ?? canvasH);
+    return _LayoutState(config: cfg, cursorY: cfg.page.top, columnIndex: 0, blocks: <_DrawnBlock>[], sectionCount: 0);
+  }
+
+  _LayoutConfig _buildLayoutConfigForSize(double w, double h) {
+    final columns = (_cfgColumnsCount <= 1)
+        ? null
+        : _Columns(count: _cfgColumnsCount.clamp(1, 4), gutter: _cfgColumnsGutter);
+    return _LayoutConfig(
+      page: _Page(
+        width: w, height: h,
+        top: _cfgMarginTop, right: _cfgMarginRight, bottom: _cfgMarginBottom, left: _cfgMarginLeft,
+      ),
+      lineHeight: _cfgLineHeight,
+      gutterY: _cfgGutterY,
+      indent: _Indent(level1: _cfgIndent1, level2: _cfgIndent2, level3: _cfgIndent3),
+      columns: columns,
+      fonts: _Fonts(heading: _cfgHeading, body: _cfgBody, tiny: _cfgTiny),
+    );
+  }
+
+  Map<String, dynamic> _parseJsonSafe(String src) {
+    try { return src.isEmpty ? <String, dynamic>{} : (jsonDecode(src) as Map<String, dynamic>); } catch (_) { return <String, dynamic>{}; }
+  }
+
+  Future<void> _handleWhiteboardActions(List actions) async {
+    final accum = <List<Offset>>[];
+    for (final a in actions) {
+      if (a is! Map) continue;
+      final type = (a['type'] ?? '').toString();
+      final text = (a['text'] ?? '').toString();
+      final level = (a['level'] is num) ? (a['level'] as num).toInt() : 1;
+      final style = a['style'] as Map<String, dynamic>?;
+      await _placeBlock(_layout!, type: type, text: text, level: level, style: style, accum: accum);
+    }
+    if (accum.isNotEmpty) {
+      setState(() { _plan = StrokePlan(accum); });
+    }
+  }
+
+  Future<void> _runPlannerAndRender(Map<String, dynamic> sessionData) async {
+    try {
+      await _ensureLayout();
+      final planner = WhiteboardPlanner(_apiUrlCtrl.text.trim().isEmpty ? 'http://127.0.0.1:8000' : _apiUrlCtrl.text.trim());
+      final plan = await planner.planForSession(sessionData);
+      if (plan == null) return;
+      // Use the draw-JSON feature directly (paste equivalent) by feeding actions into our drawer
+      final actions = (plan['whiteboard_actions'] as List?) ?? const [];
+      await _handleWhiteboardActions(actions);
+    } catch (_) {}
+  }
+
+  Future<void> _placeBlock(
+    _LayoutState st, {
+      required String type,
+      required String text,
+      int level = 1,
+      Map<String, dynamic>? style,
+      required List<List<Offset>> accum,
+    }
+  ) async {
+    final cfg = st.config;
+    final contentX0 = cfg.page.left + st._columnOffsetX();
+    final contentW = st._columnWidth();
+
+    final font = _chooseFont(type, cfg.fonts, style);
+    final indent = _indentFor(type, level, cfg.indent);
+    final maxWidth = (contentW - indent).clamp(80.0, contentW);
+    final lines = _wrapText(text, font, maxWidth);
+    final height = (lines.length * font * cfg.lineHeight).ceilToDouble();
+
+    double x = contentX0 + indent;
+    double y = st.cursorY;
+    // clamp within content box
+    if (x < contentX0) x = contentX0;
+    final rightLimit = cfg.page.width - cfg.page.right;
+    final maxX = rightLimit - 1.0;
+    if (x > maxX) x = maxX;
+    if (y < cfg.page.top) y = cfg.page.top;
+    // collision/flow: push down if intersects
+    y = _nextNonCollidingY(st, x, height, y);
+
+    // overflow handling → new column/page
+    if (y + height > (cfg.page.height - cfg.page.bottom)) {
+      if (cfg.columns != null && st.columnIndex < (cfg.columns!.count - 1)) {
+        st.columnIndex += 1;
+        st.cursorY = cfg.page.top;
+        await _placeBlock(st, type: type, text: text, level: level, style: style, accum: accum);
+        return;
+      } else {
+        // new page: clear board and reset layout (simple approach)
+        _board.clear();
+        st.columnIndex = 0; st.cursorY = cfg.page.top; st.blocks.clear(); st.sectionCount += 1;
+        await _placeBlock(st, type: type, text: text, level: level, style: style, accum: accum);
+        return;
+      }
+    }
+
+    // draw via sketch-text pipeline for consistent handwriting vibe
+    // Convert content-space (pixels from top-left of canvas) to world-space (origin center)
+    final worldTopLeft = Offset(x - (cfg.page.width/2), y - (cfg.page.height/2));
+    final preferOutline = (type == 'heading' || type == 'formula');
+    final strokes = await _drawTextLines(lines, worldTopLeft, font, preferOutline: preferOutline);
+    accum.addAll(strokes);
+
+    final bbox = _BBox(x: x, y: y, w: maxWidth, h: height);
+    st.blocks.add(_DrawnBlock(id: 'b${st.blocks.length+1}', type: type, bbox: bbox, meta: {'level': level, 'text': text}));
+
+    // advance cursor
+    final extra = (type == 'heading') ? cfg.gutterY * 1.5 : cfg.gutterY;
+    st.cursorY = y + height + extra;
+  }
+
+  Future<List<List<Offset>>> _drawTextLines(List<String> lines, Offset topLeftWorld, double fontSize, {bool preferOutline = false}) async {
+    // Render each line as a text image → vectorize → place inside content box using top-left anchor
+    final out = <List<Offset>>[];
+    for (int i = 0; i < lines.length; i++) {
+      final line = lines[i]; if (line.trim().isEmpty) continue;
+      // Scale small fonts up for legibility and then scale back in world
+      final scaleUp = fontSize < 24 ? (24.0 / fontSize) : 1.0;
+      final rl = await _renderTextLine(line, fontSize * scaleUp);
+      final centerlineMode = !preferOutline && fontSize < _clThreshold;
+      final mergeDist = centerlineMode ? (fontSize * _clMergeFactor).clamp(_clMergeMin, _clMergeMax) : 10.0;
+      final strokes = await Vectorizer.vectorize(
+        bytes: rl.bytes,
+        worldScale: _worldScale,
+        edgeMode: 'Canny', blurK: 3, cannyLo: 30, cannyHi: 120,
+        epsilon: centerlineMode ? _clEpsilon : 0.8,
+        resampleSpacing: centerlineMode ? _clResample : 1.0,
+        minPerimeter: (_minPerim * 0.6).clamp(6.0, 1e9), retrExternalOnly: false,
+        angleThresholdDeg: 85, angleWindow: 3, smoothPasses: centerlineMode ? _clSmoothPasses.round() : 1,
+        mergeParallel: true, mergeMaxDist: mergeDist,
+        minStrokeLen: 4.0, minStrokePoints: 3,
+      );
+      final lineHeight = fontSize * 1.25;
+      // Center-of-image placement: vectorizer returns strokes centered at (0,0) of the image
+      final centerOffset = Offset(rl.w / 2.0, rl.h / 2.0);
+      final offset = topLeftWorld + Offset(0, i * lineHeight) + centerOffset;
+      // If we scaled up, scale down coordinates to match intended font size
+      final placed = strokes.map((s) => s.map((p) => (p + offset) / scaleUp).toList()).toList();
+      out.addAll(placed);
+    }
+    return out;
+  }
+
+  // Render a single line to PNG and return bytes with pixel size (used to convert top-left → center coords)
+  Future<_RenderedLine> _renderTextLine(String text, double fontSize) async {
+    final style = const TextStyle(color: Colors.black);
+    final tp = TextPainter(
+      text: TextSpan(text: text, style: style.copyWith(fontSize: fontSize)),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final pad = 10.0;
+    final w = (tp.width + pad * 2).ceil();
+    final h = (tp.height + pad * 2).ceil();
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()));
+    canvas.drawRect(Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()), Paint()..color = Colors.white);
+    tp.paint(canvas, Offset(pad, pad));
+    final pic = recorder.endRecording();
+    final img = await pic.toImage(w, h);
+    final data = await img.toByteData(format: ui.ImageByteFormat.png);
+    return _RenderedLine(bytes: data!.buffer.asUint8List(), w: w.toDouble(), h: h.toDouble());
+  }
+
+  double _chooseFont(String type, _Fonts fonts, Map<String, dynamic>? style) {
+    if (style != null && style['fontSize'] is num) return (style['fontSize'] as num).toDouble();
+    if (type == 'heading') return fonts.heading;
+    if (type == 'formula') return fonts.heading;
+    return fonts.body;
+  }
+
+  double _indentFor(String type, int level, _Indent indent) {
+    if (type == 'bullet') {
+      if (level <= 1) return indent.level1;
+      if (level == 2) return indent.level2;
+      return indent.level3;
+    }
+    if (type == 'subbullet') {
+      if (level <= 1) return indent.level2; if (level == 2) return indent.level3; return indent.level3 + 24;
+    }
+    return 0.0;
+  }
+
+  List<String> _wrapText(String text, double fontSize, double maxWidth) {
+    // crude heuristic by average char width (~0.58em)
+    final avg = fontSize * 0.55;
+    final maxChars = math.max(8, (maxWidth / avg).floor());
+    final words = text.split(RegExp(r'\s+'));
+    final lines = <String>[];
+    var cur = '';
+    for (final w in words) {
+      if (cur.isEmpty) { cur = w; continue; }
+      if ((cur.length + 1 + w.length) <= maxChars) { cur += ' ' + w; }
+      else { lines.add(cur); cur = w; }
+    }
+    if (cur.isNotEmpty) lines.add(cur);
+    return lines;
+  }
+
+  double _nextNonCollidingY(_LayoutState st, double x, double h, double startY) {
+    double y = startY;
+    while (true) {
+      bool hit = false;
+      for (final b in st.blocks) {
+        if (b.bbox.intersects(_BBox(x: x, y: y, w: b.bbox.w, h: h))) { y = b.bbox.bottom + st.config.gutterY; hit = true; break; }
+      }
+      if (!hit) return y;
+      if (y > st.config.page.height - st.config.page.bottom) return y;
+    }
   }
 
   // Simple post-process to connect stroke endpoints that are very close,
@@ -648,21 +923,30 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     final rightPanel = _buildRightPanel(context);
 
     // We layer committed objects on TOP so we don't change your existing renderer.
-    final baseCanvas = _busy
-        ? const Center(child: CircularProgressIndicator())
-        : (_plan == null
-            ? CustomPaint(painter: _RasterOnlyPainter(raster: _raster))
-            : SketchPlayer(
-                plan: _plan!,
-                totalSeconds: _seconds,
-                baseWidth: _width,
-                passOpacity: _opacity,
-                passes: _passes,
-                jitterAmp: _jitterAmp,
-                jitterFreq: _jitterFreq,
-                showRasterUnderlay: _showRasterUnder,
-                raster: _raster,
-              ));
+    Widget _buildCanvas(Size size) {
+      // update layout page size to reflect live canvas
+      _maybeUpdateCanvasSize(size);
+      final baseCanvas = _busy
+          ? const Center(child: CircularProgressIndicator())
+          : (_plan == null
+              ? CustomPaint(painter: _RasterOnlyPainter(raster: _raster))
+              : SketchPlayer(
+                  plan: _plan!,
+                  totalSeconds: _seconds,
+                  baseWidth: _width,
+                  passOpacity: _opacity,
+                  passes: _passes,
+                  jitterAmp: _jitterAmp,
+                  jitterFreq: _jitterFreq,
+                  showRasterUnderlay: _showRasterUnder,
+                  raster: _raster,
+                ));
+      return Stack(children: [
+        Positioned.fill(child: baseCanvas),
+        if (_board.isNotEmpty)
+          Positioned.fill(child: CustomPaint(painter: _CommittedPainter(_board))),
+      ]);
+    }
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -687,19 +971,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         child: Row(
           children: [
             Expanded(
-              child: Center(
-                child: SizedBox(
-                  width: canvasW,
-                  height: canvasH,
-                  child: Stack(
-                    children: [
-                      Positioned.fill(child: baseCanvas),
-                      // Committed vectors on top (transparent bg)
-                      if (_board.isNotEmpty)
-                        Positioned.fill(child: CustomPaint(painter: _CommittedPainter(_board))),
-                    ],
-                  ),
-                ),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final size = Size(constraints.maxWidth, constraints.maxHeight);
+                  return _buildCanvas(size);
+                },
               ),
             ),
             SizedBox(width: 360, child: rightPanel),
@@ -707,6 +983,24 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         ),
       ),
     );
+  }
+
+  void _maybeUpdateCanvasSize(Size size) {
+    final prev = _canvasSize;
+    if (prev != null && (prev.width - size.width).abs() < 1 && (prev.height - size.height).abs() < 1) return;
+    _canvasSize = size;
+    // rebuild layout config for new page size while preserving cursor/blocks
+    if (_layout == null) return;
+    final newCfg = _buildLayoutConfigForSize(size.width, size.height);
+    setState(() {
+      _layout = _LayoutState(
+        config: newCfg,
+        cursorY: _layout!.cursorY.clamp(newCfg.page.top, newCfg.page.height - newCfg.page.bottom),
+        columnIndex: 0,
+        blocks: _layout!.blocks, // keep drawn blocks references
+        sectionCount: _layout!.sectionCount,
+      );
+    });
   }
 
   Widget _buildRightPanel(BuildContext context) {
@@ -731,6 +1025,116 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           ),
           const SizedBox(height: 16),
           const Divider(height: 24),
+          Text('Orchestrator Layout', style: t.textTheme.titleLarge),
+          const SizedBox(height: 8),
+          _slider('Heading size', 18, 72, _cfgHeading, (v) => setState(() => _cfgHeading = v)),
+          _slider('Body size', 14, 48, _cfgBody, (v) => setState(() => _cfgBody = v)),
+          _slider('Line height', 1.0, 1.8, _cfgLineHeight, (v) => setState(() => _cfgLineHeight = double.parse(v.toStringAsFixed(2)))),
+          _slider('Gutter Y', 4, 40, _cfgGutterY, (v) => setState(() => _cfgGutterY = v)),
+          _slider('Indent L1', 16, 120, _cfgIndent1, (v) => setState(() => _cfgIndent1 = v)),
+          _slider('Indent L2', 32, 180, _cfgIndent2, (v) => setState(() => _cfgIndent2 = v)),
+          _slider('Indent L3', 48, 240, _cfgIndent3, (v) => setState(() => _cfgIndent3 = v)),
+          _slider('Margin Top', 0, 200, _cfgMarginTop, (v) => setState(() => _cfgMarginTop = v)),
+          _slider('Margin Right', 0, 200, _cfgMarginRight, (v) => setState(() => _cfgMarginRight = v)),
+          _slider('Margin Bottom', 0, 200, _cfgMarginBottom, (v) => setState(() => _cfgMarginBottom = v)),
+          _slider('Margin Left', 0, 200, _cfgMarginLeft, (v) => setState(() => _cfgMarginLeft = v)),
+          Row(children: [
+            Expanded(
+              child: DropdownButtonFormField<int>(
+                value: _cfgColumnsCount,
+                items: const [
+                  DropdownMenuItem(value: 1, child: Text('1 column')),
+                  DropdownMenuItem(value: 2, child: Text('2 columns')),
+                ],
+                onChanged: (v) => setState(() => _cfgColumnsCount = v ?? 1),
+                decoration: const InputDecoration(labelText: 'Columns'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(child: _slider('Col. gutter', 0, 120, _cfgColumnsGutter, (v) => setState(() => _cfgColumnsGutter = v))),
+          ]),
+          Row(children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _busy ? null : () {
+                  setState(() {
+                    _board.clear(); _plan = null; _layout = _makeLayout();
+                  });
+                },
+                icon: const Icon(Icons.settings_backup_restore),
+                label: const Text('Apply Layout (clear page)'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _busy ? null : () {
+                  setState(() { if (_layout != null) _layout!.cursorY = _layout!.config.page.top; });
+                },
+                icon: const Icon(Icons.vertical_align_top),
+                label: const Text('Reset Cursor'),
+              ),
+            ),
+          ]),
+          const Divider(height: 24),
+          Text('Centerline (Body Text)', style: t.textTheme.titleLarge),
+          const SizedBox(height: 8),
+          _slider('Centerline threshold (px)', 20, 120, _clThreshold, (v) => setState(() => _clThreshold = v)),
+          _slider('Centerline epsilon', 0.3, 1.2, _clEpsilon, (v) => setState(() => _clEpsilon = double.parse(v.toStringAsFixed(2)))),
+          _slider('Centerline resample', 0.5, 1.5, _clResample, (v) => setState(() => _clResample = double.parse(v.toStringAsFixed(2)))),
+          _slider('Merge factor', 0.3, 1.6, _clMergeFactor, (v) => setState(() => _clMergeFactor = double.parse(v.toStringAsFixed(2)))),
+          Row(children: [
+            Expanded(child: _slider('Merge min', 4, 40, _clMergeMin, (v) => setState(() => _clMergeMin = v))),
+            const SizedBox(width: 8),
+            Expanded(child: _slider('Merge max', 8, 60, _clMergeMax, (v) => setState(() => _clMergeMax = v))),
+          ]),
+          _slider('Smooth passes', 0, 4, _clSmoothPasses, (v) => setState(() => _clSmoothPasses = v), divisions: 4, display: (v) => v.toStringAsFixed(0)),
+          SwitchListTile(
+            value: _preferOutlineHeadings,
+            onChanged: (v) => setState(() => _preferOutlineHeadings = v),
+            title: const Text('Headings keep outline (double stroke)'),
+            dense: true,
+          ),
+          const Divider(height: 24),
+          Text('Whiteboard Orchestrator', style: t.textTheme.titleLarge),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _actionsCtrl,
+            maxLines: 6,
+            decoration: const InputDecoration(
+              labelText: 'Paste actions JSON',
+              hintText: '{ "whiteboard_actions": [ {"type":"heading","text":"..."} ] }',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _busy ? null : () async {
+                  setState(() { _busy = true; });
+                  try {
+                    await _ensureLayout();
+                    final map = _parseJsonSafe(_actionsCtrl.text.trim());
+                    final list = (map['whiteboard_actions'] as List?) ?? const [];
+                    await _handleWhiteboardActions(list);
+                  } catch (e) { _showError(e.toString()); }
+                  finally { if (mounted) setState(() { _busy = false; }); }
+                },
+                icon: const Icon(Icons.playlist_add_check),
+                label: const Text('Render Actions'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _busy ? null : () { setState(() { _layout = null; _board.clear(); _plan = null; }); },
+                icon: const Icon(Icons.refresh),
+                label: const Text('Clear & Reset Layout'),
+              ),
+            ),
+          ]),
+          const Divider(height: 24),
           Text('AI Tutor', style: t.textTheme.titleLarge),
           const SizedBox(height: 8),
           TextField(
@@ -745,9 +1149,12 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                   setState(() { _busy = true; });
                   try {
                     _api = AssistantApiClient(_apiUrlCtrl.text.trim());
+                    setAssistantAudioBaseUrl(_apiUrlCtrl.text.trim());
                     final data = await _api!.startLesson(topic: 'Handwriting practice');
                     _sessionId = data['id'] as int?;
-                    await _maybePlayLastTutorAudio(data);
+                    enqueueAssistantAudioFromSession(data);
+                    await _runPlannerAndRender(data);
+                    setState(() { _inLive = false; _wantLive = false; });
                   } catch (e) {
                     _showError(e.toString());
                   } finally { setState(() { _busy = false; }); }
@@ -763,7 +1170,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                   setState(() { _busy = true; });
                   try {
                     final data = await _api!.nextSegment(_sessionId!);
-                    await _maybePlayLastTutorAudio(data);
+                    enqueueAssistantAudioFromSession(data);
+                    await _runPlannerAndRender(data);
+                    setState(() { _inLive = false; _wantLive = false; });
                   } catch (e) { _showError(e.toString()); }
                   finally { setState(() { _busy = false; }); }
                 },
@@ -784,12 +1193,48 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                   setState(() { _busy = true; });
                   try {
                     final data = await _api!.raiseHand(_sessionId!, question: _questionCtrl.text.trim());
-                    await _maybePlayLastTutorAudio(data);
+                    enqueueAssistantAudioFromSession(data);
+                    // Do not start live immediately; mirror template: start at end of current segment
+                    setState(() { _wantLive = true; });
+                    await _runPlannerAndRender(data);
                   } catch (e) { _showError(e.toString()); }
                   finally { setState(() { _busy = false; }); }
                 },
                 icon: const Icon(Icons.record_voice_over),
                 label: const Text('Ask'),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _busy || _sessionId == null || _inLive ? null : () async {
+                  // Raise hand for live: start live when current segment ends
+                  setState(() { _wantLive = true; });
+                  try { _autoNextTimer?.cancel(); } catch (_) {}
+                },
+                icon: const Icon(Icons.back_hand),
+                label: const Text('Raise Hand (Live)'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _busy || !_inLive || _sessionId == null ? null : () async {
+                  setState(() { _busy = true; });
+                  try {
+                    await stopSdkLive();
+                    setState(() { _inLive = false; _wantLive = false; });
+                    if (_api != null && _sessionId != null) {
+                      final data = await _api!.nextSegment(_sessionId!);
+                      enqueueAssistantAudioFromSession(data);
+                    }
+                  } catch (e) { _showError(e.toString()); }
+                  finally { setState(() { _busy = false; }); }
+                },
+                icon: const Icon(Icons.stop_circle),
+                label: const Text('Stop Live & Next'),
               ),
             ),
           ]),
@@ -801,6 +1246,12 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
             decoration: const InputDecoration(labelText: 'Enter text'),
           ),
           _slider('Font size (px)', 20.0, 400.0, _textFontSize, (v) => setState(() => _textFontSize = v)),
+          SwitchListTile(
+            value: _sketchPreferOutline,
+            onChanged: (v) => setState(() => _sketchPreferOutline = v),
+            title: const Text('Prefer outline for Sketch Text'),
+            dense: true,
+          ),
           Row(children: [
             Expanded(
               child: ElevatedButton.icon(
@@ -996,22 +1447,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     );
   }
 
-  Future<void> _maybePlayLastTutorAudio(Map<String, dynamic> sessionData) async {
-    try {
-      final utterances = (sessionData['utterances'] as List?) ?? const [];
-      if (utterances.isEmpty) return;
-      // find last tutor utterance with audio_file
-      for (var i = utterances.length - 1; i >= 0; i--) {
-        final u = utterances[i] as Map;
-        if (u['role'] == 'tutor' && (u['audio_file'] ?? '').toString().isNotEmpty) {
-          final url = u['audio_file'].toString();
-          await _player.setUrl(url);
-          await _player.play();
-          break;
-        }
-      }
-    } catch (_) {}
-  }
+  // (removed old direct-audio helper; playback handled by assistant_audio)
 
   Widget _numField(TextEditingController c, String label) {
     return TextField(
@@ -1064,4 +1500,80 @@ class _RasterOnlyPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _RasterOnlyPainter oldDelegate) => oldDelegate.raster != raster;
+}
+
+// ===== Orchestrator layout types =====
+class _RenderedLine { final Uint8List bytes; final double w, h; _RenderedLine({required this.bytes, required this.w, required this.h}); }
+class _LayoutConfig {
+  final _Page page;
+  final double lineHeight;
+  final double gutterY;
+  final _Indent indent;
+  final _Columns? columns;
+  final _Fonts fonts;
+  const _LayoutConfig({
+    required this.page,
+    required this.lineHeight,
+    required this.gutterY,
+    required this.indent,
+    required this.columns,
+    required this.fonts,
+  });
+}
+
+class _Page { final double width, height, top, right, bottom, left; const _Page({required this.width, required this.height, required this.top, required this.right, required this.bottom, required this.left}); }
+class _Indent { final double level1, level2, level3; const _Indent({required this.level1, required this.level2, required this.level3}); }
+class _Columns { final int count; final double gutter; const _Columns({required this.count, required this.gutter}); }
+class _Fonts { final double heading, body, tiny; const _Fonts({required this.heading, required this.body, required this.tiny}); }
+
+class _BBox {
+  final double x, y, w, h;
+  const _BBox({required this.x, required this.y, required this.w, required this.h});
+  double get right => x + w;
+  double get bottom => y + h;
+  bool intersects(_BBox other) {
+    return !(other.x >= right || other.right <= x || other.y >= bottom || other.bottom <= y);
+  }
+}
+
+class _DrawnBlock { final String id; final String type; final _BBox bbox; final Map<String, dynamic>? meta; _DrawnBlock({required this.id, required this.type, required this.bbox, this.meta}); }
+
+class _LayoutState {
+  final _LayoutConfig config;
+  double cursorY;
+  int columnIndex;
+  final List<_DrawnBlock> blocks;
+  int sectionCount;
+  _LayoutState({required this.config, required this.cursorY, required this.columnIndex, required this.blocks, required this.sectionCount});
+
+  double _columnOffsetX() {
+    if (config.columns == null) return 0.0;
+    final cw = _columnWidth();
+    return columnIndex * cw + columnIndex * config.columns!.gutter;
+  }
+
+  double _columnResidual() {
+    if (config.columns == null) return 0.0;
+    final total = (config.columns!.count - 1) * config.columns!.gutter + (config.columns!.count - 1) * _columnWidth();
+    final used = columnIndex * config.columns!.gutter + columnIndex * _columnWidth();
+    return total - used;
+  }
+
+  double _columnWidth() {
+    if (config.columns == null) return config.page.width - config.page.left - config.page.right;
+    final usable = config.page.width - config.page.left - config.page.right - (config.columns!.count - 1) * config.columns!.gutter;
+    return usable / config.columns!.count;
+  }
+
+  static _LayoutState defaultConfig(double pageW, double pageH) {
+    final cfg = _LayoutConfig(
+      page: _Page(width: pageW, height: pageH, top: 60, right: 64, bottom: 60, left: 64),
+      lineHeight: 1.25,
+      gutterY: 14,
+      indent: const _Indent(level1: 32, level2: 64, level3: 96),
+      columns: null,
+      fonts: const _Fonts(heading: 30, body: 22, tiny: 18),
+    );
+    return _LayoutState(config: cfg, cursorY: cfg.page.top, columnIndex: 0, blocks: <_DrawnBlock>[], sectionCount: 0);
+  }
 }

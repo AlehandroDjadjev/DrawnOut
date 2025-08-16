@@ -2,11 +2,21 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class AssistantApiClient {
-  AssistantApiClient(this.baseUrl);
+  AssistantApiClient(String baseUrl)
+      : baseUrl = _normalizeBase(baseUrl);
 
-  String baseUrl; // e.g. http://localhost:8000
+  String baseUrl; // normalized like http://127.0.0.1:8000
 
-  Uri _u(String path) => Uri.parse(baseUrl + path);
+  static String _normalizeBase(String url) {
+    var u = (url.isEmpty ? 'http://127.0.0.1:8000/' : url.trim());
+    if (!u.startsWith('http')) u = 'http://127.0.0.1:8000/';
+    while (u.endsWith('/')) { u = u.substring(0, u.length - 1); }
+    // If user passed .../api or .../api/lessons, strip it to the root
+    u = u.replaceFirst(RegExp(r'/api/lessons$'), '').replaceFirst(RegExp(r'/api$'), '');
+    return u;
+  }
+
+  Uri _u(String path) => Uri.parse('$baseUrl/api$path');
 
   Future<Map<String, dynamic>> startLesson({String topic = 'Pythagorean Theorem'}) async {
     final resp = await http.post(_u('/lessons/start/'), body: {'topic': topic});
