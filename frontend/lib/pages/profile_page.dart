@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart'; // ✅ import dotenv
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({Key? key}) : super(key: key);
@@ -16,7 +17,8 @@ class _ProfilePageState extends State<ProfilePage> {
   bool _isLoading = true;
   String? _errorMessage;
 
-  final String baseUrl = 'http://192.168.7.7:8000/api/';
+  // ✅ Use .env variable instead of hardcoded IP
+  final String baseUrl = "${dotenv.env['API_URL']}/api/";
 
   @override
   void initState() {

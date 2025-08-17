@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart'; // ✅ import dotenv
 import 'profile_page.dart'; // Make sure this exists
 
 class HomePage extends StatefulWidget {
@@ -16,7 +17,8 @@ class _HomePageState extends State<HomePage> {
   bool isLoading = true;
   String? errorMessage;
 
-  final String lessonsUrl = 'http://192.168.7.7:8000/api/lessons/list/';
+  // ✅ Use .env variable instead of hardcoded IP
+  final String lessonsUrl = "${dotenv.env['API_URL']}/api/lessons/list/";
 
   @override
   void initState() {

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:flutter_dotenv/flutter_dotenv.dart'; // ✅ import dotenv
 
 class SignupPage extends StatefulWidget {
   const SignupPage({Key? key}) : super(key: key);
@@ -19,7 +20,8 @@ class _SignupPageState extends State<SignupPage> {
   String? _errorMessage;
   bool _isLoading = false;
 
-  String baseUrl = 'http://192.168.7.7:8000/api/auth/';
+  // ✅ Use .env instead of hardcoding IP
+  final String baseUrl = "${dotenv.env['API_URL']}/api/auth/";
 
   void _signup() async {
     if (!_formKey.currentState!.validate()) return;
