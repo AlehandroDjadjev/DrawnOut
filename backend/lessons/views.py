@@ -347,6 +347,154 @@ class DiagnosticsView(APIView):
 
         info['took_ms'] = int((time.time() - started_at) * 1000)
         return Response(info)
+
+# --- New: Diagram generation proxy (OpenAI gpt-image-1) ---
+from rest_framework.permissions import AllowAny
+import base64, requests
+
+class DiagramView(APIView):
+    permission_classes = [AllowAny]
+    def post(self, request):
+        prompt = (request.data.get('prompt') or '').strip()
+        size = (request.data.get('size') or '256x256')
+        want_debug = (str(request.query_params.get('debug', '')).lower() in ('1','true','yes') or
+                      str(request.data.get('debug', '')).lower() in ('1','true','yes'))
+        debug_steps = []
+        if not prompt:
+            return Response({'detail': 'prompt required'}, status=400)
+
+        # Prefer Google Imagen over OpenAI; require GOOGLE_AI_API_KEY
+        google_key = os.getenv('GOOGLE_AI_API_KEY', '') or os.getenv('GEMINI_API_KEY', '')
+        if not google_key:
+            return Response({'detail': 'GOOGLE_AI_API_KEY not set'}, status=500)
+
+        # Prefer the official google-genai SDK to avoid endpoint drift
+        try:
+            from google import genai  # pip install google-genai
+        except Exception as e:
+            return Response({'detail': f'google-genai not installed: {e}'}, status=500)
+
+        try:
+            client = genai.Client(api_key=google_key)
+            # Preferred model IDs per latest SDK
+            primary_model = 'imagen-4.0-generate-001'
+            alt_model = 'imagen-4.0-ultra-generate-001'
+            # Try common SDK methods (different versions expose different surfaces)
+            resp = None
+            try:
+                debug_steps.append({'stage': 'sdk.generate_images', 'model': primary_model})
+                resp = client.models.generate_images(
+                    model=primary_model,
+                    prompt=prompt,
+                    config={
+                        'numberOfImages': 1,
+                        'aspectRatio': '1:1',
+                        'sampleImageSize': '1K',
+                        'personGeneration': 'dont_allow',
+                    },
+                )
+            except Exception:
+                try:
+                    debug_steps.append({'stage': 'sdk.images.generate', 'model': primary_model})
+                    resp = client.images.generate(
+                        model=primary_model,
+                        prompt=prompt,
+                        aspect_ratio='1:1',
+                        number_of_images=1,
+                        sample_image_size='1K',
+                        person_generation='dont_allow',
+                    )
+                except Exception as e2:
+                    # SDK path failed; fall back to REST
+                    resp = None
+                    debug_steps.append({'stage': 'sdk.error', 'error': str(e2)})
+            if resp is None:
+                import requests as _rq
+                # First, try v1beta/images:generate (Generative Language API)
+                url = 'https://generativelanguage.googleapis.com/v1beta/images:generate'
+                q = { 'key': google_key }
+                pl = {
+                    'model': f'models/{primary_model}',
+                    'prompt': { 'text': prompt },
+                    'config': {
+                        'numberOfImages': 1,
+                        'aspectRatio': '1:1',
+                        'sampleImageSize': '1K',
+                        'personGeneration': 'dont_allow',
+                    },
+                }
+                rr = _rq.post(url, params=q, json=pl, timeout=60)
+                debug_steps.append({'stage': 'rest.images:generate', 'endpoint': url, 'status': rr.status_code, 'len': len(rr.text or '')})
+                if rr.status_code // 100 != 2:
+                    # Try legacy model method path
+                    url2 = f'https://generativelanguage.googleapis.com/v1beta/models/{primary_model}:generateImages'
+                    rr = _rq.post(url2, params=q, json={
+                        'prompt': { 'text': prompt },
+                        'config': {
+                            'numberOfImages': 1,
+                            'aspectRatio': '1:1',
+                            'sampleImageSize': '1K',
+                            'personGeneration': 'dont_allow',
+                        },
+                    }, timeout=60)
+                    debug_steps.append({'stage': 'rest.models:generateImages', 'endpoint': url2, 'status': rr.status_code, 'len': len(rr.text or '')})
+                    if rr.status_code // 100 != 2:
+                        return Response({'detail': f'gemini error {rr.status_code}', 'body': rr.text or '(empty)', 'debug': debug_steps}, status=502)
+                data = rr.json() if rr.content else {}
+                # Extract base64 from REST response
+                b64 = ''
+                # New style
+                try:
+                    imgs = data.get('generatedImages') or []
+                    if imgs:
+                        img0 = imgs[0].get('image') or {}
+                        b64 = (img0.get('imageBytes') or '').strip()
+                except Exception:
+                    pass
+                if not b64:
+                    try:
+                        cand = (data.get('candidates') or [])[0]
+                        parts = ((cand.get('content') or {}).get('parts') or [])
+                        if parts:
+                            inline = parts[0].get('inlineData') or {}
+                            b64 = (inline.get('data') or '').strip()
+                    except Exception:
+                        b64 = ''
+                if not b64:
+                    return Response({'detail': 'no image in response', 'body': data, 'debug': debug_steps}, status=502)
+                return Response({'image_b64': b64})
+
+            # Extract base64 from response object, trying common attribute shapes
+            b64 = ''
+            try:
+                # Preferred response shape
+                gi = getattr(resp, 'generated_images', None) or getattr(resp, 'generatedImages', None) or []
+                if gi:
+                    img0 = gi[0]
+                    image = getattr(img0, 'image', None) or {}
+                    b64 = getattr(image, 'image_bytes', None) or getattr(image, 'imageBytes', None) or ''
+                    if isinstance(b64, bytes):
+                        import base64 as _b64
+                        b64 = _b64.b64encode(b64).decode('utf-8')
+            except Exception:
+                b64 = ''
+            if not b64:
+                # Some versions return dict-like
+                try:
+                    d = dict(resp)
+                    arr = d.get('generatedImages') or d.get('images') or []
+                    if arr:
+                        img0 = arr[0]
+                        iobj = img0.get('image') or img0
+                        b64 = iobj.get('imageBytes') or iobj.get('bytesBase64Encoded') or ''
+                except Exception:
+                    b64 = ''
+            if not b64:
+                return Response({'detail': 'no image in SDK response', 'debug': debug_steps}, status=502)
+            return Response({'image_b64': b64})
+        except Exception as e:
+            debug_steps.append({'stage': 'sdk.exception', 'error': str(e)})
+            return Response({'detail': f'gemini sdk request failed: {e}', 'debug': debug_steps}, status=502)
 class LessonCreateView(generics.CreateAPIView):
     queryset = Lesson.objects.all()
     serializer_class = LessonSerializer

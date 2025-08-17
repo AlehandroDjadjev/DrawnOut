@@ -12,6 +12,7 @@ import 'assistant_api.dart';
 import 'assistant_audio.dart';
 import 'sdk_live_bridge.dart';
 import 'planner.dart';
+import 'package:http/http.dart' as http;
 
 void main() => runApp(const App());
 
@@ -48,6 +49,25 @@ class StrokePlan {
       }
     }
     return L;
+  }
+
+  // Remove strokes that are too short or have tiny extent; defined on state since it is used by diagram placement
+  List<List<Offset>> _filterDiagramStrokes(List<List<Offset>> strokes, {double minLength = 24.0, double minExtent = 8.0}) {
+    final filtered = <List<Offset>>[];
+    for (final s in strokes) {
+      if (s.length < 2) continue;
+      double len = 0.0;
+      double minX = s.first.dx, maxX = s.first.dx, minY = s.first.dy, maxY = s.first.dy;
+      for (int i = 1; i < s.length; i++) {
+        len += (s[i] - s[i-1]).distance;
+        final px = s[i].dx, py = s[i].dy;
+        if (px < minX) minX = px; if (px > maxX) maxX = px;
+        if (py < minY) minY = py; if (py > maxY) maxY = py;
+      }
+      final extent = math.max(maxX - minX, maxY - minY);
+      if (len >= minLength && extent >= minExtent) filtered.add(s);
+    }
+    return filtered;
   }
 
   Path toPath() {
@@ -365,6 +385,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   ui.Image? _uploadedImage;
   PlacedImage? _raster;
   StrokePlan? _plan;
+  DateTime? _currentAnimEnd; // when current sketch animation is expected to finish
+  bool _diagramInFlight = false; // fetching or preparing diagram
+  DateTime? _diagramAnimEnd;     // when diagram animation is expected to finish
 
   final _xCtrl = TextEditingController(text: '0');
   final _yCtrl = TextEditingController(text: '0');
@@ -393,6 +416,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   double _jitterAmp = 0;
   double _jitterFreq = 0.02;
   bool _showRasterUnder = true;
+  bool _planUnderlay = true; // per-plan underlay toggle
+  bool _debugAllowUnderDiagrams = false; // allow underlay for auto diagrams
 
   // Stroke shaping knobs (match defaults)
   double _angleThreshold = 30.0;  // deg
@@ -410,6 +435,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   AssistantApiClient? _api;
   int? _sessionId;
   final _questionCtrl = TextEditingController();
+  final _diagramCtrl = TextEditingController(text: 'Right triangle a,b,c with square on c');
   // handled by assistant_audio on each platform
   bool _inLive = false;
   bool _wantLive = false;
@@ -435,6 +461,17 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   double _clSmoothPasses = 3.0;          // 0..4
   bool _preferOutlineHeadings = true;    // headings keep double outline
   bool _sketchPreferOutline = false;     // sketch text: default centerline
+  // Planner limits (adjustable)
+  double _plMaxItems = 3;
+  double _plMaxSentences = 1;
+  double _plMaxWords = 10;
+  // Tutor draw overrides
+  bool _tutorUseSpeed = true;
+  double _tutorSeconds = 60;
+  double _tutorFontScale = 1.0; // multiplies heading/body when planner draws
+  bool _tutorUseFixedFont = true;
+  double _tutorFixedFont = 72.0;
+  double _tutorMinFont = 72.0; // hard floor for any tutor-drawn text
 
   void _showError(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -453,23 +490,34 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         await startSdkLive(oneTurn: false);
         return;
       }
-      // Otherwise auto-advance after a short window
+      // Otherwise auto-advance only when all drawing completed (text + diagram)
       if (!_inLive && _sessionId != null && _api != null) {
         try { _autoNextTimer?.cancel(); } catch (_) {}
-        _autoNextTimer = Timer(const Duration(milliseconds: 1200), () async {
-          try {
-            final data = await _api!.nextSegment(_sessionId!);
-            enqueueAssistantAudioFromSession(data);
-          } catch (_) {}
+        _autoNextTimer = Timer.periodic(const Duration(milliseconds: 250), (t) async {
+          if (_canAdvanceSegment()) {
+            t.cancel();
+            try {
+              final data = await _api!.nextSegment(_sessionId!);
+              enqueueAssistantAudioFromSession(data);
+            } catch (_) {}
+          }
         });
       }
     });
   }
 
+  bool _canAdvanceSegment() {
+    final now = DateTime.now();
+    final textDone = _currentAnimEnd == null || !_currentAnimEnd!.isAfter(now);
+    final diagramDone = _diagramAnimEnd == null || !_diagramAnimEnd!.isAfter(now);
+    final animInactive = _plan == null; // nothing currently animating
+    return !_diagramInFlight && textDone && diagramDone && animInactive;
+  }
+
   @override
   void dispose() {
     _xCtrl.dispose(); _yCtrl.dispose(); _wCtrl.dispose(); _textCtrl.dispose();
-    _apiUrlCtrl.dispose(); _questionCtrl.dispose();
+    _apiUrlCtrl.dispose(); _questionCtrl.dispose(); _diagramCtrl.dispose();
     try { _autoNextTimer?.cancel(); } catch (_) {}
     _actionsCtrl.dispose();
     disposeAssistantAudio();
@@ -554,6 +602,40 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     }
   }
 
+  Future<void> _fetchAndSketchDiagram() async {
+    final prompt = _diagramCtrl.text.trim();
+    if (prompt.isEmpty) { _showError('Enter a diagram prompt first.'); return; }
+    setState(() { _busy = true; });
+    try {
+      final base = _apiUrlCtrl.text.trim().isEmpty ? 'http://127.0.0.1:8000' : _apiUrlCtrl.text.trim();
+      final url = Uri.parse(base.replaceAll(RegExp(r'/+$'), '') + '/api/lessons/diagram/');
+      final resp = await http.post(url, headers: {'Content-Type': 'application/json'}, body: jsonEncode({'prompt': prompt}));
+      if (resp.statusCode ~/ 100 != 2) {
+        throw StateError('Diagram error: ${resp.statusCode}');
+      }
+      final body = jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
+      final b64 = (body['image_b64'] ?? '') as String;
+      if (b64.isEmpty) throw StateError('Empty image data');
+      final bytes = base64Decode(b64);
+
+      // Load into upload slots and placement
+      _uploadedBytes = bytes;
+      _uploadedImage = await _decodeUiImage(bytes);
+      final x = double.tryParse(_xCtrl.text.trim()) ?? 0;
+      final y = double.tryParse(_yCtrl.text.trim()) ?? 0;
+      final w = (double.tryParse(_wCtrl.text.trim()) ?? 800).clamp(1, 100000).toDouble();
+      final aspect = _uploadedImage!.height / _uploadedImage!.width;
+      final size = Size(w, w * aspect);
+      _raster = PlacedImage(image: _uploadedImage!, worldCenter: Offset(x, y), worldSize: size);
+
+      await _vectorizeAndSketch();
+    } catch (e) {
+      _showError(e.toString());
+    } finally {
+      if (mounted) setState(() { _busy = false; });
+    }
+  }
+
   Future<Uint8List> _renderTextImageBytes(String text, double fontSize) async {
     final style = const TextStyle(color: Colors.black);
     final tp = TextPainter(
@@ -582,11 +664,12 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     }
     setState(() { _busy = true; });
     try {
-      final png = await _renderTextImageBytes(text, _textFontSize);
+      final usedFont = _textFontSize < _tutorMinFont ? _tutorMinFont : _textFontSize;
+      final png = await _renderTextImageBytes(text, usedFont);
 
       // Text-optimized vectorization parameters to reduce gaps and over-sketchiness
-      final centerlineMode = !_sketchPreferOutline && _textFontSize < _clThreshold;
-      final mergeDist = centerlineMode ? (_textFontSize * _clMergeFactor).clamp(_clMergeMin, _clMergeMax) : 10.0;
+      final centerlineMode = !_sketchPreferOutline && usedFont < _clThreshold;
+      final mergeDist = centerlineMode ? (usedFont * _clMergeFactor).clamp(_clMergeMin, _clMergeMax) : 10.0;
       final strokes = await Vectorizer.vectorize(
         bytes: png,
         worldScale: _worldScale,
@@ -624,7 +707,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       });
 
       // Stitch nearby endpoints to close small gaps, scaled by font size
-      final stitched = _stitchStrokes(normalized, maxGap: (_textFontSize * 0.08).clamp(3.0, 18.0));
+      final stitched = _stitchStrokes(normalized, maxGap: (usedFont * 0.08).clamp(3.0, 18.0));
 
       final offset = _raster?.worldCenter ?? Offset.zero;
       final placed = stitched.map((s) => s.map((p) => p + offset).toList()).toList();
@@ -685,7 +768,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     try { return src.isEmpty ? <String, dynamic>{} : (jsonDecode(src) as Map<String, dynamic>); } catch (_) { return <String, dynamic>{}; }
   }
 
-  Future<void> _handleWhiteboardActions(List actions) async {
+  Future<void> _handleWhiteboardActions(
+    List actions, {
+    double fontScale = 1.0,
+    double? overrideSeconds,
+  }) async {
     final accum = <List<Offset>>[];
     for (final a in actions) {
       if (a is! Map) continue;
@@ -693,10 +780,23 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       final text = (a['text'] ?? '').toString();
       final level = (a['level'] is num) ? (a['level'] as num).toInt() : 1;
       final style = a['style'] as Map<String, dynamic>?;
-      await _placeBlock(_layout!, type: type, text: text, level: level, style: style, accum: accum);
+      await _placeBlock(
+        _layout!,
+        type: type,
+        text: text,
+        level: level,
+        style: style,
+        accum: accum,
+        fontScale: fontScale,
+      );
     }
     if (accum.isNotEmpty) {
-      setState(() { _plan = StrokePlan(accum); });
+      setState(() {
+        if (overrideSeconds != null) _seconds = overrideSeconds;
+        _planUnderlay = true; // normal text honors UI underlay toggle
+        _plan = StrokePlan(accum);
+        _currentAnimEnd = DateTime.now().add(Duration(milliseconds: (_seconds * 1000).round()));
+      });
     }
   }
 
@@ -704,12 +804,181 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     try {
       await _ensureLayout();
       final planner = WhiteboardPlanner(_apiUrlCtrl.text.trim().isEmpty ? 'http://127.0.0.1:8000' : _apiUrlCtrl.text.trim());
-      final plan = await planner.planForSession(sessionData);
+      final plan = await planner.planForSession(
+        sessionData,
+        maxItems: _plMaxItems.round(),
+        maxSentencesPerItem: _plMaxSentences.round(),
+        maxWordsPerSentence: _plMaxWords.round(),
+      );
       if (plan == null) return;
       // Use the draw-JSON feature directly (paste equivalent) by feeding actions into our drawer
       final actions = (plan['whiteboard_actions'] as List?) ?? const [];
-      await _handleWhiteboardActions(actions);
+      // ensure we move below any previous content before drawing a new segment
+      if (_layout != null && _layout!.blocks.isNotEmpty) {
+        final maxBottom = _layout!.blocks.map((b) => b.bbox.bottom).fold<double>(0.0, (a, b) => a > b ? a : b);
+        final nextStart = maxBottom + _layout!.config.gutterY * 2.0;
+        _layout!.cursorY = nextStart;
+      }
+      final seconds = _tutorUseSpeed ? _tutorSeconds : _seconds;
+      final fs = _tutorUseFixedFont ? (_tutorFixedFont / _cfgHeading) : _tutorFontScale;
+      // Kick off diagram generation immediately (do not await)
+      try {
+        final prompt = _diagramPromptFromPlanOrTopic(plan, sessionData);
+        _startDiagramPipeline(prompt, seconds);
+      } catch (_) {}
+      await _handleWhiteboardActions(actions, fontScale: fs, overrideSeconds: seconds);
     } catch (_) {}
+  }
+
+  String _diagramPromptFromPlanOrTopic(Map<String, dynamic> plan, Map<String, dynamic> sessionData) {
+    final planHint = (plan['diagram_hint'] is String) ? (plan['diagram_hint'] as String).trim() : '';
+    try {
+      final actions = (plan['whiteboard_actions'] as List?) ?? const [];
+      for (final a in actions) {
+        if (a is Map && (a['type'] ?? '') == 'heading') {
+          final t = (a['text'] ?? '').toString();
+          if (t.isNotEmpty) return _buildDiagramPrompt(t, sessionData, planHint);
+        }
+      }
+    } catch (_) {}
+    return _buildDiagramPrompt((sessionData['topic'] ?? 'diagram').toString(), sessionData, planHint);
+  }
+
+  String _buildDiagramPrompt(String topic, Map<String, dynamic> sessionData, [String? planHint]) {
+    final sessionHint = _extractTutorDiagramHint(sessionData);
+    final tutorHint = (planHint != null && planHint.trim().isNotEmpty) ? planHint.trim() : sessionHint;
+    // If tutor provided explicit instructions, pass ONLY that text to the image model
+    if (tutorHint.isNotEmpty) return tutorHint;
+    // Fallback when no explicit instructions are available
+    return (
+      'Create a diagram that is as simple as possible while preserving meaning. '
+      'Minimal black-and-white line art only; no shading, no colors, no textures, no background. '
+      'Use only primitive shapes (straight lines, a single arrow if helpful, circles, triangles, rectangles). '
+      'Hard limits: at most 12 strokes total; do not add dots, hatching, icons, or decorative details. '
+      'Absolutely no letters, numbers, or text labels anywhere. '
+      'Topic: ' + topic + '. '
+      'Prefer the smallest, most uncluttered composition that conveys the core idea.'
+    );
+  }
+
+  String _extractTutorDiagramHint(Map<String, dynamic> sessionData) {
+    // Try common fields that might carry tutor intent
+    final keys = [
+      'diagram_hint','diagram','image_hint','image_request','instructions','note','notes','prompt'
+    ];
+    for (final k in keys) {
+      final v = sessionData[k];
+      if (v is String && v.trim().isNotEmpty) return v.trim();
+    }
+    return '';
+  }
+
+  void _startDiagramPipeline(String prompt, double currentSeconds) async {
+    try {
+      final base = _apiUrlCtrl.text.trim().isEmpty ? 'http://127.0.0.1:8000' : _apiUrlCtrl.text.trim();
+      final url = Uri.parse(base.replaceAll(RegExp(r'/+$'), '') + '/api/lessons/diagram/');
+      final resp = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'prompt': prompt, 'size': '256x256', 'quality': 'standard'}),
+      );
+      if (resp.statusCode ~/ 100 != 2) { return; }
+      final body = jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
+      final b64 = (body['image_b64'] ?? '') as String;
+      if (b64.isEmpty) return;
+      final bytes = base64Decode(b64);
+      // Ensure we sketch after text plan finishes. If plan end is not yet known, wait briefly for it to be set.
+      int tries = 0;
+      while (_currentAnimEnd == null && tries < 20) { // up to ~1s
+        await Future.delayed(const Duration(milliseconds: 50));
+        tries++;
+      }
+      final end = _currentAnimEnd;
+      if (end != null) {
+        final now = DateTime.now();
+        if (end.isAfter(now)) {
+          await Future.delayed(end.difference(now));
+        }
+      }
+      // Commit the finished text so it persists before drawing the diagram
+      if (_plan != null) { _commitCurrentSketch(); }
+      await _sketchDiagramAuto(bytes);
+    } catch (_) {} finally {
+      _diagramInFlight = false;
+    }
+  }
+
+  Future<void> _sketchDiagramAuto(List<int> bytes) async {
+    await _ensureLayout();
+    // Decode image to compute aspect and fit
+    final img = await _decodeUiImage(Uint8List.fromList(bytes));
+    final st = _layout!;
+    final cfg = st.config;
+    double contentX0 = cfg.page.left + st._columnOffsetX();
+    double cw = st._columnWidth();
+    // Keep diagrams compact
+    double maxW = cw * 0.5;
+    double x = contentX0 + (cw - maxW) / 2.0; // centered in column
+    double y = st.cursorY;
+    final pageBottom = cfg.page.height - cfg.page.bottom;
+    // If not enough vertical space, try next column
+    if ((pageBottom - y) < 100 && cfg.columns != null && st.columnIndex < (cfg.columns!.count - 1)) {
+      st.columnIndex += 1;
+      contentX0 = cfg.page.left + st._columnOffsetX();
+      cw = st._columnWidth();
+      maxW = cw * 0.5;
+      x = contentX0 + (cw - maxW) / 2.0;
+      y = cfg.page.top;
+    }
+    // Compute scale respecting remaining height
+    final remainH = (cfg.page.height - cfg.page.bottom) - y - cfg.gutterY;
+    final scaleW = (img.width == 0) ? 1.0 : (maxW / img.width);
+    final scaleH = (img.height == 0) ? scaleW : math.max(0.1, remainH / img.height);
+    final effScale = math.min(scaleW, scaleH);
+    final targetW = img.width * effScale;
+    final targetH = img.height * effScale;
+    // push down to avoid overlaps with previous blocks
+    y = _nextNonCollidingY(st, x, targetH, y);
+
+    // Vectorize with image-friendly params (no raster shown)
+    final strokes = await Vectorizer.vectorize(
+      bytes: Uint8List.fromList(bytes),
+      worldScale: _worldScale,
+      edgeMode: 'Canny', blurK: 3, cannyLo: 35, cannyHi: 140,
+      epsilon: 0.9, resampleSpacing: 1.1, minPerimeter: math.max(20.0, _minPerim), retrExternalOnly: false,
+      angleThresholdDeg: 85, angleWindow: 3, smoothPasses: 2,
+      mergeParallel: true, mergeMaxDist: 14.0,
+      minStrokeLen: 16.0, minStrokePoints: 10,
+    );
+
+    // Drop tiny decorative strokes (dots/specks) to keep result simple
+    final filtered = _filterDiagramStrokes(strokes, minLength: 24.0, minExtent: 8.0);
+
+    // Scale to fit targetW while preserving aspect; vectorizer uses image px→world, so scale proportionally
+    // Convert top-left content-space → world center, then add center offset
+    final worldTopLeft = Offset(x - (cfg.page.width/2), y - (cfg.page.height/2));
+    final centerOffset = Offset(targetW / 2.0, targetH / 2.0);
+    final centerWorld = worldTopLeft + centerOffset;
+    final placed = filtered.map((s) => s.map((p) => (p * effScale) + centerWorld).toList()).toList();
+
+    // Update layout blocks to prevent future overlaps and advance cursor
+    final bbox = _BBox(x: x, y: y, w: targetW, h: targetH);
+    st.blocks.add(_DrawnBlock(id: 'img${st.blocks.length+1}', type: 'diagram', bbox: bbox, meta: {'w': img.width, 'h': img.height}));
+    st.cursorY = y + targetH + cfg.gutterY * 1.25;
+
+    setState(() {
+      _planUnderlay = _debugAllowUnderDiagrams; // show underlay only if debug enabled
+      _plan = StrokePlan(placed);
+      // also set raster to the placed image so it can be displayed under the sketch
+      _raster = PlacedImage(
+        image: img,
+        worldCenter: centerWorld,
+        worldSize: Size(targetW, targetH),
+      );
+      // Set diagram animation end time using current _seconds
+      final now = DateTime.now();
+      _diagramAnimEnd = now.add(Duration(milliseconds: (_seconds * 1000).round()));
+    });
   }
 
   Future<void> _placeBlock(
@@ -719,13 +988,16 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       int level = 1,
       Map<String, dynamic>? style,
       required List<List<Offset>> accum,
+      double fontScale = 1.0,
     }
   ) async {
     final cfg = st.config;
     final contentX0 = cfg.page.left + st._columnOffsetX();
     final contentW = st._columnWidth();
 
-    final font = _chooseFont(type, cfg.fonts, style);
+    double font = _chooseFont(type, cfg.fonts, style) * fontScale;
+    if (_tutorUseFixedFont) font = _tutorFixedFont;
+    if (font < _tutorMinFont) font = _tutorMinFont;
     final indent = _indentFor(type, level, cfg.indent);
     final maxWidth = (contentW - indent).clamp(80.0, contentW);
     final lines = _wrapText(text, font, maxWidth);
@@ -864,12 +1136,37 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     double y = startY;
     while (true) {
       bool hit = false;
+      double maxBottom = y;
       for (final b in st.blocks) {
-        if (b.bbox.intersects(_BBox(x: x, y: y, w: b.bbox.w, h: h))) { y = b.bbox.bottom + st.config.gutterY; hit = true; break; }
+        if (b.bbox.intersects(_BBox(x: x, y: y, w: st._columnWidth(), h: h))) {
+          maxBottom = math.max(maxBottom, b.bbox.bottom);
+          hit = true;
+        }
       }
       if (!hit) return y;
+      y = maxBottom + st.config.gutterY;
       if (y > st.config.page.height - st.config.page.bottom) return y;
     }
+  }
+
+  // Remove strokes that are too short overall or have tiny spatial extent.
+  // This keeps generated diagrams minimal by dropping specks/dots.
+  List<List<Offset>> _filterDiagramStrokes(List<List<Offset>> strokes, {double minLength = 24.0, double minExtent = 8.0}) {
+    final out = <List<Offset>>[];
+    for (final s in strokes) {
+      if (s.length < 2) continue;
+      double len = 0.0;
+      double minX = s.first.dx, maxX = s.first.dx, minY = s.first.dy, maxY = s.first.dy;
+      for (int i = 1; i < s.length; i++) {
+        len += (s[i] - s[i - 1]).distance;
+        final px = s[i].dx, py = s[i].dy;
+        if (px < minX) minX = px; if (px > maxX) maxX = px;
+        if (py < minY) minY = py; if (py > maxY) maxY = py;
+      }
+      final extent = math.max(maxX - minX, maxY - minY);
+      if (len >= minLength && extent >= minExtent) out.add(s);
+    }
+    return out;
   }
 
   // Simple post-process to connect stroke endpoints that are very close,
@@ -938,7 +1235,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                   passes: _passes,
                   jitterAmp: _jitterAmp,
                   jitterFreq: _jitterFreq,
-                  showRasterUnderlay: _showRasterUnder,
+                  showRasterUnderlay: _planUnderlay ? _showRasterUnder : false,
                   raster: _raster,
                 ));
       return Stack(children: [
@@ -1076,6 +1373,33 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
               ),
             ),
           ]),
+          const Divider(height: 24),
+          Text('Planner Limits', style: t.textTheme.titleLarge),
+          const SizedBox(height: 8),
+          _slider('Max items per plan', 1, 5, _plMaxItems, (v) => setState(() => _plMaxItems = v), divisions: 4, display: (v) => v.toStringAsFixed(0)),
+          _slider('Max sentences per item', 1, 3, _plMaxSentences, (v) => setState(() => _plMaxSentences = v), divisions: 2, display: (v) => v.toStringAsFixed(0)),
+          _slider('Max words per sentence', 4, 16, _plMaxWords, (v) => setState(() => _plMaxWords = v), divisions: 12, display: (v) => v.toStringAsFixed(0)),
+          const Divider(height: 24),
+          Text('Tutor Draw Overrides', style: t.textTheme.titleLarge),
+          const SizedBox(height: 8),
+          SwitchListTile(
+            value: _tutorUseSpeed,
+            onChanged: (v) => setState(() => _tutorUseSpeed = v),
+            title: const Text('Override draw speed for tutor'),
+            dense: true,
+          ),
+          _slider('Tutor total time (s)', 5, 120, _tutorSeconds, (v) => setState(() => _tutorSeconds = v), divisions: 23, display: (v) => '${v.toStringAsFixed(0)}s'),
+          SwitchListTile(
+            value: _tutorUseFixedFont,
+            onChanged: (v) => setState(() => _tutorUseFixedFont = v),
+            title: const Text('Use fixed font size for tutor'),
+            dense: true,
+          ),
+          if (_tutorUseFixedFont)
+            _slider('Tutor fixed font (px)', 36, 120, _tutorFixedFont, (v) => setState(() => _tutorFixedFont = v < _tutorMinFont ? _tutorMinFont : v), divisions: 84, display: (v) => v.toStringAsFixed(0))
+          else
+            _slider('Tutor font scale', 0.5, 2.0, _tutorFontScale, (v) => setState(() => _tutorFontScale = double.parse(v.toStringAsFixed(2)))),
+          _slider('Tutor min font (px, hard floor)', 36, 120, _tutorMinFont, (v) => setState(() => _tutorMinFont = v), divisions: 84, display: (v) => v.toStringAsFixed(0)),
           const Divider(height: 24),
           Text('Centerline (Body Text)', style: t.textTheme.titleLarge),
           const SizedBox(height: 8),
@@ -1297,6 +1621,22 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
             ],
           ),
           const Divider(height: 24),
+          Text('Diagram (gpt-image-1)', style: t.textTheme.titleLarge),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _diagramCtrl,
+            decoration: const InputDecoration(labelText: 'Describe image (prompt)'),
+          ),
+          Row(children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _busy ? null : _fetchAndSketchDiagram,
+                icon: const Icon(Icons.image_outlined),
+                label: const Text('Sketch Diagram'),
+              ),
+            ),
+          ]),
+          const Divider(height: 24),
 
           Text('Vectorization', style: t.textTheme.titleLarge),
           const SizedBox(height: 8),
@@ -1440,6 +1780,12 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
             value: _showRasterUnder,
             onChanged: (v) => setState(() => _showRasterUnder = v),
             title: const Text('Show raster under sketch'),
+            dense: true,
+          ),
+          SwitchListTile(
+            value: _debugAllowUnderDiagrams,
+            onChanged: (v) => setState(() => _debugAllowUnderDiagrams = v),
+            title: const Text('Debug: show raster under auto diagrams'),
             dense: true,
           ),
         ],

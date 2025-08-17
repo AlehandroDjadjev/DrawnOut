@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import CustomUser, ProfilePictures
+from .models import CustomUser, ProfilePicture
 
 admin.site.register(CustomUser)
-admin.site.register(ProfilePictures)
+admin.site.register(ProfilePicture)
