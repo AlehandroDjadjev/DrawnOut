@@ -2,6 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions, generics
 from django.shortcuts import get_object_or_404
+from users.models import CustomUser
 
 from .models import LessonSession, Utterance, Lesson
 from .serializers import LessonSessionSerializer, UtteranceSerializer, LessonSerializer
@@ -55,6 +56,7 @@ class NextSegmentView(APIView):
     def post(self, request, session_id: int):
         engine = TutorEngine()
         session = get_object_or_404(LessonSession, pk=session_id)
+        user = request.user
 
         if session.is_completed:
             return Response({"detail": "Lesson already completed."}, status=status.HTTP_400_BAD_REQUEST)
@@ -75,6 +77,7 @@ class NextSegmentView(APIView):
         # If this is the last step, mark completed after speaking
         if session.current_step_index >= len(session.lesson_plan) - 1:
             session.is_completed = True
+            user.credits += 10
             session.is_waiting_for_question = False
         else:
             # Frontend controls raise-hand; keep waiting flag false
