@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:flutter_dotenv/flutter_dotenv.dart'; // ✅ import dotenv
+import 'package:shared_preferences/shared_preferences.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({Key? key}) : super(key: key);
@@ -16,7 +18,8 @@ class _LoginPageState extends State<LoginPage> {
   String? _errorMessage;
   bool _isLoading = false;
 
-  String baseUrl = 'http://192.168.7.7:8000/api/auth/';
+  // ✅ Use API_URL from .env instead of hardcoding
+  final String baseUrl = "${dotenv.env['API_URL']}/api/auth/";
 
   void _login() async {
     if (!_formKey.currentState!.validate()) return;
@@ -36,6 +39,8 @@ class _LoginPageState extends State<LoginPage> {
       final data = jsonDecode(response.body);
 
       if (response.statusCode == 200) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('token', data['access']);
         Navigator.pushReplacementNamed(context, '/home');
       } else {
         setState(() {
