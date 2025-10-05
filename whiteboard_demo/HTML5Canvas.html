@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Universal Canvas Drawing Engine</title>
+<style>
+  body { display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+  canvas { border: 1px solid #ccc; background: white; }
+</style>
+</head>
+<body>
+
+<canvas id="myCanvas" width="600" height="400"></canvas>
+
+<script>
+  const canvas = document.getElementById('myCanvas');
+const ctx = canvas.getContext('2d');
+
+// Helper: Convert degrees to radians
+function degToRad(deg) {
+  return deg * Math.PI / 180;
+}
+
+// Draw polygon helper
+function drawPolygon(points) {
+  if (!points || points.length < 3) return;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
+  ctx.closePath();
+}
+
+// Main function: Draw commands array on canvas
+function drawCommands(commands) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  for (const cmd of commands) {
+    // Set styles (if provided)
+    ctx.strokeStyle = cmd.strokeColor || 'black';
+    ctx.fillStyle = cmd.fillColor || 'transparent';
+    ctx.lineWidth = cmd.lineWidth || 2;
+    ctx.font = cmd.font || '16px Arial';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+
+    switch (cmd.type) {
+      case 'triangle':
+        if (!cmd.points || cmd.points.length !== 3) break;
+        ctx.beginPath();
+        ctx.moveTo(cmd.points[0].x, cmd.points[0].y);
+        ctx.lineTo(cmd.points[1].x, cmd.points[1].y);
+        ctx.lineTo(cmd.points[2].x, cmd.points[2].y);
+        ctx.closePath();
+        if (cmd.fillColor && cmd.fillColor !== 'transparent') ctx.fill();
+        ctx.stroke();
+        break;
+
+      case 'line':
+        if (!cmd.from || !cmd.to) break;
+        ctx.beginPath();
+        ctx.moveTo(cmd.from.x, cmd.from.y);
+        ctx.lineTo(cmd.to.x, cmd.to.y);
+        ctx.stroke();
+        break;
+
+      case 'circle':
+        if (!cmd.center || typeof cmd.radius !== 'number') break;
+        ctx.beginPath();
+        ctx.arc(cmd.center.x, cmd.center.y, cmd.radius, 0, 2 * Math.PI);
+        if (cmd.fillColor && cmd.fillColor !== 'transparent') ctx.fill();
+        ctx.stroke();
+        break;
+
+      case 'arc':
+        if (!cmd.center || typeof cmd.radius !== 'number' || typeof cmd.startAngle !== 'number' || typeof cmd.endAngle !== 'number') break;
+        ctx.beginPath();
+        ctx.arc(
+          cmd.center.x,
+          cmd.center.y,
+          cmd.radius,
+          degToRad(cmd.startAngle),
+          degToRad(cmd.endAngle),
+          cmd.counterClockwise || false
+        );
+        if (cmd.fillColor && cmd.fillColor !== 'transparent') ctx.fill();
+        ctx.stroke();
+        break;
+
+      case 'rect':
+        if (!cmd.position || typeof cmd.width !== 'number' || typeof cmd.height !== 'number') break;
+        if (cmd.fillColor && cmd.fillColor !== 'transparent') {
+          ctx.fillRect(cmd.position.x, cmd.position.y, cmd.width, cmd.height);
+        }
+        ctx.strokeRect(cmd.position.x, cmd.position.y, cmd.width, cmd.height);
+        break;
+
+      case 'ellipse':
+        // Ellipse drawing with optional rotation
+        if (!cmd.center || typeof cmd.radiusX !== 'number' || typeof cmd.radiusY !== 'number') break;
+        ctx.beginPath();
+        ctx.ellipse(
+          cmd.center.x,
+          cmd.center.y,
+          cmd.radiusX,
+          cmd.radiusY,
+          cmd.rotation ? degToRad(cmd.rotation) : 0,
+          0,
+          2 * Math.PI
+        );
+        if (cmd.fillColor && cmd.fillColor !== 'transparent') ctx.fill();
+        ctx.stroke();
+        break;
+
+      case 'polygon':
+        // Polygon with arbitrary points array
+        if (!cmd.points || cmd.points.length < 3) break;
+        drawPolygon(cmd.points);
+        if (cmd.fillColor && cmd.fillColor !== 'transparent') ctx.fill();
+        ctx.stroke();
+        break;
+
+      case 'text':
+        if (!cmd.position || typeof cmd.content !== 'string') break;
+        ctx.fillStyle = cmd.fillColor || 'black';
+        ctx.fillText(cmd.content, cmd.position.x, cmd.position.y);
+        break;
+
+      case 'symbol':
+        // Draw a single symbol or letter; supports Unicode characters
+        if (!cmd.position || typeof cmd.symbol !== 'string') break;
+        ctx.fillStyle = cmd.fillColor || 'black';
+        ctx.font = cmd.font || '32px serif';  // bigger default font for symbols
+        ctx.fillText(cmd.symbol, cmd.position.x, cmd.position.y);
+        break;
+
+      default:
+        console.warn('Unknown command type:', cmd.type);
+    }
+  }
+}
