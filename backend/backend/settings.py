@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     'lessons',
     'rest_framework',
     'rest_framework_simplejwt.token_blacklist',
+    'imagePrinting',
 ]
 
 MIDDLEWARE = [
@@ -148,7 +149,13 @@ USE_TZ = True
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+
+# Add this to include your app's static directory
+STATICFILES_DIRS = [
+    BASE_DIR / 'imagePrinting' / 'static',
+    # Add other static directories here if needed
+]
 
 # Media configuration (fixed)
 MEDIA_URL = '/media/'

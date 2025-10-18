@@ -1,3 +1,14 @@
+daphne
+channels
+djangorestframework
+djangorestframework-simplejwt
+django-cors-headers
+python-dotenv
+openai
+requests
+pinecone-client
+google-cloud-storage
+Pillow
 annotated-types==0.7.0
 anyio==4.10.0
 asgiref==3.9.1

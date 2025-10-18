@@ -1,8 +1,8 @@
 import json
 from django.shortcuts import render
 from django.http import JsonResponse, HttpResponseBadRequest
-from .openai_client import analyze_lesson_plan
-from .web_search import search_image_by_keywords
+from .openai_Client import analyze_lesson_plan
+from .web_Search import search_image_by_keywords
 
 def index(request):
     # Render the main page with the canvas and lesson plan input
@@ -21,14 +21,24 @@ def analyze_plan(request):
         # Call OpenAI to analyze the lesson plan
         analysis = analyze_lesson_plan(lesson_plan)
 
-        # Call Bing API with keywords to get image URL
+        # Call Bing API with keywords to get image URL and info
         image_result = search_image_by_keywords(analysis.get("keywords", []))
         image_url = image_result.get("image_url")
+        image_attribution = image_result.get("attribution", "")
+        image_name = image_result.get("name", "")
 
-        # Prepare response with image URL and canvas text instructions
+        # Insert the found image URL into the first image command, if present
+        canvas_commands = analysis.get("canvas_commands", [])
+        for cmd in canvas_commands:
+            if cmd.get("type") == "image" and cmd.get("url") == "":
+                cmd["url"] = image_url
+                cmd["attribution"] = image_attribution
+                cmd["name"] = image_name
+
         response_data = {
-            "image_url": image_url,
-            "canvas_text": analysis.get("canvas_text", [])
+            "image_description": analysis.get("image_description", ""),
+            "keywords": analysis.get("keywords", []),
+            "canvas_commands": canvas_commands
         }
 
         return JsonResponse(response_data)

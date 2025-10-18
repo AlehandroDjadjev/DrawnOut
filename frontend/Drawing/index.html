@@ -1,16 +1,30 @@
+{% load static %}
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8" />
-  <title>Whiteboard AI Drawing</title>
-  <link rel="stylesheet" href="style.css" />
+    <title>DrawnOut Whiteboard</title>
+    <script src="{% static 'imagePrinting/draw.js' %}"></script>
 </head>
 <body>
-
-  <input id="userInput" type="text" placeholder="Describe what to draw..." />
-  <button id="drawBtn">Draw</button>
-  <canvas id="myCanvas" width="800" height="600"></canvas>
-
-  <script src="../backend/imagePrinting/script.js"></script>
+    <h1>DrawnOut Whiteboard</h1>
+    <textarea id="lessonPlan" rows="6" cols="60" placeholder="Paste lesson plan here..."></textarea><br>
+    <button id="analyzeBtn">Analyze & Draw</button>
+    <div id="imageDescription"></div>
+    <canvas id="myCanvas" width="800" height="600" style="border:1px solid #ccc;"></canvas>
+    <script>
+        document.getElementById('analyzeBtn').onclick = async function() {
+            const lessonPlan = document.getElementById('lessonPlan').value;
+            const response = await fetch("{% url 'analyze_plan' %}", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({lesson_plan: lessonPlan})
+            });
+            const data = await response.json();
+            if (data.canvas_commands) {
+                drawCommands(data.canvas_commands);
+            }
+            document.getElementById('imageDescription').innerText = data.image_description || '';
+        };
+    </script>
 </body>
 </html>

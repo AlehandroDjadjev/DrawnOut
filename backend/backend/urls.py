@@ -19,8 +19,13 @@ from django.urls import path, include
 from django.views.generic import TemplateView
 from django.conf import settings
 from django.conf.urls.static import static
+from django.urls import path, include
+from imagePrinting import views
+
 
 urlpatterns = [
+    path('', views.index, name='index'),
+    path('analyze_plan/', views.analyze_plan, name='analyze_plan'),
     path('admin/', admin.site.urls),
     path('api/auth/', include('users.urls')),
     path('api/lessons/', include('lessons.urls')),
