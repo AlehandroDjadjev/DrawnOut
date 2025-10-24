@@ -3,6 +3,11 @@
 # Ignore everything by default
 *
 
+# Virtual environments
+env/
+venv/
+.venv/
+
 # But keep this file and directories so exceptions below can match
 !.gitignore
 !*/
