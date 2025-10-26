@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'profile_page.dart';
-import 'lesson_page.dart'; // Make sure this exists
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -122,10 +121,10 @@ class _HomePageState extends State<HomePage> {
                           ),
                         ),
                         onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (context) => const LessonPage()),
+                          // ❌ LessonPage removed, just show a snackbar as placeholder
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                                content: Text('LessonPage not available')),
                           );
                         },
                         icon: const Icon(Icons.play_arrow),
