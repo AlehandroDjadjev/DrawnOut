@@ -56,3 +56,5 @@ typing_extensions==4.14.1
 tzdata==2025.2
 uritemplate==4.2.0
 urllib3==2.5.0
+pydub==0.25.1
+mutagen==1.47.0

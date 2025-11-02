@@ -13,6 +13,9 @@ import 'assistant_audio.dart';
 import 'sdk_live_bridge.dart';
 import 'planner.dart';
 import 'package:http/http.dart' as http;
+import 'models/timeline.dart';
+import 'services/timeline_api.dart';
+import 'controllers/timeline_playback_controller.dart';
 
 void main() => runApp(const App());
 
@@ -440,6 +443,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   bool _inLive = false;
   bool _wantLive = false;
   Timer? _autoNextTimer;
+  // Timeline playback (synchronized speech-drawing)
+  TimelinePlaybackController? _timelineController;
+  TimelineApiClient? _timelineApi;
   // Orchestrator
   final _actionsCtrl = TextEditingController(text: '{\n  "whiteboard_actions": [\n    { "type": "heading", "text": "Sample Topic" },\n    { "type": "bullet", "level": 1, "text": "Key idea one" },\n    { "type": "bullet", "level": 1, "text": "Key idea two" }\n  ]\n}');
 
@@ -482,6 +488,20 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   @override
   void initState() {
     super.initState();
+    
+    // Initialize timeline controller
+    _timelineController = TimelinePlaybackController();
+    _timelineController!.onDrawingActionsTriggered = (actions) async {
+      await _handleSyncedDrawingActions(actions);
+    };
+    _timelineController!.onSegmentChanged = (index) {
+      debugPrint('📍 Segment $index started');
+    };
+    _timelineController!.onTimelineCompleted = () {
+      debugPrint('✅ Timeline completed!');
+      _showError('Lesson completed!');
+    };
+    
     // Mirror index.html end-of-segment behavior
     setAssistantOnQueueEmpty(() async {
       // If user pressed Raise Hand, start SDK live when the current segment ends
@@ -810,9 +830,14 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         maxSentencesPerItem: _plMaxSentences.round(),
         maxWordsPerSentence: _plMaxWords.round(),
       );
-      if (plan == null) return;
+      if (plan == null) {
+        debugPrint('⚠️ PLANNER RETURNED NULL - no whiteboard actions generated');
+        return;
+      }
+      debugPrint('✅ Planner returned: $plan');
       // Use the draw-JSON feature directly (paste equivalent) by feeding actions into our drawer
       final actions = (plan['whiteboard_actions'] as List?) ?? const [];
+      debugPrint('📝 Drawing ${actions.length} actions');
       // ensure we move below any previous content before drawing a new segment
       if (_layout != null && _layout!.blocks.isNotEmpty) {
         final maxBottom = _layout!.blocks.map((b) => b.bbox.bottom).fold<double>(0.0, (a, b) => a > b ? a : b);
@@ -825,9 +850,136 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       try {
         final prompt = _diagramPromptFromPlanOrTopic(plan, sessionData);
         _startDiagramPipeline(prompt, seconds);
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('⚠️ Diagram pipeline error: $e');
+      }
       await _handleWhiteboardActions(actions, fontScale: fs, overrideSeconds: seconds);
-    } catch (_) {}
+      debugPrint('✅ Finished drawing actions');
+    } catch (e, st) {
+      debugPrint('❌ ERROR in _runPlannerAndRender: $e');
+      debugPrint('Stack: $st');
+    }
+  }
+
+  // ========== Synchronized Timeline Methods ==========
+  
+  Future<void> _startSynchronizedLesson() async {
+    setState(() { _busy = true; });
+    
+    try {
+      debugPrint('🎬 Starting synchronized lesson...');
+      
+      // Initialize APIs
+      final baseUrl = _apiUrlCtrl.text.trim().isEmpty ? 'http://localhost:8000' : _apiUrlCtrl.text.trim();
+      _api = AssistantApiClient(baseUrl);
+      _timelineApi = TimelineApiClient(baseUrl);
+      _timelineController!.setBaseUrl(baseUrl);
+      
+      // 1. Start lesson session
+      final data = await _api!.startLesson(topic: 'Pythagorean Theorem');
+      _sessionId = data['id'] as int?;
+      debugPrint('✅ Session created: $_sessionId');
+      
+      // 2. Generate timeline
+      debugPrint('⏱️ Generating timeline... (this may take 30-60 seconds)');
+      final timeline = await _timelineApi!.generateTimeline(_sessionId!, durationTarget: 60.0);
+      debugPrint('✅ Timeline generated: ${timeline.segments.length} segments, ${timeline.totalDuration}s');
+      
+      // 3. Load timeline into controller
+      await _timelineController!.loadTimeline(timeline);
+      
+      // 4. Clear busy BEFORE starting playback so animations can render!
+      setState(() { _busy = false; });
+      
+      // 5. Start playback
+      debugPrint('▶️ Starting synchronized playback...');
+      await _timelineController!.play();
+      
+    } catch (e, st) {
+      debugPrint('❌ Synchronized lesson error: $e\n$st');
+      _showError('Error: $e');
+      setState(() { _busy = false; });
+    }
+  }
+  
+  Future<void> _handleSyncedDrawingActions(List<DrawingAction> actions) async {
+    if (actions.isEmpty) {
+      debugPrint('💬 Explanatory segment - no drawing');
+      return;
+    }
+    
+    try {
+      await _ensureLayout();
+      
+      final whiteboardActions = actions.map((action) => {
+        'type': action.type,
+        'text': action.text,
+        if (action.level != null) 'level': action.level,
+        if (action.style != null) 'style': action.style,
+      }).toList();
+      
+      // Drawing duration: MUCH SLOWER - match dictation pace for formulas
+      final segment = _timelineController?.currentSegment;
+      final totalChars = whiteboardActions.fold<int>(0, (sum, a) => sum + (a['text'] as String).length);
+      
+      // Detect formula/dictation segments: short board text with longer speech
+      final isDictationSegment = segment != null && 
+                                  segment.actualAudioDuration > 5.0 && 
+                                  totalChars < 50;
+      
+      final drawDuration = isDictationSegment
+          ? (segment!.actualAudioDuration * 0.85).clamp(6.0, 25.0)  // SLOW: match dictation pace
+          : totalChars < 10 
+              ? 5.0    // Even short words take 5s
+              : totalChars < 20
+                  ? 7.0    // Medium takes 7s
+                  : totalChars < 40
+                      ? 10.0   // Formulas take 10s
+                      : totalChars < 80
+                          ? 14.0   // Lists take 14s
+                          : 18.0;  // Very long takes 18s
+      
+      debugPrint('✍️ Drawing "${whiteboardActions.map((a) => a['text']).join(', ')}" over ${drawDuration}s');
+      
+      // Generate strokes
+      final accum = <List<Offset>>[];
+      for (final action in whiteboardActions) {
+        await _placeBlock(
+          _layout!,
+          type: action['type'] as String,
+          text: action['text'] as String,
+          level: (action['level'] as int?) ?? 1,
+          style: action['style'] as Map<String, dynamic>?,
+          accum: accum,
+          fontScale: _tutorFontScale,
+        );
+      }
+      
+      if (accum.isEmpty) {
+        debugPrint('⚠️ No strokes generated');
+        return;
+      }
+      
+      // Set plan and animate
+      setState(() {
+        _seconds = drawDuration;
+        _planUnderlay = false;
+        _plan = StrokePlan(accum);
+        _currentAnimEnd = DateTime.now().add(Duration(milliseconds: (drawDuration * 1000).round()));
+      });
+      
+      // Wait for animation
+      await Future.delayed(Duration(milliseconds: (drawDuration * 1000 * 0.95).round()));
+      
+      // Commit to board
+      if (_plan != null) {
+        _commitCurrentSketch();
+        debugPrint('✅ Committed to board (total: ${_board.length})');
+      }
+      
+    } catch (e, st) {
+      debugPrint('❌ Drawing error: $e');
+    }
   }
 
   String _diagramPromptFromPlanOrTopic(Map<String, dynamic> plan, Map<String, dynamic> sessionData) {
@@ -1223,6 +1375,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     Widget _buildCanvas(Size size) {
       // update layout page size to reflect live canvas
       _maybeUpdateCanvasSize(size);
+      
       final baseCanvas = _busy
           ? const Center(child: CircularProgressIndicator())
           : (_plan == null
@@ -1238,6 +1391,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                   showRasterUnderlay: _planUnderlay ? _showRasterUnder : false,
                   raster: _raster,
                 ));
+      
       return Stack(children: [
         Positioned.fill(child: baseCanvas),
         if (_board.isNotEmpty)
@@ -1466,25 +1620,46 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
             decoration: const InputDecoration(labelText: 'Backend URL (e.g. http://localhost:8000)'),
           ),
           const SizedBox(height: 8),
+          // NEW: Synchronized Timeline Lesson
+          Row(children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _busy ? null : _startSynchronizedLesson,
+                icon: const Icon(Icons.sync),
+                label: const Text('🎯 SYNCHRONIZED Lesson'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green.shade700,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 8),
           Row(children: [
             Expanded(
               child: ElevatedButton.icon(
                 onPressed: _busy ? null : () async {
                   setState(() { _busy = true; });
                   try {
+                    debugPrint('🎬 Starting lesson...');
                     _api = AssistantApiClient(_apiUrlCtrl.text.trim());
                     setAssistantAudioBaseUrl(_apiUrlCtrl.text.trim());
                     final data = await _api!.startLesson(topic: 'Handwriting practice');
+                    debugPrint('✅ Got session data: $data');
                     _sessionId = data['id'] as int?;
+                    debugPrint('📢 Enqueueing audio...');
                     enqueueAssistantAudioFromSession(data);
+                    debugPrint('🎨 Running planner and render...');
                     await _runPlannerAndRender(data);
                     setState(() { _inLive = false; _wantLive = false; });
-                  } catch (e) {
+                  } catch (e, st) {
+                    debugPrint('❌ Start lesson error: $e');
+                    debugPrint('Stack: $st');
                     _showError(e.toString());
                   } finally { setState(() { _busy = false; }); }
                 },
                 icon: const Icon(Icons.play_circle),
-                label: const Text('Start Lesson'),
+                label: const Text('Start Lesson (Old)'),
               ),
             ),
             const SizedBox(width: 8),

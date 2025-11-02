@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'channels',
     'users',
     'lessons',
+    'timeline_generator',
     'rest_framework',
     'rest_framework_simplejwt.token_blacklist',
     'imagePrinting',
