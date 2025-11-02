@@ -1,6 +1,6 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .views import RegisterView, ProfileView, SetCurrentPFPView, BuyProfilePictureView, ProfilePictureListView
+from .views import RegisterView, ProfileView, SetCurrentPFPView, BuyProfilePictureView, ProfilePictureListView, UpdateUsernameView
 from django.views.decorators.csrf import csrf_exempt
 
 urlpatterns = [
@@ -11,4 +11,5 @@ urlpatterns = [
     path('profile-pictures/', ProfilePictureListView.as_view(), name='profile_pictures_list'),
     path('profile-pictures/buy/<int:picture_id>/', BuyProfilePictureView.as_view(), name='buy_profile_picture'),
     path('profile-pictures/set/<int:picture_id>/', SetCurrentPFPView.as_view(), name='set_current_pfp'),
+    path('update_username/', UpdateUsernameView.as_view(), name='update_username'),
 ]

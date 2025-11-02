@@ -67,3 +67,30 @@ class ProfileView(APIView):
     def get(self, request):
         serializer = CustomUserSerializer(request.user)
         return Response(serializer.data)
+
+class UpdateUsernameView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def put(self, request):
+        user = request.user
+        new_username = request.data.get("username")
+
+        if not new_username:
+            return Response(
+                {"error": "Username is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Ensure the username is not taken
+        if CustomUser.objects.filter(username=new_username).exclude(id=user.id).exists():
+            return Response(
+                {"error": "This username is already taken"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user.username = new_username
+        user.save()
+        return Response(
+            {"message": "Username updated successfully", "username": new_username},
+            status=status.HTTP_200_OK,
+        )

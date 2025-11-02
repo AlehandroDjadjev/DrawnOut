@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart'; // ✅ import dotenv
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:provider/provider.dart';
+import '../main.dart';
+import 'edit_username_page.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -17,7 +20,6 @@ class _ProfilePageState extends State<ProfilePage> {
   bool _isLoading = true;
   String? _errorMessage;
 
-  // ✅ Use .env variable instead of hardcoded IP
   final String baseUrl = "${dotenv.env['API_URL']}/api/";
 
   @override
@@ -44,7 +46,6 @@ class _ProfilePageState extends State<ProfilePage> {
         return;
       }
 
-      // Fetch user profile
       final userResponse = await http.get(
         Uri.parse('${baseUrl}auth/profile/'),
         headers: {
@@ -53,7 +54,6 @@ class _ProfilePageState extends State<ProfilePage> {
         },
       );
 
-      // Fetch lessons
       final lessonsResponse = await http.get(
         Uri.parse('${baseUrl}lessons/list/'),
         headers: {
@@ -84,36 +84,84 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
+  void _navigateToEditUsername() async {
+    if (_userData == null) return;
+    final updated = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) =>
+            EditUsernamePage(currentUsername: _userData!['username']),
+      ),
+    );
+
+    if (updated == true) {
+      _fetchProfile();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Profile'),
-        centerTitle: true,
-      ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _errorMessage != null
-              ? Center(
-                  child: Text(
-                    _errorMessage!,
-                    style: const TextStyle(color: Colors.red, fontSize: 16),
-                  ),
-                )
-              : SingleChildScrollView(
-                  padding: const EdgeInsets.all(24),
-                  child: Card(
-                    elevation: 6,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16)),
-                    child: Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Center(
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final isDarkMode = themeProvider.isDarkMode;
+    final theme = Theme.of(context);
+
+    return _isLoading
+        ? const Center(child: CircularProgressIndicator())
+        : _errorMessage != null
+            ? Center(
+                child: Text(
+                  _errorMessage!,
+                  style: const TextStyle(color: Colors.red, fontSize: 16),
+                ),
+              )
+            : SingleChildScrollView(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                child: Column(
+                  children: [
+                    // 🔹 Gradient header with avatar
+                    Stack(
+                      children: [
+                        Container(
+                          height: 200, // Adjust as needed
+                          width: double.infinity,
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: isDarkMode
+                                  ? const [
+                                      Color(0xFF0F2027),
+                                      Color(0xFF203A43),
+                                      Color(0xFF2C5364),
+                                    ]
+                                  : const [
+                                      Color(0xFF6DD5FA),
+                                      Color(0xFF2980B9),
+                                    ],
+                            ),
+                            borderRadius: const BorderRadius.only(
+                              bottomLeft: Radius.circular(60),
+                              bottomRight: Radius.circular(60),
+                            ),
+                          ),
+                        ),
+                        Align(
+                          alignment: Alignment.bottomCenter,
+                          child: Container(
+                            margin: const EdgeInsets.only(
+                                top: 140), // smaller offset
+                            width: 120,
+                            height: 120,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Colors.white.withOpacity(0.8),
+                                width: 4,
+                              ),
+                            ),
                             child: CircleAvatar(
-                              radius: 50,
+                              radius: 60,
                               backgroundImage: _userData?['pfp'] != null
                                   ? NetworkImage(_userData!['pfp'])
                                   : const AssetImage(
@@ -121,64 +169,92 @@ class _ProfilePageState extends State<ProfilePage> {
                                       as ImageProvider,
                             ),
                           ),
-                          const SizedBox(height: 20),
-                          Center(
-                            child: Text(
-                              _userData?['username'] ?? 'Username',
-                              style: const TextStyle(
-                                  fontSize: 24, fontWeight: FontWeight.bold),
-                            ),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          _userData?['username'] ?? 'Username',
+                          style: theme.textTheme.headlineSmall?.copyWith(
+                            fontWeight: FontWeight.bold,
                           ),
-                          const SizedBox(height: 8),
-                          Center(
-                            child: Text(
-                              _userData?['email'] ?? 'Email',
-                              style: const TextStyle(
-                                  fontSize: 16, color: Colors.grey),
-                            ),
-                          ),
-                          const Divider(height: 32, thickness: 1),
-                          const Text(
-                            'Your Lessons',
-                            style: TextStyle(
-                                fontSize: 20, fontWeight: FontWeight.bold),
-                          ),
-                          const SizedBox(height: 12),
-                          if (_lessons.isEmpty)
-                            const Center(
-                                child: Text(
-                                    'You are not enrolled in any lessons yet.'))
-                          else
-                            ListView.builder(
-                              shrinkWrap: true,
-                              physics: const NeverScrollableScrollPhysics(),
-                              itemCount: _lessons.length,
-                              itemBuilder: (context, index) {
-                                final lesson = _lessons[index];
-                                return Card(
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  margin:
-                                      const EdgeInsets.symmetric(vertical: 6),
-                                  child: ListTile(
-                                    title: Text(lesson['title']),
-                                    subtitle: Text(lesson['description'] ?? ''),
-                                    trailing: const Icon(
-                                        Icons.arrow_forward_ios,
-                                        size: 16),
-                                    onTap: () {
-                                      // Navigate to lesson detail if needed
-                                    },
-                                  ),
-                                );
-                              },
-                            ),
-                        ],
+                        ),
+                        const SizedBox(width: 6),
+                        IconButton(
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          onPressed: _navigateToEditUsername,
+                          icon: const Icon(Icons.edit, size: 20),
+                          tooltip: 'Edit Username',
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      "${_userData?['first_name'] ?? ''} ${_userData?['last_name'] ?? ''}",
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
-                  ),
+                    const SizedBox(height: 6),
+                    Text(
+                      _userData?['email'] ?? 'Email',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: Colors.grey,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    const Divider(),
+                    const SizedBox(height: 8),
+                    Text(
+                      "Your Lessons",
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 12),
+                    if (_lessons.isEmpty)
+                      const Text(
+                        "You are not enrolled in any lessons yet.",
+                        style: TextStyle(fontSize: 16),
+                      )
+                    else
+                      ListView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: _lessons.length,
+                        itemBuilder: (context, index) {
+                          final lesson = _lessons[index];
+                          return Card(
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            margin: const EdgeInsets.symmetric(vertical: 6),
+                            elevation: 3,
+                            shadowColor: Colors.black.withOpacity(0.1),
+                            child: ListTile(
+                              leading: CircleAvatar(
+                                backgroundColor:
+                                    theme.colorScheme.primary.withOpacity(0.1),
+                                child: Icon(Icons.book,
+                                    color: theme.colorScheme.primary),
+                              ),
+                              title: Text(lesson['title']),
+                              subtitle: Text(lesson['description'] ?? ''),
+                              trailing:
+                                  const Icon(Icons.arrow_forward_ios, size: 16),
+                            ),
+                          );
+                        },
+                      ),
+                  ],
                 ),
-    );
+              );
   }
 }
