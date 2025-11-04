@@ -58,3 +58,20 @@ uritemplate==4.2.0
 urllib3==2.5.0
 pydub==0.25.1
 mutagen==1.47.0
+# Image researcher dependencies
+beautifulsoup4==4.14.2
+bs4==0.0.2
+duckduckgo_search==8.1.1
+nltk==3.9.2
+tldextract==5.3.0
+lxml==6.0.2
+# Transformers & PyTorch (pinned versions for SigLIP2)
+torch==2.7.0
+torchvision==0.22.0
+transformers==4.57.1
+tokenizers==0.22.1
+accelerate==1.11.0
+safetensors==0.6.2
+huggingface-hub==1.0.1
+# Lesson pipeline dependencies
+pinecone-client==3.0.0

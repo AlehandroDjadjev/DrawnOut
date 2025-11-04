@@ -16,6 +16,7 @@ import 'package:http/http.dart' as http;
 import 'models/timeline.dart';
 import 'services/timeline_api.dart';
 import 'controllers/timeline_playback_controller.dart';
+import 'services/lesson_pipeline_api.dart';
 
 void main() => runApp(const App());
 
@@ -861,6 +862,169 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     }
   }
 
+  // ========== Lesson Pipeline Methods ==========
+  
+  Future<void> _startLessonPipeline() async {
+    setState(() { _busy = true; });
+    
+    try {
+      debugPrint('🎨 Starting AI Lesson Pipeline with Images...');
+      
+      final baseUrl = _apiUrlCtrl.text.trim().isEmpty ? 'http://localhost:8000' : _apiUrlCtrl.text.trim();
+      final pipelineApi = LessonPipelineApi(baseUrl: baseUrl);
+      
+      // Show progress dialog
+      if (mounted) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => const AlertDialog(
+            title: Text('🎨 Generating AI Lesson'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('This may take 60-150 seconds...'),
+                SizedBox(height: 8),
+                Text('1. Researching images (30-60s)', style: TextStyle(fontSize: 12)),
+                Text('2. Generating script (10-30s)', style: TextStyle(fontSize: 12)),
+                Text('3. Matching images (5-10s)', style: TextStyle(fontSize: 12)),
+                Text('4. Transforming images (30-90s)', style: TextStyle(fontSize: 12)),
+              ],
+            ),
+          ),
+        );
+      }
+      
+      // Generate lesson
+      final lesson = await pipelineApi.generateLesson(
+        prompt: 'Explain the Pythagorean theorem',
+        subject: 'Maths',
+        durationTarget: 60.0,
+      );
+      
+      // Close progress dialog
+      if (mounted) Navigator.of(context).pop();
+      
+      debugPrint('✅ Lesson generated: ${lesson.images.length} images, topic: ${lesson.topicId}');
+      
+      // Display lesson content with actual images
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('✅ Lesson Generated!'),
+            content: SizedBox(
+              width: 600,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Images: ${lesson.images.length}'),
+                    Text('Indexed: ${lesson.indexedImageCount}'),
+                    const SizedBox(height: 16),
+                    const Text('Content Preview:', style: TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 4),
+                    Text(
+                      lesson.content.substring(0, math.min(300, lesson.content.length)) + '...',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text('Generated Images:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const SizedBox(height: 8),
+                    ...lesson.images.map((img) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            img.tag.prompt,
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                          ),
+                          if (img.tag.style != null)
+                            Text(
+                              'Style: ${img.tag.style}',
+                              style: const TextStyle(fontSize: 11, color: Colors.grey),
+                            ),
+                          const SizedBox(height: 8),
+                          // Display actual image
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: Image.network(
+                              img.finalImageUrl,
+                              height: 200,
+                              width: double.infinity,
+                              fit: BoxFit.cover,
+                              loadingBuilder: (context, child, loadingProgress) {
+                                if (loadingProgress == null) return child;
+                                return Container(
+                                  height: 200,
+                                  alignment: Alignment.center,
+                                  child: CircularProgressIndicator(
+                                    value: loadingProgress.expectedTotalBytes != null
+                                        ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!
+                                        : null,
+                                  ),
+                                );
+                              },
+                              errorBuilder: (context, error, stackTrace) {
+                                return Container(
+                                  height: 200,
+                                  color: Colors.grey[300],
+                                  alignment: Alignment.center,
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      const Icon(Icons.error_outline, color: Colors.red, size: 40),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        'Failed to load image',
+                                        style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      SelectableText(
+                                        img.finalImageUrl,
+                                        style: TextStyle(fontSize: 10, color: Colors.blue[700]),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                          const Divider(height: 16),
+                        ],
+                      ),
+                    )),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Close'),
+              ),
+            ],
+          ),
+        );
+      }
+      
+      setState(() { _busy = false; });
+      
+    } catch (e, st) {
+      debugPrint('❌ Lesson pipeline error: $e\n$st');
+      if (mounted) {
+        // Close progress dialog if open
+        try { Navigator.of(context).pop(); } catch (_) {}
+        _showError('Error: $e');
+      }
+      setState(() { _busy = false; });
+    }
+  }
+  
   // ========== Synchronized Timeline Methods ==========
   
   Future<void> _startSynchronizedLesson() async {
@@ -1620,7 +1784,22 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
             decoration: const InputDecoration(labelText: 'Backend URL (e.g. http://localhost:8000)'),
           ),
           const SizedBox(height: 8),
-          // NEW: Synchronized Timeline Lesson
+          // NEW: Lesson Pipeline with Intelligent Images
+          Row(children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _busy ? null : _startLessonPipeline,
+                icon: const Icon(Icons.auto_awesome),
+                label: const Text('🎨 AI LESSON with Images'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.purple.shade700,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 8),
+          // Synchronized Timeline Lesson
           Row(children: [
             Expanded(
               child: ElevatedButton.icon(
