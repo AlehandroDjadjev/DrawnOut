@@ -78,7 +78,7 @@ class _SignupPageState extends State<SignupPage> {
       duration: const Duration(milliseconds: 400),
       curve: Curves.easeInOut,
       child: Scaffold(
-        backgroundColor: theme.colorScheme.background,
+        backgroundColor: theme.colorScheme.surface,
         body: SafeArea(
           child: Stack(
             children: [

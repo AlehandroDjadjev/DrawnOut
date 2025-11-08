@@ -31,7 +31,7 @@ class Vectorizer {
       throw StateError('No image bytes provided.');
     }
 
-    final u8 = bytes is Uint8List ? bytes as Uint8List : Uint8List.fromList(bytes);
+    final u8 = bytes is Uint8List ? bytes : Uint8List.fromList(bytes);
 
     final src = cv.imdecode(u8, cv.IMREAD_COLOR);
     if (src.cols == 0 || src.rows == 0) {
@@ -54,7 +54,10 @@ class Vectorizer {
       final absd = cv.convertScaleAbs(diff);
       final (_, th) = cv.threshold(absd, dogThresh, 255, cv.THRESH_BINARY);
       edge = th;
-      g1.dispose(); g2.dispose(); diff.dispose(); absd.dispose();
+      g1.dispose();
+      g2.dispose();
+      diff.dispose();
+      absd.dispose();
     } else {
       edge = cv.canny(blur, cannyLo, cannyHi);
     }
@@ -75,7 +78,8 @@ class Vectorizer {
       if (polyImg.length < 2) continue;
 
       var polyWorld = polyImg
-          .map((p) => Offset((p.dx - cx) * worldScale, (p.dy - cy) * worldScale))
+          .map(
+              (p) => Offset((p.dx - cx) * worldScale, (p.dy - cy) * worldScale))
           .toList();
 
       if (smoothPasses > 0) {
@@ -99,9 +103,7 @@ class Vectorizer {
 
     final merged = mergeParallel
         ? _mergeParallelStrokes(rawStrokes,
-            maxDist: mergeMaxDist,
-            maxAngleDiffDeg: 12.0,
-            minOverlapFrac: 0.45)
+            maxDist: mergeMaxDist, maxAngleDiffDeg: 12.0, minOverlapFrac: 0.45)
         : rawStrokes;
 
     merged.sort((a, b) {
@@ -113,13 +115,16 @@ class Vectorizer {
     });
     final ordered = _orderGreedy(merged);
 
-    src.dispose(); gray.dispose(); blur.dispose(); edge.dispose();
+    src.dispose();
+    gray.dispose();
+    blur.dispose();
+    edge.dispose();
 
     return ordered;
   }
 
   static List<Offset> _resampleCv(cv.VecPoint pts, {required double spacing}) {
-    if (pts.length == 0) return const [];
+    if (pts.isEmpty) return const [];
     final out = <Offset>[];
     Offset prev = Offset(pts[0].x.toDouble(), pts[0].y.toDouble());
     out.add(prev);
@@ -220,7 +225,9 @@ class Vectorizer {
 
   static double _polyLen(List<Offset> s) {
     double L = 0.0;
-    for (int i = 1; i < s.length; i++) L += (s[i] - s[i - 1]).distance;
+    for (int i = 1; i < s.length; i++) {
+      L += (s[i] - s[i - 1]).distance;
+    }
     return L;
   }
 
@@ -256,11 +263,14 @@ class Vectorizer {
         final ang = _angleBetween(da, db);
         if (ang > maxAngle && (math.pi - ang) > maxAngle) continue;
 
-        final distFF = (a.first - b.first).distance + (a.last - b.last).distance;
-        final distFR = (a.first - b.last).distance + (a.last - b.first).distance;
+        final distFF =
+            (a.first - b.first).distance + (a.last - b.last).distance;
+        final distFR =
+            (a.first - b.last).distance + (a.last - b.first).distance;
         final bAligned = (distFR < distFF) ? b.reversed.toList() : b;
 
-        final (avgDist, overlapFrac) = _avgAlignedDistance(a, bAligned, samples: 32);
+        final (avgDist, overlapFrac) =
+            _avgAlignedDistance(a, bAligned, samples: 32);
         if (avgDist <= maxDist && overlapFrac >= minOverlapFrac) {
           final merged = _averageCenterline(a, bAligned, samples: 64);
           a = merged;
@@ -271,15 +281,17 @@ class Vectorizer {
 
       out.add(a);
       used[i] = true;
-      if (mergedAny) {
-      }
+      if (mergedAny) {}
     }
 
     return out;
   }
 
   static Rect _bounds(List<Offset> s) {
-    double minx = double.infinity, miny = double.infinity, maxx = -double.infinity, maxy = -double.infinity;
+    double minx = double.infinity,
+        miny = double.infinity,
+        maxx = -double.infinity,
+        maxy = -double.infinity;
     for (final p in s) {
       if (p.dx < minx) minx = p.dx;
       if (p.dy < miny) miny = p.dy;
@@ -369,8 +381,16 @@ class Vectorizer {
         final r = remaining[i];
         final dStart = (r.first - end).distance;
         final dEnd = (r.last - end).distance;
-        if (dStart < bestDist) { bestDist = dStart; bestIdx = i; reverse = false; }
-        if (dEnd   < bestDist) { bestDist = dEnd;   bestIdx = i; reverse = true;  }
+        if (dStart < bestDist) {
+          bestDist = dStart;
+          bestIdx = i;
+          reverse = false;
+        }
+        if (dEnd < bestDist) {
+          bestDist = dEnd;
+          bestIdx = i;
+          reverse = true;
+        }
       }
       var next = remaining.removeAt(bestIdx);
       if (reverse) {
@@ -382,6 +402,3 @@ class Vectorizer {
     return result;
   }
 }
-
-
-

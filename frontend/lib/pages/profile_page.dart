@@ -119,11 +119,11 @@ class _ProfilePageState extends State<ProfilePage> {
                     const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
                 child: Column(
                   children: [
-                    // 🔹 Gradient header with avatar
                     Stack(
+                      clipBehavior: Clip.none,
                       children: [
                         Container(
-                          height: 200, // Adjust as needed
+                          height: 220,
                           width: double.infinity,
                           decoration: BoxDecoration(
                             gradient: LinearGradient(
@@ -146,17 +146,15 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                           ),
                         ),
-                        Align(
-                          alignment: Alignment.bottomCenter,
+                        Positioned(
+                          bottom: -60,
+                          left: 0,
+                          right: 0,
                           child: Container(
-                            margin: const EdgeInsets.only(
-                                top: 140), // smaller offset
-                            width: 120,
-                            height: 120,
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
                               border: Border.all(
-                                color: Colors.white.withOpacity(0.8),
+                                color: Colors.white.withOpacity(0.9),
                                 width: 4,
                               ),
                             ),
@@ -172,41 +170,47 @@ class _ProfilePageState extends State<ProfilePage> {
                         ),
                       ],
                     ),
-
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
+                    const SizedBox(height: 70),
+                    // Centered username + name with edit icon moved up
+                    Stack(
+                      clipBehavior: Clip.none,
                       children: [
-                        Text(
-                          _userData?['username'] ?? 'Username',
-                          style: theme.textTheme.headlineSmall?.copyWith(
-                            fontWeight: FontWeight.bold,
+                        Column(
+                          children: [
+                            Text(
+                              _userData?['username'] ?? 'Username',
+                              style: theme.textTheme.headlineSmall
+                                  ?.copyWith(fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              "${_userData?['first_name'] ?? ''} ${_userData?['last_name'] ?? ''}",
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _userData?['email'] ?? 'Email',
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Positioned(
+                          right: -8,
+                          top: -8,
+                          child: IconButton(
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            onPressed: _navigateToEditUsername,
+                            icon: const Icon(Icons.edit, size: 20),
+                            tooltip: 'Edit Username',
                           ),
                         ),
-                        const SizedBox(width: 6),
-                        IconButton(
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                          onPressed: _navigateToEditUsername,
-                          icon: const Icon(Icons.edit, size: 20),
-                          tooltip: 'Edit Username',
-                        ),
                       ],
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      "${_userData?['first_name'] ?? ''} ${_userData?['last_name'] ?? ''}",
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      _userData?['email'] ?? 'Email',
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: Colors.grey,
-                      ),
                     ),
                     const SizedBox(height: 20),
                     const Divider(),

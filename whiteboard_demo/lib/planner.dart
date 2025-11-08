@@ -6,7 +6,8 @@ class WhiteboardPlanner {
 
   final String baseUrl; // e.g., http://127.0.0.1:8000
 
-  String _api(String path) => baseUrl.replaceFirst(RegExp(r'/+$'), '') + '/api' + path;
+  String _api(String path) =>
+      '${baseUrl.replaceFirst(RegExp(r'/+$'), '')}/api$path';
 
   Future<Map<String, dynamic>?> planForSession(
     Map<String, dynamic> sessionData, {
@@ -17,19 +18,25 @@ class WhiteboardPlanner {
     try {
       final token = await _getLiveToken();
       if (token == null || token.isEmpty) return null;
-      final prompt = _buildPrompt(sessionData, maxItems, maxSentencesPerItem, maxWordsPerSentence);
+      final prompt = _buildPrompt(
+          sessionData, maxItems, maxSentencesPerItem, maxWordsPerSentence);
       final text = await _geminiGenerate(token, prompt);
       if (text == null) return null;
       final jsonStr = _extractJson(text);
       if (jsonStr == null) return null;
       final obj = jsonDecode(jsonStr) as Map<String, dynamic>;
       final actions = (obj['whiteboard_actions'] as List?) ?? const [];
-      final sanitized = _sanitizeActions(actions, maxItems, maxSentencesPerItem, maxWordsPerSentence);
+      final sanitized = _sanitizeActions(
+          actions, maxItems, maxSentencesPerItem, maxWordsPerSentence);
       // Extract diagram hint if present
-      final hint = (obj['diagram_hint'] ?? obj['diagram'] ?? obj['image_hint'] ?? '') as Object?;
+      final hint = (obj['diagram_hint'] ??
+          obj['diagram'] ??
+          obj['image_hint'] ??
+          '') as Object?;
       return {
         'whiteboard_actions': sanitized,
-        if (hint is String && hint.trim().isNotEmpty) 'diagram_hint': hint.trim(),
+        if (hint is String && hint.trim().isNotEmpty)
+          'diagram_hint': hint.trim(),
       };
     } catch (_) {
       return null;
@@ -40,16 +47,26 @@ class WhiteboardPlanner {
     final resp = await http.get(Uri.parse(_api('/lessons/token/')));
     if (resp.statusCode ~/ 100 != 2) return null;
     final body = jsonDecode(utf8.decode(resp.bodyBytes));
-    return (body is Map && body['token'] is String) ? body['token'] as String : null;
+    return (body is Map && body['token'] is String)
+        ? body['token'] as String
+        : null;
   }
 
-  String _buildPrompt(Map<String, dynamic> s, int maxItems, int maxSentences, int maxWords) {
+  String _buildPrompt(
+      Map<String, dynamic> s, int maxItems, int maxSentences, int maxWords) {
     final topic = s['topic'] ?? '';
     final uts = (s['utterances'] as List? ?? const [])
         .cast<Map>()
-        .where((u) => (u['role'] == 'tutor') && (u['text'] ?? '').toString().trim().isNotEmpty)
+        .where((u) =>
+            (u['role'] == 'tutor') &&
+            (u['text'] ?? '').toString().trim().isNotEmpty)
         .toList();
-    final lastTexts = uts.reversed.take(8).toList().reversed.map((u) => '- ' + (u['text'] as String)).join('\n');
+    final lastTexts = uts.reversed
+        .take(8)
+        .toList()
+        .reversed
+        .map((u) => '- ${u['text'] as String}')
+        .join('\n');
 
     // Condensed system prompt (from user spec)
     const sys = r'''
@@ -80,20 +97,25 @@ Additionally, decide whether a single simple diagram would help. If YES, include
         .replaceAll('MAX_WORDS', maxWords.toString())
         .replaceAll('MAX_SENTENCES', maxSentences.toString());
 
-    final user = 'Topic: $topic\nRecent tutor points:\n$lastTexts\n\nReturn ONLY the JSON object.';
-    return promptWithLimits + '\n' + user;
+    final user =
+        'Topic: $topic\nRecent tutor points:\n$lastTexts\n\nReturn ONLY the JSON object.';
+    return '$promptWithLimits\n$user';
   }
 
   Future<String?> _geminiGenerate(String apiKey, String prompt) async {
-    final uri = Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey');
+    final uri = Uri.parse(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey');
     final body = {
       'contents': [
         {
-          'parts': [ {'text': prompt} ]
+          'parts': [
+            {'text': prompt}
+          ]
         }
       ]
     };
-    final resp = await http.post(uri, headers: {'Content-Type': 'application/json'}, body: jsonEncode(body));
+    final resp = await http.post(uri,
+        headers: {'Content-Type': 'application/json'}, body: jsonEncode(body));
     if (resp.statusCode ~/ 100 != 2) return null;
     final data = jsonDecode(utf8.decode(resp.bodyBytes));
     try {
@@ -141,13 +163,17 @@ Additionally, decide whether a single simple diagram would help. If YES, include
         if (a['level'] != null) 'level': a['level'],
         if (a['style'] != null) 'style': a['style'],
       };
-      if (type == 'heading' && heading == null) heading = m;
-      else if (type == 'formula' && formula == null) formula = m;
-      else { bullets.add({'type': 'heading', 'text': trimmed, 'level': 1}); }
+      if (type == 'heading' && heading == null) {
+        heading = m;
+      } else if (type == 'formula' && formula == null)
+        formula = m;
+      else {
+        bullets.add({'type': 'heading', 'text': trimmed, 'level': 1});
+      }
     }
 
-    if (heading != null) out.add(heading!);
-    if (formula != null && out.length < maxItems) out.add(formula!);
+    if (heading != null) out.add(heading);
+    if (formula != null && out.length < maxItems) out.add(formula);
     for (final b in bullets) {
       if (out.length >= maxItems) break;
       out.add(b);
@@ -172,5 +198,3 @@ Additionally, decide whether a single simple diagram would help. If YES, include
     return trimmedSentences.join(' ');
   }
 }
-
-
