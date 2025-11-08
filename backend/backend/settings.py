@@ -50,6 +50,11 @@ INSTALLED_APPS = [
     'channels',
     'users',
     'lessons',
+    'timeline_generator',
+    'image_researcher',
+    'imggen',
+    'lesson_pipeline',
+    'vision',  # SigLIP2 zero-shot classification & embeddings
     'rest_framework',
     'rest_framework_simplejwt.token_blacklist',
     'imagePrinting',
