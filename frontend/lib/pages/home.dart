@@ -115,7 +115,7 @@ class _HomePageState extends State<HomePage> {
                   Icon(Icons.school,
                       size: 32, color: theme.colorScheme.primary),
                   const SizedBox(width: 10),
-                  Text("AI Tutor",
+                  Text("DrawnOut",
                       style: TextStyle(
                           fontSize: 24, color: theme.colorScheme.primary)),
                 ],
@@ -155,7 +155,7 @@ class _HomePageState extends State<HomePage> {
                             ? Colors.tealAccent.shade100
                             : Colors.blueGrey),
                     const SizedBox(width: 8),
-                    const Text('Welcome to AI Tutor',
+                    const Text('Welcome to DrawnOut',
                         style: TextStyle(
                             fontSize: 26, fontWeight: FontWeight.bold)),
                   ],
