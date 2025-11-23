@@ -21,7 +21,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.urls import path, include
 from imagePrinting import views
-
+from TTSVoice import tts
 
 urlpatterns = [
     path('', views.index, name='index'),
@@ -35,4 +35,5 @@ urlpatterns = [
     path('api/lesson-pipeline/', include('lesson_pipeline.urls')),
     path('api/vision/', include('vision.urls')),  # SigLIP2 endpoints
     path('', TemplateView.as_view(template_name='index.html')),
+    path('tts-demo/', TemplateView.as_view(template_name ='tts_demo')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

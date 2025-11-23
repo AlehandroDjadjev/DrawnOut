@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>TTS Demo</title>
+    <style>
+        .controls { margin: 20px 0; }
+        .control { margin: 10px 0; }
+        label { display: inline-block; width: 100px; }
+    </style>
+</head>
+<body>
+    <h1>TTS Demo</h1>
+    
+    <div class="controls">
+        <div class="control">
+            <label>Voice:</label>
+            <select id="voice">
+                {% for voice in voices %}
+                <option value="{{ voice.name }}">{{ voice.name }} ({{ voice.gender }})</option>
+                {% endfor %}
+            </select>
+        </div>
+        
+        <div class="control">
+            <label>Speed:</label>
+            <input type="range" id="rate" min="0.25" max="4.0" step="0.05" value="1.0">
+            <span id="rateValue">1.0</span>
+        </div>
+        
+        <div class="control">
+            <label>Pitch:</label>
+            <input type="range" id="pitch" min="-20" max="20" step="1" value="0">
+            <span id="pitchValue">0</span>
+        </div>
+        
+        <div class="control">
+            <label>Text:</label>
+            <textarea id="text" rows="4" cols="50">Hello, this is a test of text-to-speech.</textarea>
+        </div>
+        
+        <button onclick="generateSpeech()">Generate Speech</button>
+    </div>
+    
+    <audio id="audio" controls style="display:none"></audio>
+    
+    <script>
+        document.getElementById('rate').oninput = e => 
+            document.getElementById('rateValue').textContent = e.target.value;
+        document.getElementById('pitch').oninput = e => 
+            document.getElementById('pitchValue').textContent = e.target.value;
+            
+        function generateSpeech() {
+            const data = new FormData();
+            data.append('text', document.getElementById('text').value);
+            data.append('voice', document.getElementById('voice').value);
+            data.append('rate', document.getElementById('rate').value);
+            data.append('pitch', document.getElementById('pitch').value);
+            
+            fetch('', {
+                method: 'POST',
+                body: data
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    const audio = document.getElementById('audio');
+                    audio.src = data.audio;
+                    audio.style.display = 'block';
+                    audio.play();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        }
+    </script>
+</body>
+</html>

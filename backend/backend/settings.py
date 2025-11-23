@@ -33,6 +33,7 @@ ALLOWED_HOSTS = [
     '192.168.7.7', 
     'localhost',
     '127.0.0.1',
+    '192.168.68.67',
 ]
 
 
@@ -58,6 +59,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt.token_blacklist',
     'imagePrinting',
+    'TTSVoice'
 ]
 
 MIDDLEWARE = [
@@ -92,6 +94,14 @@ TEMPLATES = [
 WSGI_APPLICATION = 'backend.wsgi.application'
 ASGI_APPLICATION = 'backend.asgi.application'
 
+# TTS defaults (used by lessons.services.TutorEngine)
+TTS_DEFAULT_VOICE = "en-US-Neural2-F"
+TTS_CANDIDATE_VOICES = ["en-US-Neural2-F", "en-US-Wavenet-F", "en-US-Standard-F"]
+TTS_LANGUAGE_CODE = "en-US"
+TTS_SSML_GENDER = "FEMALE"
+TTS_DEFAULT_SPEAKING_RATE = 1.0
+TTS_DEFAULT_PITCH = 0.0
+TTS_DEFAULT_VOLUME_GAIN_DB = 0.0
 
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases

@@ -1,17 +1,19 @@
 import io
 import os
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional
 
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from django.conf import settings
 
 from google.cloud import texttospeech
 
 try:
-    import google.generativeai as genai  # pip package: google-generativeai
+    import google.generativeai as genai  # optional
 except Exception:
     genai = None
+
 from openai import OpenAI
 
 
@@ -23,7 +25,7 @@ GOOGLE_AI_API_KEY = os.getenv('GOOGLE_AI_API_KEY', '')
 @dataclass
 class TutorResponse:
     text: str
-    audio_path: str
+    audio_path: Optional[str]
 
 
 class TutorEngine:
@@ -31,13 +33,13 @@ class TutorEngine:
 
     def __init__(self):
         self.openai = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
-        # Google TTS client credentials are read from env via default credentials
+        # Google TTS client (relies on GOOGLE_APPLICATION_CREDENTIALS or ADC)
         try:
-            self.tts_client = texttospeech.TextToSpeechClient()  # relies on GOOGLE_APPLICATION_CREDENTIALS
+            self.tts_client = texttospeech.TextToSpeechClient()
         except Exception:
             self.tts_client = None
 
-        # Gemini text chat configuration (non-streaming fallback to "Live")
+        # Gemini / google generative ai availability
         self.gemini_available = bool(GOOGLE_AI_API_KEY and genai)
         if self.gemini_available:
             try:
@@ -45,14 +47,12 @@ class TutorEngine:
             except Exception:
                 self.gemini_available = False
 
-        # In-memory live chat sessions keyed by lesson session id
-        # Note: ephemeral and per-process; OK for local dev
+        # In-memory live chat sessions keyed by lesson session id (dev only)
         self._live_chats: dict[int, object] = {}
 
     # --- Lesson Planning ---
     def build_lesson_plan(self, topic: str) -> List[str]:
-        # Hardcoded topic for now per request; topic arg kept for future
-        hardcoded_topic = "Introduction to the Pythagorean Theorem"
+        hardcoded_topic = topic or "Introduction to the Pythagorean Theorem"
         if self.openai:
             prompt = (
                 f"Create a short 5-step lesson plan to teach: {hardcoded_topic}. "
@@ -86,10 +86,7 @@ class TutorEngine:
 
     # --- Dialogue ---
     def continue_step(self, step_text: str) -> str:
-        """Return a short, child-friendly explanation for the given step.
-
-        Prefers OpenAI for natural language; falls back to a simple template if unavailable.
-        """
+        """Return a short, child-friendly explanation for the given step."""
         if self.openai:
             prompt = (
                 "You are a friendly elementary school tutor.\n"
@@ -136,10 +133,9 @@ class TutorEngine:
 
     # --- STT ---
     def transcribe_audio(self, audio_bytes: bytes, file_name: str = "question.wav") -> str:
-        # Placeholder: if using OpenAI Whisper via API, or local faster-whisper.
+        # Placeholder: if using OpenAI Whisper or local Whisper.
         if self.openai:
             try:
-                # API expects file-like
                 file_obj = io.BytesIO(audio_bytes)
                 file_obj.name = file_name
                 transcript = self.openai.audio.transcriptions.create(
@@ -152,28 +148,73 @@ class TutorEngine:
         return ""
 
     # --- TTS ---
-    def synthesize_speech(self, text: str, voice: str = "en-US-Neural2-F") -> str | None:
+    def synthesize_speech(
+        self,
+        text: str,
+        voice: Optional[str] = None,
+        use_ssml: bool = True,
+        speaking_rate: Optional[float] = None,
+        pitch: Optional[float] = None,
+        volume_gain_db: Optional[float] = None,
+    ) -> Optional[str]:
+        """
+        Synthesize speech and save to default_storage. Returns saved path or None.
+        - If use_ssml=True, `text` is treated as SSML. Otherwise plain text.
+        - speaking_rate: 0.25..4.0
+        - pitch: semitones (-20..20)
+        - volume_gain_db: -96..16
+        """
         if not self.tts_client:
             return None
-        synthesis_input = texttospeech.SynthesisInput(text=text)
-        audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
-        # Try a list of female voices to avoid any default male fallback
-        candidate_voices = [voice, "en-US-Wavenet-F", "en-US-Standard-F"]
+
+        # Pull defaults from settings if present
+        default_voice = voice or getattr(settings, "TTS_DEFAULT_VOICE", "en-US-Neural2-F")
+        candidate_voices = getattr(settings, "TTS_CANDIDATE_VOICES", [default_voice, "en-US-Wavenet-F", "en-US-Standard-F"])
+        language_code = getattr(settings, "TTS_LANGUAGE_CODE", "en-US")
+        ssml_gender_str = getattr(settings, "TTS_SSML_GENDER", "FEMALE")
+        try:
+            ssml_gender = getattr(texttospeech.SsmlVoiceGender, ssml_gender_str)
+        except Exception:
+            ssml_gender = texttospeech.SsmlVoiceGender.FEMALE
+
+        speaking_rate = speaking_rate if speaking_rate is not None else getattr(settings, "TTS_DEFAULT_SPEAKING_RATE", 1.0)
+        pitch = pitch if pitch is not None else getattr(settings, "TTS_DEFAULT_PITCH", 0.0)
+        volume_gain_db = volume_gain_db if volume_gain_db is not None else getattr(settings, "TTS_DEFAULT_VOLUME_GAIN_DB", 0.0)
+
+        # Build input (SSML or plain text)
+        if use_ssml:
+            # Wrap text in <speak> if user provided plain text
+            if not text.strip().startswith("<speak"):
+                ssml_text = f"<speak><prosody rate=\"{speaking_rate}\" pitch=\"{pitch}st\">{text}</prosody></speak>"
+            else:
+                ssml_text = text
+            synthesis_input = texttospeech.SynthesisInput(ssml=ssml_text)
+        else:
+            synthesis_input = texttospeech.SynthesisInput(text=text)
+
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3,
+            speaking_rate=speaking_rate,
+            pitch=pitch,
+            volume_gain_db=volume_gain_db,
+        )
+
         for candidate in candidate_voices:
             try:
                 voice_params = texttospeech.VoiceSelectionParams(
-                    language_code="en-US",
+                    language_code=language_code,
                     name=candidate,
-                    ssml_gender=texttospeech.SsmlVoiceGender.FEMALE,
+                    ssml_gender=ssml_gender,
                 )
                 response = self.tts_client.synthesize_speech(
-                    input=synthesis_input, voice=voice_params, audio_config=audio_config
+                    input=synthesis_input,
+                    voice=voice_params,
+                    audio_config=audio_config,
                 )
-                audio_path = default_storage.save(
-                    f"tts/utterance_{abs(hash(candidate + '|' + text))}.mp3",
-                    ContentFile(response.audio_content)
-                )
-                return audio_path
+                # Save result and return path
+                safe_name = f"tts/utterance_{abs(hash(candidate + '|' + text))}.mp3"
+                saved_path = default_storage.save(safe_name, ContentFile(response.audio_content))
+                return saved_path
             except Exception:
                 continue
         return None
@@ -190,18 +231,16 @@ class TutorEngine:
         except Exception:
             return False
 
-    def live_message(self, lesson_session_id: int, user_text: str) -> str | None:
+    def live_message(self, lesson_session_id: int, user_text: str) -> Optional[str]:
         chat = self._live_chats.get(lesson_session_id)
         if not chat:
-            # try to start implicitly
             started = self.start_live_chat(lesson_session_id)
             if not started:
                 return None
             chat = self._live_chats.get(lesson_session_id)
         try:
             resp = chat.send_message(user_text)
-            # google-generativeai returns .text
-            return (getattr(resp, 'text', None) or str(resp)).strip()
+            return (getattr(resp, "text", None) or str(resp)).strip()
         except Exception:
             return None
 
@@ -211,5 +250,3 @@ class TutorEngine:
                 del self._live_chats[lesson_session_id]
             except Exception:
                 pass
-
-
