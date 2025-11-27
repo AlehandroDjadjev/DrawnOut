@@ -10,6 +10,13 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  external_page:
+    path: packages/external_page.dart
+  http: ^1.0.0           # adjust to latest compatible version
+  file_picker: ^8.0.0
+  opencv_dart: ^1.4.3
+  just_audio: ^0.9.36
+
 
   # Existing frontend deps
   cupertino_icons: ^1.0.8
@@ -18,12 +25,7 @@ dependencies:
   shared_preferences: ^2.1.0
   flutter_dotenv: ^5.1.0
   provider: ^6.1.2
-
-  # From whiteboard_demo
-  file_picker: ^8.0.0
-  opencv_dart: ^1.4.3
-  just_audio: ^0.9.36
-
+  
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -34,3 +36,4 @@ flutter:
 
   assets:
     - assets/.env
+    - assets/sample
