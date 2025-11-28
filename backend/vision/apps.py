@@ -6,3 +6,10 @@ class VisionConfig(AppConfig):
     name = 'vision'
 
 
+
+
+
+
+
+
+

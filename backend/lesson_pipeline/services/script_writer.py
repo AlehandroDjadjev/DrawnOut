@@ -152,3 +152,10 @@ def generate_script(prompt: UserPrompt, duration_target: float = 60.0) -> Script
     return get_script_writer_service().generate_script(prompt, duration_target)
 
 
+
+
+
+
+
+
+

@@ -7,3 +7,10 @@ class LessonPipelineConfig(AppConfig):
     verbose_name = 'Lesson Generation Pipeline'
 
 
+
+
+
+
+
+
+

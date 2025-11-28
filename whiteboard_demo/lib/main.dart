@@ -1044,9 +1044,13 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       _sessionId = data['id'] as int?;
       debugPrint('✅ Session created: $_sessionId');
       
-      // 2. Generate timeline
-      debugPrint('⏱️ Generating timeline... (this may take 30-60 seconds)');
-      final timeline = await _timelineApi!.generateTimeline(_sessionId!, durationTarget: 60.0);
+      // 2. Generate timeline (force regenerate to get fresh images)
+      debugPrint('⏱️ Generating timeline with images... (this may take 30-60 seconds)');
+      final timeline = await _timelineApi!.generateTimeline(
+        _sessionId!, 
+        durationTarget: 60.0,
+        regenerate: true,  // Force new generation to include images
+      );
       debugPrint('✅ Timeline generated: ${timeline.segments.length} segments, ${timeline.totalDuration}s');
       
       // 3. Load timeline into controller
@@ -1075,7 +1079,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     try {
       await _ensureLayout();
       
-      final whiteboardActions = actions.map((action) => {
+      // Separate sketch_image actions from regular drawing actions
+      final imageActions = actions.where((a) => a.type == 'sketch_image').toList();
+      final textActions = actions.where((a) => a.type != 'sketch_image').toList();
+      
+      final whiteboardActions = textActions.map((action) => {
         'type': action.type,
         'text': action.text,
         if (action.level != null) 'level': action.level,
@@ -1139,6 +1147,152 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       if (_plan != null) {
         _commitCurrentSketch();
         debugPrint('✅ Committed to board (total: ${_board.length})');
+      }
+      
+      // Now handle image actions if any
+      for (final imageAction in imageActions) {
+        try {
+          final imageUrl = imageAction.text; // The image URL is stored in 'text' field
+          final tagId = imageAction.level?.toString() ?? 'img'; // tag_id stored in level as workaround
+          
+          debugPrint('🖼️ Sketching image: $tagId from $imageUrl');
+          debugPrint('   Image URL length: ${imageUrl.length}');
+          debugPrint('   Image URL valid: ${Uri.tryParse(imageUrl) != null}');
+          
+          // Use proxy to avoid CORS issues
+          final baseUrl = _apiUrlCtrl.text.trim().isEmpty ? 'http://localhost:8000' : _apiUrlCtrl.text.trim();
+          final proxyUrl = '$baseUrl/api/lesson-pipeline/image-proxy/?url=${Uri.encodeComponent(imageUrl)}';
+          debugPrint('   Using proxy: $proxyUrl');
+          
+          // Download image via proxy
+          final response = await http.get(Uri.parse(proxyUrl));
+          debugPrint('   HTTP response: ${response.statusCode}, bytes: ${response.bodyBytes.length}');
+          debugPrint('   Content-Type: ${response.headers['content-type']}');
+          
+          if (response.statusCode != 200) {
+            debugPrint('❌ Failed to download image: ${response.statusCode}');
+            continue;
+          }
+          
+          final imageBytes = response.bodyBytes;
+          
+          // Check if it's an SVG (can't decode those)
+          final contentType = response.headers['content-type'] ?? '';
+          if (contentType.contains('svg')) {
+            debugPrint('⚠️ Skipping SVG image (not supported): $imageUrl');
+            continue;
+          }
+          
+          debugPrint('   Decoding image...');
+          // Decode image
+          final decodedImage = await _decodeUiImage(imageBytes);
+          debugPrint('   ✅ Image decoded: ${decodedImage.width}x${decodedImage.height}');
+          
+          // Calculate layout-aware positioning
+          final cfg = _layout!.config;
+          final contentX0 = cfg.page.left + _layout!._columnOffsetX();
+          final contentW = _layout!._columnWidth();
+          
+          // Place image below existing content, respecting layout
+          final maxBottom = _layout!.blocks.isEmpty 
+              ? cfg.page.top 
+              : _layout!.blocks.map((b) => b.bbox.bottom).fold<double>(0.0, (a, b) => a > b ? a : b);
+          final imageY = maxBottom + cfg.gutterY * 2;
+          
+          // Scale image to fit content width while maintaining aspect ratio
+          final aspectRatio = decodedImage.height / decodedImage.width;
+          final maxImageWidth = contentW * 0.9; // Use 90% of content width
+          final imageWidth = maxImageWidth.clamp(200.0, contentW);
+          final imageHeight = imageWidth * aspectRatio;
+          final imageSize = Size(imageWidth, imageHeight);
+          
+          // Center image horizontally in content area
+          final imageX = contentX0 + (contentW - imageWidth) / 2;
+          
+          debugPrint('   📐 Image layout: x=$imageX, y=$imageY, w=$imageWidth, h=$imageHeight');
+          
+          // Check if image fits on current page
+          if (imageY + imageHeight > (cfg.page.height - cfg.page.bottom)) {
+            debugPrint('   ⚠️ Image too tall for remaining space, moving to next column/page');
+            // TODO: Handle column/page overflow (for now just place it anyway)
+          }
+          
+          // Vectorize with layout-appropriate scale
+          final strokes = await Vectorizer.vectorize(
+            bytes: imageBytes,
+            worldScale: imageWidth,  // Scale based on actual display width
+            edgeMode: 'dog',
+            dogSigma: 1.2,
+            dogK: 2.0,
+            dogThresh: 0.02,
+            epsilon: 3.0,
+            resampleSpacing: 2.0,
+            minPerimeter: 25.0,
+            retrExternalOnly: false,
+            angleThresholdDeg: 25.0,
+            angleWindow: 5,
+            smoothPasses: 2,
+            mergeParallel: true,
+            mergeMaxDist: 15.0,
+            minStrokeLen: 10.0,
+            minStrokePoints: 3,
+          );
+          
+          // Position strokes at calculated position
+          final offset = Offset(imageX, imageY);
+          final positionedStrokes = strokes
+              .map((s) => s.map((p) => p + offset).toList())
+              .toList();
+          
+          debugPrint('   ✏️ Vectorized ${positionedStrokes.length} strokes');
+          
+          // Animate sketch (10 seconds for images)
+          final imageDuration = 10.0;
+          setState(() {
+            _seconds = imageDuration;
+            _planUnderlay = false; // Don't show raster underlay, just sketch
+            _plan = StrokePlan(positionedStrokes);
+            _currentAnimEnd = DateTime.now().add(Duration(milliseconds: (imageDuration * 1000).round()));
+          });
+          
+          // Wait for animation
+          await Future.delayed(Duration(milliseconds: (imageDuration * 1000 * 0.95).round()));
+          
+          // IMPORTANT: Commit strokes to board permanently as a VectorObject
+          if (_plan != null) {
+            final imageObj = VectorObject(
+              plan: _plan!,
+              baseWidth: _width,
+              passOpacity: _opacity,
+              passes: _passes,
+              jitterAmp: _jitterAmp,
+              jitterFreq: _jitterFreq,
+            );
+            setState(() {
+              _board.add(imageObj);
+              _plan = null; // Clear plan so it doesn't re-animate
+            });
+            debugPrint('   ✅ Committed image to board permanently (${_board.length} total objects)');
+          }
+          
+          // Register image as a layout block so other content doesn't overlap
+          final imageBBox = _BBox(x: imageX, y: imageY, w: imageWidth, h: imageHeight);
+          _layout!.blocks.add(_DrawnBlock(
+            id: 'image_$tagId',
+            type: 'image',
+            bbox: imageBBox,
+            meta: {'tag_id': tagId, 'url': imageUrl},
+          ));
+          
+          // Update layout cursor to be below the image
+          _layout!.cursorY = imageY + imageHeight + cfg.gutterY * 2;
+          
+          debugPrint('   📍 Layout cursor now at y=${_layout!.cursorY}');
+          
+        } catch (e, st) {
+          debugPrint('❌ Failed to sketch image: $e');
+          debugPrint('   Stack: $st');
+        }
       }
       
     } catch (e, st) {

@@ -6,3 +6,10 @@ class ImageResearcherConfig(AppConfig):
     name = 'image_researcher'
 
 
+
+
+
+
+
+
+
