@@ -24,29 +24,42 @@ class _HomePageState extends State<HomePage> {
     final isDarkMode = themeProvider.isDarkMode;
     final theme = Theme.of(context);
 
-    final List<Widget> _pages = [
+    final List<Widget> pages = [
       _buildHomeContent(theme, isDarkMode),
-      ProfilePage(),
+      const ProfilePage(),
     ];
 
     return Scaffold(
       key: _scaffoldKey,
       drawer: _buildDrawer(theme),
       appBar: AppBar(
-        title: const Text("Home"),
+        title: Text(_selectedIndex == 0 ? "Home" : "Profile"),
         centerTitle: true,
         backgroundColor: isDarkMode ? Colors.black : Colors.white,
         foregroundColor: theme.colorScheme.primary,
         elevation: 1,
         iconTheme: IconThemeData(color: theme.colorScheme.primary),
         actions: [
-          IconButton(
-            icon: Icon(isDarkMode ? Icons.dark_mode : Icons.light_mode),
-            onPressed: themeProvider.toggleTheme,
+          // Animated theme toggle
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 400),
+            transitionBuilder: (child, animation) {
+              return RotationTransition(
+                turns: Tween(begin: 0.75, end: 1.0).animate(animation),
+                child: FadeTransition(opacity: animation, child: child),
+              );
+            },
+            child: IconButton(
+              key: ValueKey(isDarkMode ? "dark" : "light"),
+              icon: Icon(isDarkMode ? Icons.dark_mode : Icons.light_mode),
+              onPressed: themeProvider.toggleTheme,
+              tooltip:
+                  isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode",
+            ),
           ),
         ],
       ),
-      body: _pages[_selectedIndex],
+      body: pages[_selectedIndex],
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _selectedIndex,
         type: BottomNavigationBarType.fixed,
@@ -96,9 +109,17 @@ class _HomePageState extends State<HomePage> {
             decoration: BoxDecoration(
                 color: theme.colorScheme.primary.withOpacity(0.1)),
             child: Center(
-              child: Text("AI Tutor",
-                  style: TextStyle(
-                      fontSize: 24, color: theme.colorScheme.primary)),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.school,
+                      size: 32, color: theme.colorScheme.primary),
+                  const SizedBox(width: 10),
+                  Text("AI Tutor",
+                      style: TextStyle(
+                          fontSize: 24, color: theme.colorScheme.primary)),
+                ],
+              ),
             ),
           ),
           ListTile(
@@ -123,14 +144,24 @@ class _HomePageState extends State<HomePage> {
               color: isDarkMode ? Colors.teal.shade700 : Colors.blue.shade100,
               borderRadius: BorderRadius.circular(16),
             ),
-            child: const Column(
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Welcome to AI Tutor 🎓',
-                    style:
-                        TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
-                SizedBox(height: 10),
-                Text(
+                Row(
+                  children: [
+                    Icon(Icons.school,
+                        size: 28,
+                        color: isDarkMode
+                            ? Colors.tealAccent.shade100
+                            : Colors.blueGrey),
+                    const SizedBox(width: 8),
+                    const Text('Welcome to AI Tutor',
+                        style: TextStyle(
+                            fontSize: 26, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                const Text(
                     'Learn, interact, and practice with your AI tutor.\nStart with the demo lesson below!',
                     style: TextStyle(fontSize: 16)),
               ],
@@ -157,7 +188,7 @@ class _HomePageState extends State<HomePage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Pythagoras’ Theorem',
+                  const Text('Pythagoras Theorem',
                       style:
                           TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),

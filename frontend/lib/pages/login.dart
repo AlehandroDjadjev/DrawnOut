@@ -76,7 +76,7 @@ class _LoginPageState extends State<LoginPage> {
       data: theme,
       duration: const Duration(milliseconds: 400),
       child: Scaffold(
-        backgroundColor: theme.colorScheme.background,
+        backgroundColor: theme.colorScheme.surface,
         body: SafeArea(
           child: Stack(
             children: [
