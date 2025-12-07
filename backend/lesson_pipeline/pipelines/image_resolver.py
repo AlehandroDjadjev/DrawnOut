@@ -38,7 +38,8 @@ def resolve_image_tags_for_topic(
             logger.debug(f"Resolving tag: {tag.id} - {tag.prompt}")
             
             # 1. Embed tag prompt
-            vector = embed_text(tag.prompt)
+            query_text = tag.query or tag.prompt
+            vector = embed_text(query_text)
             
             # 2. Query Pinecone
             matches = query_images_by_text(
@@ -64,7 +65,8 @@ def resolve_image_tags_for_topic(
                 "tag": tag,
                 "base_image_url": best_match.image_url,
                 "base_metadata": best_match.metadata,
-                "needs_text_to_image": False
+                "needs_text_to_image": False,
+                "vector_id": best_match.id,
             })
             
             logger.info(f"Resolved tag {tag.id} to image: {best_match.image_url[:50]}...")
@@ -75,7 +77,8 @@ def resolve_image_tags_for_topic(
                 "tag": tag,
                 "base_image_url": "",
                 "base_metadata": None,
-                "needs_text_to_image": True
+                "needs_text_to_image": True,
+                "vector_id": None,
             })
     
     logger.info(f"Resolved {len([r for r in results if r['base_image_url']])} / {len(tags)} tags")

@@ -1200,6 +1200,12 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     try {
       await _ensureLayout();
       
+      double? _placement(dynamic value) {
+        if (value == null) return null;
+        if (value is num) return value.toDouble();
+        return double.tryParse(value.toString());
+      }
+      
       // Separate sketch_image actions from regular drawing actions
       final imageActions = actions.where((a) => a.type == 'sketch_image').toList();
       final textActions = actions.where((a) => a.type != 'sketch_image').toList();
@@ -1273,8 +1279,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       // Now handle image actions if any
       for (final imageAction in imageActions) {
         try {
-          final imageUrl = imageAction.text; // The image URL is stored in 'text' field
-          final tagId = imageAction.level?.toString() ?? 'img'; // tag_id stored in level as workaround
+          final imageUrl = imageAction.imageUrl ?? imageAction.text;
+          final tagId = imageAction.tagId ?? imageAction.level?.toString() ?? 'img';
           
           debugPrint('🖼️ Sketching image: $tagId from $imageUrl');
           debugPrint('   Image URL length: ${imageUrl.length}');
@@ -1313,22 +1319,48 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           final cfg = _layout!.config;
           final contentX0 = cfg.page.left + _layout!._columnOffsetX();
           final contentW = _layout!._columnWidth();
+          final contentY0 = cfg.page.top;
+          final contentHeight = (cfg.page.height - cfg.page.bottom) - contentY0;
           
           // Place image below existing content, respecting layout
           final maxBottom = _layout!.blocks.isEmpty 
               ? cfg.page.top 
               : _layout!.blocks.map((b) => b.bbox.bottom).fold<double>(0.0, (a, b) => a > b ? a : b);
-          final imageY = maxBottom + cfg.gutterY * 2;
+          double imageY = maxBottom + cfg.gutterY * 2;
           
           // Scale image to fit content width while maintaining aspect ratio
           final aspectRatio = decodedImage.height / decodedImage.width;
           final maxImageWidth = contentW * 0.9; // Use 90% of content width
-          final imageWidth = maxImageWidth.clamp(200.0, contentW);
-          final imageHeight = imageWidth * aspectRatio;
+          double imageWidth = maxImageWidth.clamp(200.0, contentW);
+          double imageHeight = imageWidth * aspectRatio;
           final imageSize = Size(imageWidth, imageHeight);
           
           // Center image horizontally in content area
-          final imageX = contentX0 + (contentW - imageWidth) / 2;
+          double imageX = contentX0 + (contentW - imageWidth) / 2;
+          
+          final placement = imageAction.placement;
+          if (placement != null && placement.isNotEmpty) {
+            final normWidth = _placement(placement['width'])?.clamp(0.1, 1.0);
+            final normHeight = _placement(placement['height'])?.clamp(0.1, 1.0);
+            final normX = _placement(placement['x'])?.clamp(0.0, 1.0);
+            final normY = _placement(placement['y'])?.clamp(0.0, 1.0);
+            
+            if (normWidth != null) {
+              imageWidth = (normWidth * contentW).clamp(120.0, contentW);
+              imageHeight = imageWidth * aspectRatio;
+            }
+            if (normHeight != null) {
+              imageHeight = (normHeight * contentHeight).clamp(120.0, contentHeight);
+            }
+            if (normX != null) {
+              final usableWidth = (contentW - imageWidth).clamp(0.0, contentW);
+              imageX = contentX0 + usableWidth * normX;
+            }
+            if (normY != null) {
+              final usableHeight = (contentHeight - imageHeight).clamp(0.0, contentHeight);
+              imageY = contentY0 + usableHeight * normY;
+            }
+          }
           
           debugPrint('   📐 Image layout: x=$imageX, y=$imageY, w=$imageWidth, h=$imageHeight');
           

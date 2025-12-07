@@ -70,19 +70,27 @@ async def run_image_research_and_index(
         for i, vec_idx in enumerate(success_indices):
             candidate = candidates[vec_idx]
             
+            metadata = {
+                'title': candidate.title,
+                'description': candidate.description,
+                'source': candidate.source,
+                'tags': candidate.tags,
+                'license': candidate.license,
+                'width': candidate.width,
+                'height': candidate.height,
+                'subject': subject,
+                'query': prompt.text,
+            }
+            if candidate.metadata:
+                metadata.update(candidate.metadata)
+
             record = ImageEmbeddingRecord(
                 id=candidate.id,
                 image_url=candidate.source_url,
                 vector=vectors[i],
                 topic_id=topic_id,
                 original_prompt=prompt.text,
-                metadata={
-                    'title': candidate.title,
-                    'description': candidate.description,
-                    'source': candidate.source,
-                    'tags': candidate.tags,
-                    'license': candidate.license,
-                }
+                metadata=metadata
             )
             records.append(record)
         
@@ -148,19 +156,27 @@ def run_image_research_and_index_sync(
         for i, vec_idx in enumerate(success_indices):
             candidate = candidates[vec_idx]
             
+            metadata = {
+                'title': candidate.title,
+                'description': candidate.description,
+                'source': candidate.source,
+                'tags': candidate.tags,
+                'license': candidate.license,
+                'width': candidate.width,
+                'height': candidate.height,
+                'subject': subject,
+                'query': prompt.text,
+            }
+            if candidate.metadata:
+                metadata.update(candidate.metadata)
+
             record = ImageEmbeddingRecord(
                 id=candidate.id,
                 image_url=candidate.source_url,
                 vector=vectors[i],
                 topic_id=topic_id,
                 original_prompt=prompt.text,
-                metadata={
-                    'title': candidate.title,
-                    'description': candidate.description,
-                    'source': candidate.source,
-                    'tags': candidate.tags,
-                    'license': candidate.license,
-                }
+                metadata=metadata
             )
             records.append(record)
         

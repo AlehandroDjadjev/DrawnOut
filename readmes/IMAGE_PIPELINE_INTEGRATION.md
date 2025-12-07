@@ -10,6 +10,14 @@ Successfully integrated the lesson pipeline image system into the existing synch
 4. **Semantically matches** images to tags via vector similarity
 5. **Sketches images** directly on the whiteboard during lessons
 
+### December 2025 Enhancements
+
+- **Image Vector Subprocess** now runs in parallel with script generation, calling the REST-based researcher (`/api/image-research/search/`), embedding with SigLIP 384, and batching Pinecone writes tagged with topic/query metadata.
+- **IMAGE tag contract upgraded** — every tag now includes `query`, normalized `x/y/width/height`, and layout `notes`, exposing precise placement + retrieval hints the whiteboard can honor.
+- **Lesson JSON upgraded** — `LessonDocument.images[]` now carries `vector_id`, `base_image_url`, and `final_image_url`, while `image_slots[]` include the original LLM placement JSON so downstream agents can reason about proportions.
+- **Whiteboard pipeline aware of placement** — `sketch_image` drawing actions ship the resolved image payload, placement ratios, vector IDs, and metadata; Flutter consumes these to position sketches according to the LLM-authored layout hints.
+- **Configurable Research Endpoint** — set `IMAGE_RESEARCH_API_URL`/`IMAGE_RESEARCH_API_TOKEN` to point at the Django image researcher service; the pipeline falls back to the legacy module only if the API is unavailable.
+
 ## How It Works
 
 ### Backend Flow
@@ -199,7 +207,11 @@ OPENAI_API_KEY=<your-key>          # For GPT-4 timeline generation
 GOOGLE_APPLICATION_CREDENTIALS=<path>  # For TTS
 Pinecone-API-Key=<your-key>        # For vector database
 PINECONE_ENVIRONMENT=us-east-1     # Pinecone region
+IMAGE_RESEARCH_API_URL=http://127.0.0.1:8000/api/image-research/search/
+IMAGE_RESEARCH_API_TOKEN=<optional bearer token if secured>
 ```
+
+`IMAGE_RESEARCH_API_URL` points to the Django image researcher endpoints. The pipeline always hits this HTTP API first and only falls back to the legacy module if the call fails.
 
 ## API Endpoints
 

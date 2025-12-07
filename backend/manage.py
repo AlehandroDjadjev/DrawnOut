@@ -6,7 +6,8 @@ import sys
 
 def main():
     """Run administrative tasks."""
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'whiteboard.settings')
+    # Always point to the backend settings module for this project
+    os.environ['DJANGO_SETTINGS_MODULE'] = 'backend.settings'
     try:
         from django.core.management import execute_from_command_line
     except ImportError as exc:
