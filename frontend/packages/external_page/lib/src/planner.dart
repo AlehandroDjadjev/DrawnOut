@@ -18,43 +18,37 @@ class WhiteboardPlanner {
     try {
       print('🔍 Planner: Fetching token...');
       final token = await _getLiveToken();
-<<<<<<< HEAD
-      if (token == null || token.isEmpty) return null;
-      final prompt = _buildPrompt(
-          sessionData, maxItems, maxSentencesPerItem, maxWordsPerSentence);
-=======
       if (token == null || token.isEmpty) {
         print('❌ Planner: No token returned from /api/lessons/token/');
         print('   Trying fallback: simple extraction from session data');
-        return _fallbackPlan(sessionData, maxItems, maxSentencesPerItem, maxWordsPerSentence);
+        return _fallbackPlan(
+            sessionData, maxItems, maxSentencesPerItem, maxWordsPerSentence);
       }
       print('✅ Planner: Got token');
-      final prompt = _buildPrompt(sessionData, maxItems, maxSentencesPerItem, maxWordsPerSentence);
+      final prompt = _buildPrompt(
+          sessionData, maxItems, maxSentencesPerItem, maxWordsPerSentence);
       print('🔍 Planner: Calling Gemini...');
->>>>>>> ba5474038469c73ca8de057e99c052a36484603c
       final text = await _geminiGenerate(token, prompt);
       if (text == null) {
         print('❌ Planner: Gemini returned null, using fallback');
-        return _fallbackPlan(sessionData, maxItems, maxSentencesPerItem, maxWordsPerSentence);
+        return _fallbackPlan(
+            sessionData, maxItems, maxSentencesPerItem, maxWordsPerSentence);
       }
       print('✅ Planner: Gemini response length: ${text.length}');
       final jsonStr = _extractJson(text);
       if (jsonStr == null) {
         print('❌ Planner: Could not extract JSON from response: $text');
         print('   Using fallback plan');
-        return _fallbackPlan(sessionData, maxItems, maxSentencesPerItem, maxWordsPerSentence);
+        return _fallbackPlan(
+            sessionData, maxItems, maxSentencesPerItem, maxWordsPerSentence);
       }
       print('✅ Planner: Extracted JSON: $jsonStr');
       final obj = jsonDecode(jsonStr) as Map<String, dynamic>;
       final actions = (obj['whiteboard_actions'] as List?) ?? const [];
-<<<<<<< HEAD
+      print('✅ Planner: Got ${actions.length} raw actions');
       final sanitized = _sanitizeActions(
           actions, maxItems, maxSentencesPerItem, maxWordsPerSentence);
-=======
-      print('✅ Planner: Got ${actions.length} raw actions');
-      final sanitized = _sanitizeActions(actions, maxItems, maxSentencesPerItem, maxWordsPerSentence);
       print('✅ Planner: Sanitized to ${sanitized.length} actions');
->>>>>>> ba5474038469c73ca8de057e99c052a36484603c
       // Extract diagram hint if present
       final hint = (obj['diagram_hint'] ??
           obj['diagram'] ??
@@ -69,7 +63,8 @@ class WhiteboardPlanner {
       print('❌ Planner ERROR: $e');
       print('Stack: $st');
       print('   Using fallback plan');
-      return _fallbackPlan(sessionData, maxItems, maxSentencesPerItem, maxWordsPerSentence);
+      return _fallbackPlan(
+          sessionData, maxItems, maxSentencesPerItem, maxWordsPerSentence);
     }
   }
 
@@ -83,22 +78,25 @@ class WhiteboardPlanner {
     print('📋 Generating fallback plan from session data');
     final topic = (sessionData['topic'] ?? 'Lesson').toString();
     final utterances = (sessionData['utterances'] as List?) ?? [];
-    
+
     final actions = <Map<String, dynamic>>[];
-    
+
     // Add topic as heading
     actions.add({
       'type': 'heading',
       'text': _trimSentencesAndWords(topic, 1, maxWords),
     });
-    
+
     // Extract tutor utterances and convert to bullet points
     final tutorTexts = utterances
-        .where((u) => u is Map && u['role'] == 'tutor' && (u['text'] ?? '').toString().trim().isNotEmpty)
+        .where((u) =>
+            u is Map &&
+            u['role'] == 'tutor' &&
+            (u['text'] ?? '').toString().trim().isNotEmpty)
         .map((u) => (u as Map)['text'].toString())
         .take(maxItems - 1) // Reserve one for the heading
         .toList();
-    
+
     for (final text in tutorTexts) {
       if (actions.length >= maxItems) break;
       // Extract first sentence or key phrase
@@ -111,11 +109,11 @@ class WhiteboardPlanner {
         });
       }
     }
-    
+
     if (actions.isEmpty) {
       actions.add({'type': 'heading', 'text': 'KEY POINTS'});
     }
-    
+
     print('✅ Fallback plan generated with ${actions.length} actions');
     return {'whiteboard_actions': actions};
   }
@@ -180,23 +178,18 @@ Additionally, decide whether a single simple diagram would help. If YES, include
   }
 
   Future<String?> _geminiGenerate(String apiKey, String prompt) async {
-<<<<<<< HEAD
-    final uri = Uri.parse(
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey');
-=======
     // Use the stable v1beta endpoint with the latest model names as of Oct 2025
     // Priority order: newest experimental -> stable production -> fallback
     final modelNames = [
-      'gemini-2.0-flash-exp',           // Latest experimental (Oct 2025)
-      'gemini-1.5-flash-latest',        // Latest stable flash
-      'gemini-1.5-flash',               // Stable fallback
-      'gemini-1.5-pro-latest',          // Pro if flash unavailable
-      'gemini-pro',                     // Legacy fallback
+      'gemini-2.0-flash-exp', // Latest experimental (Oct 2025)
+      'gemini-1.5-flash-latest', // Latest stable flash
+      'gemini-1.5-flash', // Stable fallback
+      'gemini-1.5-pro-latest', // Pro if flash unavailable
+      'gemini-pro', // Legacy fallback
     ];
-    
+
     const baseUrl = 'https://generativelanguage.googleapis.com/v1beta';
-    
->>>>>>> ba5474038469c73ca8de057e99c052a36484603c
+
     final body = {
       'contents': [
         {
@@ -204,52 +197,38 @@ Additionally, decide whether a single simple diagram would help. If YES, include
             {'text': prompt}
           ]
         }
-<<<<<<< HEAD
-      ]
-    };
-    final resp = await http.post(uri,
-        headers: {'Content-Type': 'application/json'}, body: jsonEncode(body));
-    if (resp.statusCode ~/ 100 != 2) return null;
-    final data = jsonDecode(utf8.decode(resp.bodyBytes));
-    try {
-      final candidates = data['candidates'];
-      if (candidates is List && candidates.isNotEmpty) {
-        final parts = candidates[0]['content']['parts'];
-        if (parts is List && parts.isNotEmpty) {
-          return parts[0]['text'] as String?;
-        }
-=======
       ],
       'generationConfig': {
         'temperature': 0.7,
         'maxOutputTokens': 800,
->>>>>>> ba5474038469c73ca8de057e99c052a36484603c
       }
     };
-    
+
     for (final modelName in modelNames) {
       try {
         final endpoint = '$baseUrl/models/$modelName:generateContent';
         print('🔍 Trying model: $modelName');
         final uri = Uri.parse('$endpoint?key=$apiKey');
-        final resp = await http.post(
-          uri, 
-          headers: {'Content-Type': 'application/json'}, 
-          body: jsonEncode(body),
-        ).timeout(const Duration(seconds: 30));
-        
+        final resp = await http
+            .post(
+              uri,
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode(body),
+            )
+            .timeout(const Duration(seconds: 30));
+
         print('   Response status: ${resp.statusCode}');
-        
+
         if (resp.statusCode == 404) {
           print('   ⚠️ Model not found, trying next...');
           continue;
         }
-        
+
         if (resp.statusCode ~/ 100 != 2) {
           print('   ❌ Failed with status ${resp.statusCode}: ${resp.body}');
           continue;
         }
-        
+
         final data = jsonDecode(utf8.decode(resp.bodyBytes));
         try {
           final candidates = data['candidates'];
@@ -271,7 +250,7 @@ Additionally, decide whether a single simple diagram would help. If YES, include
         print('   ❌ Request error for $modelName: $e');
       }
     }
-    
+
     print('❌ All Gemini models failed');
     return null;
   }

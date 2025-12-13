@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../main.dart';
 import 'profile_page.dart';
+import 'whiteboard_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -40,7 +41,6 @@ class _HomePageState extends State<HomePage> {
         elevation: 1,
         iconTheme: IconThemeData(color: theme.colorScheme.primary),
         actions: [
-          // Animated theme toggle
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 400),
             transitionBuilder: (child, animation) {
@@ -53,8 +53,6 @@ class _HomePageState extends State<HomePage> {
               key: ValueKey(isDarkMode ? "dark" : "light"),
               icon: Icon(isDarkMode ? Icons.dark_mode : Icons.light_mode),
               onPressed: themeProvider.toggleTheme,
-              tooltip:
-                  isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode",
             ),
           ),
         ],
@@ -107,7 +105,8 @@ class _HomePageState extends State<HomePage> {
         children: [
           DrawerHeader(
             decoration: BoxDecoration(
-                color: theme.colorScheme.primary.withOpacity(0.1)),
+              color: theme.colorScheme.primary.withOpacity(0.1),
+            ),
             child: Center(
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -115,9 +114,11 @@ class _HomePageState extends State<HomePage> {
                   Icon(Icons.school,
                       size: 32, color: theme.colorScheme.primary),
                   const SizedBox(width: 10),
-                  Text("DrawnOut",
-                      style: TextStyle(
-                          fontSize: 24, color: theme.colorScheme.primary)),
+                  Text(
+                    "DrawnOut",
+                    style: TextStyle(
+                        fontSize: 24, color: theme.colorScheme.primary),
+                  ),
                 ],
               ),
             ),
@@ -155,15 +156,18 @@ class _HomePageState extends State<HomePage> {
                             ? Colors.tealAccent.shade100
                             : Colors.blueGrey),
                     const SizedBox(width: 8),
-                    const Text('Welcome to DrawnOut',
-                        style: TextStyle(
-                            fontSize: 26, fontWeight: FontWeight.bold)),
+                    const Text(
+                      'Welcome to DrawnOut',
+                      style:
+                          TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 10),
                 const Text(
-                    'Learn, interact, and practice with your AI tutor.\nStart with the demo lesson below!',
-                    style: TextStyle(fontSize: 16)),
+                  'Learn, interact, and practice with your AI tutor.\nStart with the demo lesson below!',
+                  style: TextStyle(fontSize: 16),
+                ),
               ],
             ),
           ),
@@ -171,33 +175,35 @@ class _HomePageState extends State<HomePage> {
           Text(
             'Available Lesson',
             style: TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                color:
-                    isDarkMode ? Colors.tealAccent.shade100 : Colors.grey[800]),
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+              color: isDarkMode ? Colors.tealAccent.shade100 : Colors.grey[800],
+            ),
           ),
           const SizedBox(height: 12),
           Card(
             color: isDarkMode ? Colors.grey[900] : Colors.white,
             elevation: 5,
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
             margin: const EdgeInsets.symmetric(vertical: 10),
             child: Padding(
               padding: const EdgeInsets.all(20),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Pythagoras Theorem',
-                      style:
-                          TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                  const Text(
+                    'Pythagoras Theorem',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
                   const SizedBox(height: 8),
                   Text(
                     'Explore the relationship between the sides of a right-angled triangle and understand one of the most fundamental theorems in mathematics.',
                     style: TextStyle(
-                        fontSize: 16,
-                        color:
-                            isDarkMode ? Colors.grey[300] : Colors.grey[700]),
+                      fontSize: 16,
+                      color: isDarkMode ? Colors.grey[300] : Colors.grey[700],
+                    ),
                   ),
                   const SizedBox(height: 16),
                   Align(
@@ -205,14 +211,24 @@ class _HomePageState extends State<HomePage> {
                     child: ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
                         shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                         padding: const EdgeInsets.symmetric(
                             horizontal: 20, vertical: 12),
                       ),
-                      onPressed: () {},
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const WhiteboardApp(),
+                          ),
+                        );
+                      },
                       icon: const Icon(Icons.play_arrow),
-                      label: const Text("Start Lesson",
-                          style: TextStyle(fontSize: 16)),
+                      label: const Text(
+                        "Start Lesson",
+                        style: TextStyle(fontSize: 16),
+                      ),
                     ),
                   ),
                 ],
