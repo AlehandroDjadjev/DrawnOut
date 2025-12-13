@@ -4,13 +4,12 @@ Main orchestrator pipeline.
 Coordinates all pipeline steps to generate complete lessons with images.
 """
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from lesson_pipeline.types import UserPrompt, LessonDocument, lesson_document_to_dict
-from lesson_pipeline.utils.image_tags import parse_image_tags, inject_resolved_images, build_image_slots
-from lesson_pipeline.pipelines.image_vector_subprocess import (
-    start_image_vector_subprocess,
-)
+from lesson_pipeline.utils.image_tags import parse_image_tags, inject_resolved_images
+from lesson_pipeline.pipelines.image_ingestion import run_image_research_and_index_sync
 from lesson_pipeline.pipelines.image_resolver import resolve_image_tags_for_topic
 from lesson_pipeline.pipelines.image_transformation import transform_resolved_images
 from lesson_pipeline.services.script_writer import generate_script
@@ -46,28 +45,36 @@ def generate_lesson(
     # Create user prompt
     prompt = UserPrompt(text=prompt_text)
     
-    # STEP 1: Kick off background image vector subprocess & run script generation
-    logger.info("Step 1: Starting image vector subprocess + script generation...")
+    # STEP 1: Run image research and script generation IN PARALLEL
+    logger.info("Step 1: Running image research and script generation in parallel...")
     
-    vector_subprocess = start_image_vector_subprocess(prompt, subject)
+    image_index_info = None
     script_draft = None
     
-    try:
-        script_draft = generate_script(
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        # Submit both tasks
+        future_images = executor.submit(
+            run_image_research_and_index_sync,
+            prompt,
+            subject
+        )
+        future_script = executor.submit(
+            generate_script,
             prompt,
             duration_target
         )
-        if script_draft:
-            logger.info("✓ Script generation complete: %s characters", len(script_draft.content))
-    except Exception as e:
-        logger.error(f"Script generation failed: {e}")
-    
-    # Wait for vector subprocess (continues running during script generation)
-    image_index_info = vector_subprocess.wait_for_result()
-    logger.info(
-        "✓ Image vector subprocess complete: %s images indexed",
-        image_index_info.get('indexed_count', 0)
-    )
+        
+        # Wait for both to complete
+        for future in as_completed([future_images, future_script]):
+            try:
+                if future == future_images:
+                    image_index_info = future.result()
+                    logger.info(f"✓ Image research complete: {image_index_info['indexed_count']} images indexed")
+                elif future == future_script:
+                    script_draft = future.result()
+                    logger.info(f"✓ Script generation complete: {len(script_draft.content)} characters")
+            except Exception as e:
+                logger.error(f"Parallel task failed: {e}")
     
     # Check if we got results
     if not script_draft:
@@ -92,9 +99,6 @@ def generate_lesson(
     logger.info("Step 2: Parsing IMAGE tags from script...")
     cleaned_content, tags = parse_image_tags(script_draft.content)
     logger.info(f"Found {len(tags)} IMAGE tags")
-    image_slots = build_image_slots(tags)
-    if not image_slots:
-        logger.warning("No image slots could be derived from IMAGE tags")
     
     if not tags:
         logger.warning("No IMAGE tags found in script")
@@ -104,8 +108,7 @@ def generate_lesson(
             content=script_draft.content,
             images=[],
             topic_id=image_index_info['topic_id'],
-            indexed_image_count=image_index_info['indexed_count'],
-            image_slots=image_slots,
+            indexed_image_count=image_index_info['indexed_count']
         )
     
     # STEP 3: Resolve tags to base images from Pinecone
@@ -132,8 +135,7 @@ def generate_lesson(
         content=final_content,
         images=transformed,
         topic_id=image_index_info['topic_id'],
-        indexed_image_count=image_index_info['indexed_count'],
-        image_slots=image_slots,
+        indexed_image_count=image_index_info['indexed_count']
     )
     
     logger.info(f"=== Lesson generation complete ===")

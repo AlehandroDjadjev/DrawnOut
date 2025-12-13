@@ -27,7 +27,6 @@ class ImageCandidate:
     license: Optional[str] = None
     source: Optional[str] = None  # 'openstax', 'wikimedia', etc.
     tags: List[str] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -46,29 +45,11 @@ class ImageTag:
     """Parsed IMAGE tag from script"""
     id: str
     prompt: str
-    query: Optional[str] = None
     style: Optional[str] = None
     aspect_ratio: Optional[str] = None  # e.g. "16:9"
     size: Optional[str] = None          # e.g. "1024x576" or "medium"
     guidance_scale: Optional[float] = 7.5
     strength: Optional[float] = 0.7     # img2img strength
-    time_offset: Optional[float] = None  # Seconds into lesson when LLM wants it
-    duration: Optional[float] = None     # Seconds the image should stay visible
-    placement: Dict[str, float] = field(default_factory=dict)  # x/y/width/height ratios
-    metadata: Dict[str, Any] = field(default_factory=dict)     # Extra attributes direct from tag
-
-
-@dataclass
-class ImageSlot:
-    """LLM-authored runtime instruction describing when/how to draw an image"""
-    id: str
-    tag: ImageTag
-    sequence_index: int
-    min_time_seconds: float = 0.0
-    duration_seconds: float = 5.0
-    placement: Dict[str, float] = field(default_factory=dict)
-    notes: Optional[str] = None
-    status: str = "pending"  # pending | queued | fulfilled
 
 
 @dataclass
@@ -85,7 +66,6 @@ class ResolvedImage:
     tag: ImageTag
     base_image_url: str
     final_image_url: str
-    vector_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -98,7 +78,6 @@ class LessonDocument:
     images: List[ResolvedImage] = field(default_factory=list)
     topic_id: str = ""
     indexed_image_count: int = 0
-    image_slots: List[ImageSlot] = field(default_factory=list)
 
 
 # Helper functions for type conversions
@@ -114,7 +93,6 @@ def image_candidate_to_dict(candidate: ImageCandidate) -> Dict[str, Any]:
         'license': candidate.license,
         'source': candidate.source,
         'tags': candidate.tags,
-        'metadata': candidate.metadata,
     }
 
 
@@ -124,7 +102,6 @@ def resolved_image_to_dict(resolved: ResolvedImage) -> Dict[str, Any]:
         'tag': {
             'id': resolved.tag.id,
             'prompt': resolved.tag.prompt,
-            'query': resolved.tag.query,
             'style': resolved.tag.style,
             'aspect_ratio': resolved.tag.aspect_ratio,
             'size': resolved.tag.size,
@@ -133,35 +110,7 @@ def resolved_image_to_dict(resolved: ResolvedImage) -> Dict[str, Any]:
         },
         'base_image_url': resolved.base_image_url,
         'final_image_url': resolved.final_image_url,
-        'vector_id': resolved.vector_id,
         'metadata': resolved.metadata,
-    }
-
-
-def image_slot_to_dict(slot: ImageSlot) -> Dict[str, Any]:
-    """Convert ImageSlot to dict for serialization"""
-    return {
-        'id': slot.id,
-        'sequence_index': slot.sequence_index,
-        'min_time_seconds': slot.min_time_seconds,
-        'duration_seconds': slot.duration_seconds,
-        'placement': slot.placement,
-        'notes': slot.notes,
-        'status': slot.status,
-        'tag': {
-            'id': slot.tag.id,
-            'prompt': slot.tag.prompt,
-            'query': slot.tag.query,
-            'style': slot.tag.style,
-            'aspect_ratio': slot.tag.aspect_ratio,
-            'size': slot.tag.size,
-            'guidance_scale': slot.tag.guidance_scale,
-            'strength': slot.tag.strength,
-            'time_offset': slot.tag.time_offset,
-            'duration': slot.tag.duration,
-            'placement': slot.tag.placement,
-            'metadata': slot.tag.metadata,
-        }
     }
 
 
@@ -174,14 +123,6 @@ def lesson_document_to_dict(lesson: LessonDocument) -> Dict[str, Any]:
         'images': [resolved_image_to_dict(img) for img in lesson.images],
         'topic_id': lesson.topic_id,
         'indexed_image_count': lesson.indexed_image_count,
-        'image_slots': [image_slot_to_dict(slot) for slot in lesson.image_slots],
     }
-
-
-
-
-
-
-
 
 

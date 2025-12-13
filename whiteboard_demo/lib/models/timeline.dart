@@ -52,13 +52,6 @@ class DrawingAction {
   final int? level;
   final String? timingHint;
   final Map<String, dynamic>? style;
-  final String? tagId;
-  final String? imageUrl;
-  final String? baseImageUrl;
-  final String? vectorId;
-  final String? query;
-  final Map<String, dynamic>? placement;
-  final Map<String, dynamic>? metadata;
 
   DrawingAction({
     required this.type,
@@ -66,13 +59,6 @@ class DrawingAction {
     this.level,
     this.timingHint,
     this.style,
-    this.tagId,
-    this.imageUrl,
-    this.baseImageUrl,
-    this.vectorId,
-    this.query,
-    this.placement,
-    this.metadata,
   });
 
   factory DrawingAction.fromJson(Map<String, dynamic> json) {
@@ -82,13 +68,6 @@ class DrawingAction {
       level: json['level'] as int?,
       timingHint: json['timing_hint'] as String?,
       style: json['style'] as Map<String, dynamic>?,
-      tagId: json['tag_id'] as String?,
-      imageUrl: json['image_url'] as String?,
-      baseImageUrl: json['base_image_url'] as String?,
-      vectorId: json['vector_id'] as String?,
-      query: json['query'] as String?,
-      placement: json['placement'] as Map<String, dynamic>?,
-      metadata: json['metadata'] as Map<String, dynamic>?,
     );
   }
 
@@ -99,13 +78,6 @@ class DrawingAction {
       if (level != null) 'level': level,
       if (timingHint != null) 'timing_hint': timingHint,
       if (style != null) 'style': style,
-      if (tagId != null) 'tag_id': tagId,
-      if (imageUrl != null) 'image_url': imageUrl,
-      if (baseImageUrl != null) 'base_image_url': baseImageUrl,
-      if (vectorId != null) 'vector_id': vectorId,
-      if (query != null) 'query': query,
-      if (placement != null) 'placement': placement,
-      if (metadata != null) 'metadata': metadata,
     };
   }
 }

@@ -20,10 +20,3 @@ class TimelineSegmentAdmin(admin.ModelAdmin):
 
 
 
-
-
-
-
-
-
-

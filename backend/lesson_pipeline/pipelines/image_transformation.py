@@ -37,13 +37,11 @@ def transform_resolved_images(resolved_base: List[Dict]) -> List[ResolvedImage]:
         for item in resolved_base:
             tag = item['tag']
             base_image_url = item['base_image_url']
-            vector_id = item.get('vector_id')
             
             resolved = ResolvedImage(
                 tag=tag,
                 base_image_url=base_image_url,
                 final_image_url=base_image_url or "",
-                vector_id=vector_id,
                 metadata={
                     'base': item.get('base_metadata'),
                     'comfy_available': False,
@@ -61,7 +59,6 @@ def transform_resolved_images(resolved_base: List[Dict]) -> List[ResolvedImage]:
     for item in resolved_base:
         tag = item['tag']
         base_image_url = item['base_image_url']
-        vector_id = item.get('vector_id')
         
         try:
             # Determine if we should use base image or generate from scratch
@@ -95,7 +92,6 @@ def transform_resolved_images(resolved_base: List[Dict]) -> List[ResolvedImage]:
                 tag=tag,
                 base_image_url=base_image_url,
                 final_image_url=final_url,
-                vector_id=vector_id,
                 metadata={
                     'base': item.get('base_metadata'),
                     'transformation_used': use_base,
@@ -113,7 +109,6 @@ def transform_resolved_images(resolved_base: List[Dict]) -> List[ResolvedImage]:
                 tag=tag,
                 base_image_url=base_image_url,
                 final_image_url=base_image_url or "",
-                vector_id=vector_id,
                 metadata={
                     'base': item.get('base_metadata'),
                     'error': str(e),

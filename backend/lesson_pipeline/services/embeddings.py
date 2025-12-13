@@ -12,7 +12,6 @@ import logging
 from typing import List
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +61,20 @@ class SigLIPEmbeddingService:
             List of floats (1536-dimensional embedding vector)
         """
         try:
-            image = self._load_image_from_source(image_url)
+            import requests
+            from PIL import Image
+            from io import BytesIO
+            from lesson_pipeline.config import config
+            
+            # Download image with proper headers for Wikimedia
+            headers = {
+                'User-Agent': 'DrawnOutBot/1.0 (https://github.com/drawnout; educational@example.com) Python-Requests'
+            }
+            response = requests.get(image_url, headers=headers, timeout=config.embedding_timeout)
+            response.raise_for_status()
+            
+            # Open image
+            image = Image.open(BytesIO(response.content)).convert('RGB')
             
             # Generate embedding via vision app
             embedding_tensor = encode_image_from_pil(image)
@@ -101,36 +113,6 @@ class SigLIPEmbeddingService:
         
         logger.info(f"Generated {len(embeddings)} image embeddings ({len(embeddings)}/{len(image_urls)} succeeded)")
         return embeddings, success_indices
-
-    def _load_image_from_source(self, image_url: str):
-        """
-        Load a PIL image either from a remote URL or a local file path.
-        """
-        from PIL import Image
-        from io import BytesIO
-        import requests
-        from lesson_pipeline.config import config
-
-        normalized = (image_url or "").strip()
-        parsed = urlparse(normalized)
-
-        if parsed.scheme in ("http", "https"):
-            headers = {
-                'User-Agent': 'DrawnOutBot/1.0 (https://github.com/drawnout; educational@example.com) Python-Requests'
-            }
-            response = requests.get(normalized, headers=headers, timeout=config.embedding_timeout)
-            response.raise_for_status()
-            return Image.open(BytesIO(response.content)).convert('RGB')
-
-        if parsed.scheme == "file":
-            path = Path(parsed.path)
-        else:
-            path = Path(normalized)
-
-        if not path.exists():
-            raise FileNotFoundError(f"Image not found at path: {path}")
-
-        return Image.open(path).convert('RGB')
 
 
 # Global singleton instance

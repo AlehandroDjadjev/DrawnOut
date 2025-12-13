@@ -130,10 +130,3 @@ def transform_image(
     )
 
 
-
-
-
-
-
-
-

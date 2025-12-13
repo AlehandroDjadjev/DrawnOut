@@ -4,9 +4,7 @@ Image research service - wrapper around existing image_researcher app.
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
-import requests
+from typing import List
 
 from lesson_pipeline.types import ImageCandidate
 from lesson_pipeline.config import config
@@ -30,162 +28,6 @@ class ImageResearchService:
     
     def __init__(self):
         self.max_images = config.max_images_per_prompt
-        self.api_url = config.image_research_api_url
-        self.api_token = config.image_research_api_token
-        self.timeout = config.image_research_timeout
-
-    def _research_via_api(
-        self,
-        query: str,
-        subject: str,
-        limit: int,
-    ) -> List[ImageCandidate]:
-        """Call the external image research API and normalize results."""
-        if not self.api_url:
-            logger.debug("Image research API URL is not configured")
-            return []
-
-        payload = {
-            "query": query,
-            "subject": subject,
-            "limit": limit,
-        }
-        headers = {
-            "Content-Type": "application/json",
-        }
-        if self.api_token:
-            headers["Authorization"] = f"Bearer {self.api_token}"
-
-        try:
-            response = requests.post(
-                self.api_url,
-                json=payload,
-                headers=headers,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            data = response.json()
-        except Exception as exc:
-            logger.error("Image research API request failed: %s", exc)
-            return []
-
-        if not data.get("ok"):
-            logger.warning("Image research API returned non-ok payload: %s", data)
-            return []
-
-        candidates: List[ImageCandidate] = []
-        for source_entry in data.get("results", []):
-            source_name = source_entry.get("source") or "unknown"
-            images = source_entry.get("images") or []
-            metadata_list = (
-                source_entry.get("metadata")
-                or source_entry.get("image_metadata")
-                or []
-            )
-
-            for idx, image_ref in enumerate(images):
-                meta = self._coerce_metadata(metadata_list, idx)
-                normalized_ref = self._normalize_image_reference(image_ref)
-                candidate = ImageCandidate(
-                    source_url=normalized_ref,
-                    source=source_name,
-                    title=self._derive_title(meta, normalized_ref, query),
-                    description=meta.get("description")
-                    or f"{subject}: {query}",
-                    width=self._safe_int(
-                        meta.get("width") or meta.get("image_width")
-                    ),
-                    height=self._safe_int(
-                        meta.get("height") or meta.get("image_height")
-                    ),
-                    license=meta.get("license"),
-                    tags=self._build_tags(query, subject, meta),
-                    metadata=self._build_candidate_metadata(
-                        meta,
-                        source_name,
-                        subject,
-                        query,
-                        normalized_ref,
-                    ),
-                )
-                candidates.append(candidate)
-                if len(candidates) >= limit:
-                    return candidates
-
-        return candidates
-
-    def _normalize_image_reference(self, value: Any) -> str:
-        if value is None:
-            return ""
-        try:
-            path = Path(value)
-            if path.exists():
-                return str(path.resolve())
-        except (OSError, TypeError, ValueError):
-            pass
-        return str(value)
-
-    def _coerce_metadata(
-        self,
-        metadata_list: Any,
-        index: int,
-    ) -> Dict[str, Any]:
-        if isinstance(metadata_list, list) and 0 <= index < len(metadata_list):
-            entry = metadata_list[index]
-            if isinstance(entry, dict):
-                return dict(entry)
-        return {}
-
-    def _derive_title(
-        self,
-        meta: Dict[str, Any],
-        image_ref: str,
-        query: str,
-    ) -> str:
-        if meta.get("title"):
-            return meta["title"]
-        if image_ref:
-            return Path(image_ref).stem.replace("_", " ") or query
-        return query
-
-    def _build_tags(
-        self,
-        query: str,
-        subject: str,
-        meta: Dict[str, Any],
-    ) -> List[str]:
-        tags = [query, subject]
-        extra = meta.get("tags")
-        if isinstance(extra, list):
-            tags.extend([str(tag) for tag in extra if tag])
-        return list(dict.fromkeys(t for t in tags if t))
-
-    def _build_candidate_metadata(
-        self,
-        meta: Dict[str, Any],
-        source_name: str,
-        subject: str,
-        query: str,
-        image_ref: str,
-    ) -> Dict[str, Any]:
-        metadata = {
-            "source_name": source_name,
-            "subject": subject,
-            "query": query,
-            "image_ref": image_ref,
-        }
-        if isinstance(meta, dict):
-            metadata.update(meta)
-        return metadata
-
-    @staticmethod
-    def _safe_int(value: Any) -> Optional[int]:
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
     
     def _extract_urls_from_api_data(self, source_name: str, data: dict) -> List[str]:
         """
@@ -282,18 +124,13 @@ class ImageResearchService:
         Returns:
             List of ImageCandidate objects
         """
+        if not IMAGE_RESEARCHER_AVAILABLE:
+            logger.error("Image researcher module not available")
+            return []
+        
         limit = max_images or self.max_images
         
         logger.info(f"Researching images for query='{query}', subject='{subject}', limit={limit}")
-
-        api_candidates = self._research_via_api(query, subject, limit)
-        if api_candidates:
-            logger.info("Image research API returned %s candidates", len(api_candidates))
-            return api_candidates[:limit]
-
-        if not IMAGE_RESEARCHER_AVAILABLE:
-            logger.error("Image researcher module not available and API returned no usable results")
-            return []
         
         try:
             # Read sources

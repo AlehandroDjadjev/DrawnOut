@@ -74,24 +74,6 @@ class TimelineGeneratorService:
                 content = response.choices[0].message.content
                 timeline_data = json.loads(content)
                 
-                # Debug: Check for IMAGE tags in speech_text
-                image_tag_count = 0
-                for seg in timeline_data.get('segments', []):
-                    speech = seg.get('speech_text', '')
-                    if '[IMAGE' in speech:
-                        image_tag_count += 1
-                        logger.debug(f"✅ Segment {seg.get('sequence', '?')} has IMAGE tag")
-                logger.info(f"📊 Timeline has {image_tag_count} segments with IMAGE tags")
-                
-                # ENFORCE: Must have at least 1 IMAGE tag (ideally 3)
-                if image_tag_count == 0:
-                    logger.warning(f"⚠️ Timeline has NO IMAGE tags! Retrying... (attempt {attempt + 1}/{max_retries})")
-                    if attempt < max_retries - 1:
-                        continue  # Retry
-                    else:
-                        logger.error("❌ Failed to generate timeline with IMAGE tags after all retries")
-                        # Continue anyway rather than failing completely
-                
                 # Validate timeline structure
                 if not self._validate_timeline(timeline_data):
                     logger.warning(f"Invalid timeline structure on attempt {attempt + 1}")
@@ -103,23 +85,6 @@ class TimelineGeneratorService:
                 timeline_data = self._compute_cumulative_timings(timeline_data)
                 
                 logger.info(f"Successfully generated timeline with {len(timeline_data['segments'])} segments")
-                
-                # Process images if any IMAGE tags present
-                try:
-                    from .image_integration import process_timeline_with_images
-                    logger.info("🎨 Processing timeline images...")
-                    timeline_data = process_timeline_with_images(
-                        timeline_data, 
-                        topic=topic,
-                        subject="General"  # Could be passed as parameter
-                    )
-                    logger.info(f"✅ Image processing complete. Image count: {timeline_data.get('image_count', 0)}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to process images for timeline: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-                    # Continue without images
-                
                 return timeline_data
                 
             except Exception as e:
