@@ -1,3 +1,0 @@
-# Image researcher Django app
-
-

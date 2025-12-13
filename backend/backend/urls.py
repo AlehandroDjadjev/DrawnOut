@@ -19,21 +19,16 @@ from django.urls import path, include
 from django.views.generic import TemplateView
 from django.conf import settings
 from django.conf.urls.static import static
-from django.urls import path, include
-from imagePrinting import views
 from TTSVoice import tts
 
 urlpatterns = [
-    path('', views.index, name='index'),
-    path('analyze_plan/', views.analyze_plan, name='analyze_plan'),
     path('admin/', admin.site.urls),
     path('api/auth/', include('users.urls')),
     path('api/lessons/', include('lessons.urls')),
     path('api/timeline/', include('timeline_generator.urls')),
-    path('api/image-research/', include('image_researcher.urls')),
     path('api/imggen/', include('imggen.urls')),
     path('api/lesson-pipeline/', include('lesson_pipeline.urls')),
     path('api/vision/', include('vision.urls')),  # SigLIP2 endpoints
-    path('', TemplateView.as_view(template_name='index.html')),
-    path('tts-demo/', TemplateView.as_view(template_name ='tts_demo')),
+    path('', TemplateView.as_view(template_name='canvasapp/index.html'), name='index'),
+    path('tts-demo/', TemplateView.as_view(template_name='canvasapp/tts-demo.html'), name='tts_demo'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

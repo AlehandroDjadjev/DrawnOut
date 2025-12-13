@@ -3,7 +3,7 @@ Utilities for parsing and handling IMAGE tags in lesson scripts.
 """
 import re
 from typing import List, Tuple, Dict
-from lesson_pipeline.types import ImageTag, ResolvedImage
+from lesson_pipeline.types import ImageTag, ResolvedImage, ImageSlot
 
 
 # Regex to match [IMAGE ...] tags
@@ -56,14 +56,42 @@ def parse_image_tags(content: str) -> Tuple[str, List[ImageTag]]:
         
         # Create ImageTag
         tag_id = attrs.get('id', f'img_{len(tags) + 1}')
+        time_value = _parse_timecode(attrs.get('time') or attrs.get('timecode') or attrs.get('at'))
+        duration_value = _parse_float(attrs.get('duration'), None)
+        placement = _parse_layout(attrs.get('layout'))
+
+        # Support direct positional attributes (x/y/width/height/scale)
+        for axis in ('x', 'y', 'width', 'height', 'scale'):
+            axis_value = _parse_float(attrs.get(axis), None)
+            if axis_value is not None:
+                placement[axis] = axis_value
+
+        # Capture arbitrary metadata that may be useful later
+        known_attr_keys = {
+            'id', 'prompt', 'style', 'aspect', 'size', 'strength',
+            'guidance', 'timecode', 'time', 'at', 'duration', 'layout',
+            'x', 'y', 'width', 'height', 'scale', 'notes'
+        }
+        metadata = {
+            k: v for k, v in attrs.items()
+            if k not in known_attr_keys
+        }
+        if attrs.get('notes'):
+            metadata['notes'] = attrs.get('notes')
+
         tag = ImageTag(
             id=tag_id,
             prompt=attrs.get('prompt', ''),
+            query=attrs.get('query'),
             style=attrs.get('style'),
             aspect_ratio=attrs.get('aspect'),
             size=attrs.get('size'),
             guidance_scale=_parse_float(attrs.get('guidance'), 7.5),
             strength=_parse_float(attrs.get('strength'), 0.7),
+            time_offset=time_value,
+            duration=duration_value,
+            placement=placement,
+            metadata=metadata,
         )
         
         tags.append(tag)
@@ -94,6 +122,60 @@ def _parse_float(value: str | None, default: float) -> float:
         return float(value)
     except (ValueError, TypeError):
         return default
+
+
+def _parse_timecode(value: str | None) -> float | None:
+    """Parse simple timecode strings (e.g. '45', '45s', '01:30')"""
+    if not value:
+        return None
+    text = value.strip().lower()
+    if text.endswith('s'):
+        text = text[:-1]
+    if ':' in text:
+        parts = text.split(':')
+        try:
+            parts = [float(p) for p in parts]
+        except ValueError:
+            return None
+        seconds = 0.0
+        for part in parts:
+            seconds = seconds * 60 + part
+        return seconds
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _parse_layout(layout_str: str | None) -> Dict[str, float]:
+    """
+    Parse layout attribute of the form `x:0.2,y:0.1,width:0.4,height:0.3`.
+    Values may be ratios (0-1) or percentages (e.g. 40%).
+    """
+    layout: Dict[str, float] = {}
+    if not layout_str:
+        return layout
+    pairs = [segment.strip() for segment in layout_str.replace(';', ',').split(',') if segment.strip()]
+    for pair in pairs:
+        if ':' not in pair:
+            continue
+        key, value = pair.split(':', 1)
+        parsed = _parse_percentage(value.strip())
+        if parsed is not None:
+            layout[key.strip().lower()] = parsed
+    return layout
+
+
+def _parse_percentage(value: str) -> float | None:
+    """Parse ratio or percent string into 0..1 float."""
+    text = value.strip()
+    try:
+        if text.endswith('%'):
+            number = float(text[:-1])
+            return number / 100.0
+        return float(text)
+    except ValueError:
+        return None
 
 
 def inject_resolved_images(
@@ -132,6 +214,8 @@ def inject_resolved_images(
             metadata_attrs.append(f'data-aspect="{resolved.tag.aspect_ratio}"')
         if resolved.base_image_url:
             metadata_attrs.append(f'data-base-url="{resolved.base_image_url}"')
+        if resolved.tag.query:
+            metadata_attrs.append(f'data-query="{resolved.tag.query}"')
         
         attrs_str = ' '.join(metadata_attrs)
         
@@ -187,5 +271,54 @@ def _is_valid_aspect_ratio(ratio: str) -> bool:
         return w > 0 and h > 0
     except ValueError:
         return False
+
+
+def build_image_slots(
+    tags: List[ImageTag],
+    default_duration: float = 6.0,
+    default_gap: float = 8.0,
+) -> List[ImageSlot]:
+    """
+    Convert parsed ImageTag objects into runtime slots with scheduling metadata.
+
+    Args:
+        tags: Parsed ImageTag list
+        default_duration: Seconds to display the image if not specified
+        default_gap: Fallback spacing between slots when no timestamps are provided
+    """
+    slots: List[ImageSlot] = []
+    timeline_cursor = 0.0
+
+    for idx, tag in enumerate(tags):
+        min_time = tag.time_offset if tag.time_offset is not None else timeline_cursor
+        duration = tag.duration if tag.duration is not None else default_duration
+        if min_time is None:
+            min_time = timeline_cursor
+
+        placement = tag.placement or {}
+
+        slot = ImageSlot(
+            id=tag.id,
+            tag=tag,
+            sequence_index=idx,
+            min_time_seconds=float(min_time),
+            duration_seconds=float(duration),
+            placement=placement,
+            notes=tag.metadata.get('notes'),
+            status="pending",
+        )
+        slots.append(slot)
+
+        # Advance cursor so subsequent auto-generated slots do not overlap
+        timeline_cursor = max(min_time + duration, timeline_cursor + default_gap)
+
+    return slots
+
+
+
+
+
+
+
 
 

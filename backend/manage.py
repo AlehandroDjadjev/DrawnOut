@@ -2,14 +2,12 @@
 """Django's command-line utility for administrative tasks."""
 import os
 import sys
-from dotenv import load_dotenv
 
-# load environment variables from backend/.env so manage.py commands see them
-load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 def main():
     """Run administrative tasks."""
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.settings')
+    # Always point to the backend settings module for this project
+    os.environ['DJANGO_SETTINGS_MODULE'] = 'backend.settings'
     try:
         from django.core.management import execute_from_command_line
     except ImportError as exc:
