@@ -1,0 +1,2 @@
+"""Whiteboard research Django app."""
+

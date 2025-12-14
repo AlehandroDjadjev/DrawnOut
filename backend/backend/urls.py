@@ -26,8 +26,11 @@ urlpatterns = [
     path('api/auth/', include('users.urls')),
     path('api/lessons/', include('lessons.urls')),
     path('api/timeline/', include('timeline_generator.urls')),
-    path('api/imggen/', include('imggen.urls')),
     path('api/lesson-pipeline/', include('lesson_pipeline.urls')),
+    path('api/wb/research/', include('wb_research.urls')),
+    path('api/wb/preprocess/', include('wb_preprocess.urls')),
+    path('api/wb/vectorize/', include('wb_vectorize.urls')),
+    path('api/wb/generate/', include('wb_generate.urls')),
     path('api/vision/', include('vision.urls')),  # SigLIP2 endpoints
     path('', TemplateView.as_view(template_name='canvasapp/index.html'), name='index'),
     path('tts-demo/', TemplateView.as_view(template_name='canvasapp/tts-demo.html'), name='tts_demo'),

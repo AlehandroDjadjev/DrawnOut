@@ -49,8 +49,8 @@ class Image2ImageService:
             if style:
                 full_prompt = f"{prompt}, {style} style"
             
-            # Use imggen API endpoint
-            imggen_url = "http://localhost:8000/api/imggen/generate/"
+            # Use wb_generate API endpoint (wraps whiteboard imggen)
+            imggen_url = "http://localhost:8000/api/wb/generate/generate/"
             
             payload = {
                 "prompts": [full_prompt],

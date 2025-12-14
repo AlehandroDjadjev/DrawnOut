@@ -1,0 +1,2 @@
+"""Whiteboard preprocessing Django app."""
+

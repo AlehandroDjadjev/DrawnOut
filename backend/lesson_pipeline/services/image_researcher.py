@@ -13,8 +13,8 @@ from lesson_pipeline.config import config
 
 logger = logging.getLogger(__name__)
 
-# Add image_researcher to path
-IMAGE_RESEARCHER_DIR = Path(__file__).parent.parent.parent / 'image_researcher'
+# Add whiteboard_backend image researcher to path
+IMAGE_RESEARCHER_DIR = Path(__file__).parent.parent.parent / 'whiteboard_backend'
 sys.path.insert(0, str(IMAGE_RESEARCHER_DIR))
 
 try:
