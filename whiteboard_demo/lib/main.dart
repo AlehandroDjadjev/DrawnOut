@@ -531,7 +531,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   @override
   void initState() {
     super.initState();
-    
+
     // Initialize timeline controller
     _timelineController = TimelinePlaybackController();
     _timelineController!.onDrawingActionsTriggered = (actions) async {
@@ -544,7 +544,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       debugPrint('✅ Timeline completed!');
       _showError('Lesson completed!');
     };
-    
+
     // Mirror index.html end-of-segment behavior
     setAssistantOnQueueEmpty(() async {
       // If user pressed Raise Hand, start SDK live when the current segment ends
@@ -949,7 +949,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         maxWordsPerSentence: _plMaxWords.round(),
       );
       if (plan == null) {
-        debugPrint('⚠️ PLANNER RETURNED NULL - no whiteboard actions generated');
+        debugPrint(
+            '⚠️ PLANNER RETURNED NULL - no whiteboard actions generated');
         return;
       }
       debugPrint('✅ Planner returned: $plan');
@@ -975,7 +976,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       } catch (e) {
         debugPrint('⚠️ Diagram pipeline error: $e');
       }
-      await _handleWhiteboardActions(actions, fontScale: fs, overrideSeconds: seconds);
+      await _handleWhiteboardActions(actions,
+          fontScale: fs, overrideSeconds: seconds);
       debugPrint('✅ Finished drawing actions');
     } catch (e, st) {
       debugPrint('❌ ERROR in _runPlannerAndRender: $e');
@@ -984,16 +986,20 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   }
 
   // ========== Lesson Pipeline Methods ==========
-  
+
   Future<void> _startLessonPipeline() async {
-    setState(() { _busy = true; });
-    
+    setState(() {
+      _busy = true;
+    });
+
     try {
       debugPrint('🎨 Starting AI Lesson Pipeline with Images...');
-      
-      final baseUrl = _apiUrlCtrl.text.trim().isEmpty ? 'http://localhost:8000' : _apiUrlCtrl.text.trim();
+
+      final baseUrl = _apiUrlCtrl.text.trim().isEmpty
+          ? 'http://localhost:8000'
+          : _apiUrlCtrl.text.trim();
       final pipelineApi = LessonPipelineApi(baseUrl: baseUrl);
-      
+
       // Show progress dialog
       if (mounted) {
         showDialog(
@@ -1008,28 +1014,33 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                 SizedBox(height: 16),
                 Text('This may take 60-150 seconds...'),
                 SizedBox(height: 8),
-                Text('1. Researching images (30-60s)', style: TextStyle(fontSize: 12)),
-                Text('2. Generating script (10-30s)', style: TextStyle(fontSize: 12)),
-                Text('3. Matching images (5-10s)', style: TextStyle(fontSize: 12)),
-                Text('4. Transforming images (30-90s)', style: TextStyle(fontSize: 12)),
+                Text('1. Researching images (30-60s)',
+                    style: TextStyle(fontSize: 12)),
+                Text('2. Generating script (10-30s)',
+                    style: TextStyle(fontSize: 12)),
+                Text('3. Matching images (5-10s)',
+                    style: TextStyle(fontSize: 12)),
+                Text('4. Transforming images (30-90s)',
+                    style: TextStyle(fontSize: 12)),
               ],
             ),
           ),
         );
       }
-      
+
       // Generate lesson
       final lesson = await pipelineApi.generateLesson(
         prompt: 'Explain the Pythagorean theorem',
         subject: 'Maths',
         durationTarget: 60.0,
       );
-      
+
       // Close progress dialog
       if (mounted) Navigator.of(context).pop();
-      
-      debugPrint('✅ Lesson generated: ${lesson.images.length} images, topic: ${lesson.topicId}');
-      
+
+      debugPrint(
+          '✅ Lesson generated: ${lesson.images.length} images, topic: ${lesson.topicId}');
+
       // Display lesson content with actual images
       if (mounted) {
         showDialog(
@@ -1046,79 +1057,98 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                     Text('Images: ${lesson.images.length}'),
                     Text('Indexed: ${lesson.indexedImageCount}'),
                     const SizedBox(height: 16),
-                    const Text('Content Preview:', style: TextStyle(fontWeight: FontWeight.bold)),
+                    const Text('Content Preview:',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
                     const SizedBox(height: 4),
                     Text(
-                      lesson.content.substring(0, math.min(300, lesson.content.length)) + '...',
+                      lesson.content.substring(
+                              0, math.min(300, lesson.content.length)) +
+                          '...',
                       style: const TextStyle(fontSize: 12),
                     ),
                     const SizedBox(height: 16),
-                    const Text('Generated Images:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const Text('Generated Images:',
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 16)),
                     const SizedBox(height: 8),
                     ...lesson.images.map((img) => Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            img.tag.prompt,
-                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-                          ),
-                          if (img.tag.style != null)
-                            Text(
-                              'Style: ${img.tag.style}',
-                              style: const TextStyle(fontSize: 11, color: Colors.grey),
-                            ),
-                          const SizedBox(height: 8),
-                          // Display actual image
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: Image.network(
-                              img.finalImageUrl,
-                              height: 200,
-                              width: double.infinity,
-                              fit: BoxFit.cover,
-                              loadingBuilder: (context, child, loadingProgress) {
-                                if (loadingProgress == null) return child;
-                                return Container(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                img.tag.prompt,
+                                style: const TextStyle(
+                                    fontSize: 13, fontWeight: FontWeight.w600),
+                              ),
+                              if (img.tag.style != null)
+                                Text(
+                                  'Style: ${img.tag.style}',
+                                  style: const TextStyle(
+                                      fontSize: 11, color: Colors.grey),
+                                ),
+                              const SizedBox(height: 8),
+                              // Display actual image
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Image.network(
+                                  img.finalImageUrl,
                                   height: 200,
-                                  alignment: Alignment.center,
-                                  child: CircularProgressIndicator(
-                                    value: loadingProgress.expectedTotalBytes != null
-                                        ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!
-                                        : null,
-                                  ),
-                                );
-                              },
-                              errorBuilder: (context, error, stackTrace) {
-                                return Container(
-                                  height: 200,
-                                  color: Colors.grey[300],
-                                  alignment: Alignment.center,
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      const Icon(Icons.error_outline, color: Colors.red, size: 40),
-                                      const SizedBox(height: 8),
-                                      Text(
-                                        'Failed to load image',
-                                        style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                                  width: double.infinity,
+                                  fit: BoxFit.cover,
+                                  loadingBuilder:
+                                      (context, child, loadingProgress) {
+                                    if (loadingProgress == null) return child;
+                                    return Container(
+                                      height: 200,
+                                      alignment: Alignment.center,
+                                      child: CircularProgressIndicator(
+                                        value: loadingProgress
+                                                    .expectedTotalBytes !=
+                                                null
+                                            ? loadingProgress
+                                                    .cumulativeBytesLoaded /
+                                                loadingProgress
+                                                    .expectedTotalBytes!
+                                            : null,
                                       ),
-                                      const SizedBox(height: 4),
-                                      SelectableText(
-                                        img.finalImageUrl,
-                                        style: TextStyle(fontSize: 10, color: Colors.blue[700]),
+                                    );
+                                  },
+                                  errorBuilder: (context, error, stackTrace) {
+                                    return Container(
+                                      height: 200,
+                                      color: Colors.grey[300],
+                                      alignment: Alignment.center,
+                                      child: Column(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
+                                          const Icon(Icons.error_outline,
+                                              color: Colors.red, size: 40),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            'Failed to load image',
+                                            style: TextStyle(
+                                                fontSize: 12,
+                                                color: Colors.grey[700]),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          SelectableText(
+                                            img.finalImageUrl,
+                                            style: TextStyle(
+                                                fontSize: 10,
+                                                color: Colors.blue[700]),
+                                          ),
+                                        ],
                                       ),
-                                    ],
-                                  ),
-                                );
-                              },
-                            ),
+                                    );
+                                  },
+                                ),
+                              ),
+                              const Divider(height: 16),
+                            ],
                           ),
-                          const Divider(height: 16),
-                        ],
-                      ),
-                    )),
+                        )),
                   ],
                 ),
               ),
@@ -1132,114 +1162,119 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           ),
         );
       }
-      
-      setState(() { _busy = false; });
-      
+
+      setState(() {
+        _busy = false;
+      });
     } catch (e, st) {
       debugPrint('❌ Lesson pipeline error: $e\n$st');
       if (mounted) {
         // Close progress dialog if open
-        try { Navigator.of(context).pop(); } catch (_) {}
+        try {
+          Navigator.of(context).pop();
+        } catch (_) {}
         _showError('Error: $e');
       }
-      setState(() { _busy = false; });
+      setState(() {
+        _busy = false;
+      });
     }
   }
-  
+
   // ========== Synchronized Timeline Methods ==========
-  
+
   Future<void> _startSynchronizedLesson() async {
-    setState(() { _busy = true; });
-    
+    setState(() {
+      _busy = true;
+    });
+
     try {
       debugPrint('🎬 Starting synchronized lesson...');
-      
+
       // Initialize APIs
-      final baseUrl = _apiUrlCtrl.text.trim().isEmpty ? 'http://localhost:8000' : _apiUrlCtrl.text.trim();
+      final baseUrl = _apiUrlCtrl.text.trim().isEmpty
+          ? 'http://localhost:8000'
+          : _apiUrlCtrl.text.trim();
       _api = AssistantApiClient(baseUrl);
       _timelineApi = TimelineApiClient(baseUrl);
       _timelineController!.setBaseUrl(baseUrl);
-      
+
       // 1. Start lesson session
       final data = await _api!.startLesson(topic: 'Pythagorean Theorem');
       _sessionId = data['id'] as int?;
       debugPrint('✅ Session created: $_sessionId');
-      
-      // 2. Generate timeline (force regenerate to get fresh images)
-      debugPrint('⏱️ Generating timeline with images... (this may take 30-60 seconds)');
-      final timeline = await _timelineApi!.generateTimeline(
-        _sessionId!, 
-        durationTarget: 60.0,
-        regenerate: true,  // Force new generation to include images
-      );
-      debugPrint('✅ Timeline generated: ${timeline.segments.length} segments, ${timeline.totalDuration}s');
-      
+
+      // 2. Generate timeline
+      debugPrint('⏱️ Generating timeline... (this may take 30-60 seconds)');
+      final timeline = await _timelineApi!
+          .generateTimeline(_sessionId!, durationTarget: 60.0);
+      debugPrint(
+          '✅ Timeline generated: ${timeline.segments.length} segments, ${timeline.totalDuration}s');
+
       // 3. Load timeline into controller
       await _timelineController!.loadTimeline(timeline);
-      
+
       // 4. Clear busy BEFORE starting playback so animations can render!
-      setState(() { _busy = false; });
-      
+      setState(() {
+        _busy = false;
+      });
+
       // 5. Start playback
       debugPrint('▶️ Starting synchronized playback...');
       await _timelineController!.play();
-      
     } catch (e, st) {
       debugPrint('❌ Synchronized lesson error: $e\n$st');
       _showError('Error: $e');
-      setState(() { _busy = false; });
+      setState(() {
+        _busy = false;
+      });
     }
   }
-  
+
   Future<void> _handleSyncedDrawingActions(List<DrawingAction> actions) async {
     if (actions.isEmpty) {
       debugPrint('💬 Explanatory segment - no drawing');
       return;
     }
-    
+
     try {
       await _ensureLayout();
-      
-      double? _placement(dynamic value) {
-        if (value == null) return null;
-        if (value is num) return value.toDouble();
-        return double.tryParse(value.toString());
-      }
-      
-      // Separate sketch_image actions from regular drawing actions
-      final imageActions = actions.where((a) => a.type == 'sketch_image').toList();
-      final textActions = actions.where((a) => a.type != 'sketch_image').toList();
-      
-      final whiteboardActions = textActions.map((action) => {
-        'type': action.type,
-        'text': action.text,
-        if (action.level != null) 'level': action.level,
-        if (action.style != null) 'style': action.style,
-      }).toList();
-      
+
+      final whiteboardActions = actions
+          .map((action) => {
+                'type': action.type,
+                'text': action.text,
+                if (action.level != null) 'level': action.level,
+                if (action.style != null) 'style': action.style,
+              })
+          .toList();
+
       // Drawing duration: MUCH SLOWER - match dictation pace for formulas
       final segment = _timelineController?.currentSegment;
-      final totalChars = whiteboardActions.fold<int>(0, (sum, a) => sum + (a['text'] as String).length);
-      
+      final totalChars = whiteboardActions.fold<int>(
+          0, (sum, a) => sum + (a['text'] as String).length);
+
       // Detect formula/dictation segments: short board text with longer speech
-      final isDictationSegment = segment != null && 
-                                  segment.actualAudioDuration > 5.0 && 
-                                  totalChars < 50;
-      
+      final isDictationSegment = segment != null &&
+          segment.actualAudioDuration > 5.0 &&
+          totalChars < 50;
+
       final drawDuration = isDictationSegment
-          ? (segment!.actualAudioDuration * 0.85).clamp(6.0, 25.0)  // SLOW: match dictation pace
-          : totalChars < 10 
-              ? 5.0    // Even short words take 5s
+          ? (segment!.actualAudioDuration * 0.85)
+              .clamp(6.0, 25.0) // SLOW: match dictation pace
+          : totalChars < 10
+              ? 5.0 // Even short words take 5s
               : totalChars < 20
-                  ? 7.0    // Medium takes 7s
+                  ? 7.0 // Medium takes 7s
                   : totalChars < 40
-                      ? 10.0   // Formulas take 10s
+                      ? 10.0 // Formulas take 10s
                       : totalChars < 80
-                          ? 14.0   // Lists take 14s
-                          : 18.0;  // Very long takes 18s
-      
-      debugPrint('✍️ Drawing "${whiteboardActions.map((a) => a['text']).join(', ')}" over ${drawDuration}s');
-      
+                          ? 14.0 // Lists take 14s
+                          : 18.0; // Very long takes 18s
+
+      debugPrint(
+          '✍️ Drawing "${whiteboardActions.map((a) => a['text']).join(', ')}" over ${drawDuration}s');
+
       // Generate strokes
       final accum = <List<Offset>>[];
       for (final action in whiteboardActions) {
@@ -1253,201 +1288,30 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           fontScale: _tutorFontScale,
         );
       }
-      
+
       if (accum.isEmpty) {
         debugPrint('⚠️ No strokes generated');
         return;
       }
-      
+
       // Set plan and animate
       setState(() {
         _seconds = drawDuration;
         _planUnderlay = false;
         _plan = StrokePlan(accum);
-        _currentAnimEnd = DateTime.now().add(Duration(milliseconds: (drawDuration * 1000).round()));
+        _currentAnimEnd = DateTime.now()
+            .add(Duration(milliseconds: (drawDuration * 1000).round()));
       });
-      
+
       // Wait for animation
-      await Future.delayed(Duration(milliseconds: (drawDuration * 1000 * 0.95).round()));
-      
+      await Future.delayed(
+          Duration(milliseconds: (drawDuration * 1000 * 0.95).round()));
+
       // Commit to board
       if (_plan != null) {
         _commitCurrentSketch();
         debugPrint('✅ Committed to board (total: ${_board.length})');
       }
-      
-      // Now handle image actions if any
-      for (final imageAction in imageActions) {
-        try {
-          final imageUrl = imageAction.imageUrl ?? imageAction.text;
-          final tagId = imageAction.tagId ?? imageAction.level?.toString() ?? 'img';
-          
-          debugPrint('🖼️ Sketching image: $tagId from $imageUrl');
-          debugPrint('   Image URL length: ${imageUrl.length}');
-          debugPrint('   Image URL valid: ${Uri.tryParse(imageUrl) != null}');
-          
-          // Use proxy to avoid CORS issues
-          final baseUrl = _apiUrlCtrl.text.trim().isEmpty ? 'http://localhost:8000' : _apiUrlCtrl.text.trim();
-          final proxyUrl = '$baseUrl/api/lesson-pipeline/image-proxy/?url=${Uri.encodeComponent(imageUrl)}';
-          debugPrint('   Using proxy: $proxyUrl');
-          
-          // Download image via proxy
-          final response = await http.get(Uri.parse(proxyUrl));
-          debugPrint('   HTTP response: ${response.statusCode}, bytes: ${response.bodyBytes.length}');
-          debugPrint('   Content-Type: ${response.headers['content-type']}');
-          
-          if (response.statusCode != 200) {
-            debugPrint('❌ Failed to download image: ${response.statusCode}');
-            continue;
-          }
-          
-          final imageBytes = response.bodyBytes;
-          
-          // Check if it's an SVG (can't decode those)
-          final contentType = response.headers['content-type'] ?? '';
-          if (contentType.contains('svg')) {
-            debugPrint('⚠️ Skipping SVG image (not supported): $imageUrl');
-            continue;
-          }
-          
-          debugPrint('   Decoding image...');
-          // Decode image
-          final decodedImage = await _decodeUiImage(imageBytes);
-          debugPrint('   ✅ Image decoded: ${decodedImage.width}x${decodedImage.height}');
-          
-          // Calculate layout-aware positioning
-          final cfg = _layout!.config;
-          final contentX0 = cfg.page.left + _layout!._columnOffsetX();
-          final contentW = _layout!._columnWidth();
-          final contentY0 = cfg.page.top;
-          final contentHeight = (cfg.page.height - cfg.page.bottom) - contentY0;
-          
-          // Place image below existing content, respecting layout
-          final maxBottom = _layout!.blocks.isEmpty 
-              ? cfg.page.top 
-              : _layout!.blocks.map((b) => b.bbox.bottom).fold<double>(0.0, (a, b) => a > b ? a : b);
-          double imageY = maxBottom + cfg.gutterY * 2;
-          
-          // Scale image to fit content width while maintaining aspect ratio
-          final aspectRatio = decodedImage.height / decodedImage.width;
-          final maxImageWidth = contentW * 0.9; // Use 90% of content width
-          double imageWidth = maxImageWidth.clamp(200.0, contentW);
-          double imageHeight = imageWidth * aspectRatio;
-          final imageSize = Size(imageWidth, imageHeight);
-          
-          // Center image horizontally in content area
-          double imageX = contentX0 + (contentW - imageWidth) / 2;
-          
-          final placement = imageAction.placement;
-          if (placement != null && placement.isNotEmpty) {
-            final normWidth = _placement(placement['width'])?.clamp(0.1, 1.0);
-            final normHeight = _placement(placement['height'])?.clamp(0.1, 1.0);
-            final normX = _placement(placement['x'])?.clamp(0.0, 1.0);
-            final normY = _placement(placement['y'])?.clamp(0.0, 1.0);
-            
-            if (normWidth != null) {
-              imageWidth = (normWidth * contentW).clamp(120.0, contentW);
-              imageHeight = imageWidth * aspectRatio;
-            }
-            if (normHeight != null) {
-              imageHeight = (normHeight * contentHeight).clamp(120.0, contentHeight);
-            }
-            if (normX != null) {
-              final usableWidth = (contentW - imageWidth).clamp(0.0, contentW);
-              imageX = contentX0 + usableWidth * normX;
-            }
-            if (normY != null) {
-              final usableHeight = (contentHeight - imageHeight).clamp(0.0, contentHeight);
-              imageY = contentY0 + usableHeight * normY;
-            }
-          }
-          
-          debugPrint('   📐 Image layout: x=$imageX, y=$imageY, w=$imageWidth, h=$imageHeight');
-          
-          // Check if image fits on current page
-          if (imageY + imageHeight > (cfg.page.height - cfg.page.bottom)) {
-            debugPrint('   ⚠️ Image too tall for remaining space, moving to next column/page');
-            // TODO: Handle column/page overflow (for now just place it anyway)
-          }
-          
-          // Vectorize with layout-appropriate scale
-          final strokes = await Vectorizer.vectorize(
-            bytes: imageBytes,
-            worldScale: imageWidth,  // Scale based on actual display width
-            edgeMode: 'dog',
-            dogSigma: 1.2,
-            dogK: 2.0,
-            dogThresh: 0.02,
-            epsilon: 3.0,
-            resampleSpacing: 2.0,
-            minPerimeter: 25.0,
-            retrExternalOnly: false,
-            angleThresholdDeg: 25.0,
-            angleWindow: 5,
-            smoothPasses: 2,
-            mergeParallel: true,
-            mergeMaxDist: 15.0,
-            minStrokeLen: 10.0,
-            minStrokePoints: 3,
-          );
-          
-          // Position strokes at calculated position
-          final offset = Offset(imageX, imageY);
-          final positionedStrokes = strokes
-              .map((s) => s.map((p) => p + offset).toList())
-              .toList();
-          
-          debugPrint('   ✏️ Vectorized ${positionedStrokes.length} strokes');
-          
-          // Animate sketch (10 seconds for images)
-          final imageDuration = 10.0;
-          setState(() {
-            _seconds = imageDuration;
-            _planUnderlay = false; // Don't show raster underlay, just sketch
-            _plan = StrokePlan(positionedStrokes);
-            _currentAnimEnd = DateTime.now().add(Duration(milliseconds: (imageDuration * 1000).round()));
-          });
-          
-          // Wait for animation
-          await Future.delayed(Duration(milliseconds: (imageDuration * 1000 * 0.95).round()));
-          
-          // IMPORTANT: Commit strokes to board permanently as a VectorObject
-          if (_plan != null) {
-            final imageObj = VectorObject(
-              plan: _plan!,
-              baseWidth: _width,
-              passOpacity: _opacity,
-              passes: _passes,
-              jitterAmp: _jitterAmp,
-              jitterFreq: _jitterFreq,
-            );
-            setState(() {
-              _board.add(imageObj);
-              _plan = null; // Clear plan so it doesn't re-animate
-            });
-            debugPrint('   ✅ Committed image to board permanently (${_board.length} total objects)');
-          }
-          
-          // Register image as a layout block so other content doesn't overlap
-          final imageBBox = _BBox(x: imageX, y: imageY, w: imageWidth, h: imageHeight);
-          _layout!.blocks.add(_DrawnBlock(
-            id: 'image_$tagId',
-            type: 'image',
-            bbox: imageBBox,
-            meta: {'tag_id': tagId, 'url': imageUrl},
-          ));
-          
-          // Update layout cursor to be below the image
-          _layout!.cursorY = imageY + imageHeight + cfg.gutterY * 2;
-          
-          debugPrint('   📍 Layout cursor now at y=${_layout!.cursorY}');
-          
-        } catch (e, st) {
-          debugPrint('❌ Failed to sketch image: $e');
-          debugPrint('   Stack: $st');
-        }
-      }
-      
     } catch (e, st) {
       debugPrint('❌ Drawing error: $e');
     }
@@ -1941,7 +1805,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     Widget buildCanvas(Size size) {
       // update layout page size to reflect live canvas
       _maybeUpdateCanvasSize(size);
-      
+
       final baseCanvas = _busy
           ? const Center(child: CircularProgressIndicator())
           : (_plan == null
@@ -1957,7 +1821,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                   showRasterUnderlay: _planUnderlay ? _showRasterUnder : false,
                   raster: _raster,
                 ));
-      
+
       return Stack(children: [
         Positioned.fill(child: baseCanvas),
         if (_board.isNotEmpty)
@@ -2321,26 +2185,38 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           Row(children: [
             Expanded(
               child: ElevatedButton.icon(
-                onPressed: _busy ? null : () async {
-                  setState(() { _busy = true; });
-                  try {
-                    debugPrint('🎬 Starting lesson...');
-                    _api = AssistantApiClient(_apiUrlCtrl.text.trim());
-                    setAssistantAudioBaseUrl(_apiUrlCtrl.text.trim());
-                    final data = await _api!.startLesson(topic: 'Handwriting practice');
-                    debugPrint('✅ Got session data: $data');
-                    _sessionId = data['id'] as int?;
-                    debugPrint('📢 Enqueueing audio...');
-                    enqueueAssistantAudioFromSession(data);
-                    debugPrint('🎨 Running planner and render...');
-                    await _runPlannerAndRender(data);
-                    setState(() { _inLive = false; _wantLive = false; });
-                  } catch (e, st) {
-                    debugPrint('❌ Start lesson error: $e');
-                    debugPrint('Stack: $st');
-                    _showError(e.toString());
-                  } finally { setState(() { _busy = false; }); }
-                },
+                onPressed: _busy
+                    ? null
+                    : () async {
+                        setState(() {
+                          _busy = true;
+                        });
+                        try {
+                          debugPrint('🎬 Starting lesson...');
+                          _api = AssistantApiClient(_apiUrlCtrl.text.trim());
+                          setAssistantAudioBaseUrl(_apiUrlCtrl.text.trim());
+                          final data = await _api!
+                              .startLesson(topic: 'Handwriting practice');
+                          debugPrint('✅ Got session data: $data');
+                          _sessionId = data['id'] as int?;
+                          debugPrint('📢 Enqueueing audio...');
+                          enqueueAssistantAudioFromSession(data);
+                          debugPrint('🎨 Running planner and render...');
+                          await _runPlannerAndRender(data);
+                          setState(() {
+                            _inLive = false;
+                            _wantLive = false;
+                          });
+                        } catch (e, st) {
+                          debugPrint('❌ Start lesson error: $e');
+                          debugPrint('Stack: $st');
+                          _showError(e.toString());
+                        } finally {
+                          setState(() {
+                            _busy = false;
+                          });
+                        }
+                      },
                 icon: const Icon(Icons.play_circle),
                 label: const Text('Start Lesson (Old)'),
               ),

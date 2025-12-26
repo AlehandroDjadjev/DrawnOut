@@ -25,8 +25,6 @@ class AppConfig:
     
     # Image research
     max_images_per_prompt: int = 40
-    image_research_api_url: str = "http://127.0.0.1:8000/api/image-research/search/"
-    image_research_api_token: Optional[str] = None
     
     # Default image parameters
     default_aspect_ratio: str = "16:9"
@@ -66,11 +64,6 @@ def load_config() -> AppConfig:
         
         # Image research
         max_images_per_prompt=int(os.getenv('MAX_IMAGES_PER_PROMPT', '40')),
-        image_research_api_url=os.getenv(
-            'IMAGE_RESEARCH_API_URL',
-            'http://127.0.0.1:8000/api/image-research/search/'
-        ),
-        image_research_api_token=os.getenv('IMAGE_RESEARCH_API_TOKEN'),
         
         # Defaults
         default_aspect_ratio=os.getenv('DEFAULT_ASPECT_RATIO', '16:9'),

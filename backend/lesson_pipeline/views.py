@@ -1,100 +1,151 @@
-"""API views for lesson pipeline"""
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from rest_framework.permissions import AllowAny
-from rest_framework.decorators import api_view, permission_classes as permission_classes_decorator
-from django.http import HttpResponse, JsonResponse
+"""
+API views for lesson pipeline.
+"""
 import logging
-import requests
+from django.http import JsonResponse, HttpResponseBadRequest
+from django.views.decorators.csrf import csrf_exempt
+import json
 
-from .pipelines.orchestrator import generate_lesson_json
+from lesson_pipeline.pipelines.orchestrator import generate_lesson_json
 
 logger = logging.getLogger(__name__)
 
 
-class ImageProxyView(APIView):
-    """
-    Proxy external images to avoid CORS issues in Flutter web.
-    
-    GET /api/lesson-pipeline/image-proxy/?url=<image_url>
-    """
-    permission_classes = [AllowAny]
-    
-    def get(self, request):
-        image_url = request.query_params.get('url')
-        
-        if not image_url:
-            return Response({'error': 'Missing url parameter'}, status=400)
-        
-        try:
-            logger.info(f"🖼️ Proxying image: {image_url[:100]}...")
-            
-            # Fetch image with proper headers
-            headers = {
-                'User-Agent': 'DrawnOutBot/1.0 (https://github.com/drawnout; educational@example.com)',
-            }
-            
-            response = requests.get(image_url, headers=headers, timeout=10, stream=True)
-            response.raise_for_status()
-            
-            # Get content type
-            content_type = response.headers.get('content-type', 'image/jpeg')
-            
-            logger.info(f"   ✅ Fetched: {len(response.content)} bytes, type: {content_type}")
-            
-            # Return image with proper headers (CORS enabled)
-            return HttpResponse(
-                response.content,
-                content_type=content_type,
-                headers={
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Methods': 'GET',
-                    'Cache-Control': 'public, max-age=86400',  # Cache for 1 day
-                }
-            )
-            
-        except requests.RequestException as e:
-            logger.error(f"❌ Failed to proxy image: {e}")
-            return Response({'error': f'Failed to fetch image: {str(e)}'}, status=502)
-
-
-@api_view(['POST'])
-@permission_classes_decorator([AllowAny])
+@csrf_exempt
 def generate_lesson_view(request):
     """
-    Generate a complete lesson with images.
-    
     POST /api/lesson-pipeline/generate/
-    Body: {
-        "prompt": "Pythagorean Theorem",
-        "subject": "Mathematics",  // optional
-        "duration_target": 60.0    // optional
+    
+    Request:
+    {
+        "prompt": "Explain DNA structure and replication",
+        "subject": "Biology",  // optional
+        "duration_target": 60.0  // optional, seconds
+    }
+    
+    Response:
+    {
+        "ok": true,
+        "lesson": {
+            "id": "...",
+            "prompt_id": "...",
+            "content": "... script with images injected ...",
+            "images": [
+                {
+                    "tag": {...},
+                    "base_image_url": "...",
+                    "final_image_url": "...",
+                    "metadata": {...}
+                }
+            ],
+            "topic_id": "...",
+            "indexed_image_count": 40
+        }
     }
     """
+    if request.method != 'POST':
+        return HttpResponseBadRequest("POST only")
+    
     try:
-        prompt = request.data.get('prompt')
-        if not prompt:
-            return JsonResponse({'error': 'Missing prompt'}, status=400)
+        body = json.loads(request.body.decode('utf-8'))
+    except json.JSONDecodeError:
+        return HttpResponseBadRequest("Invalid JSON")
+    
+    prompt = body.get('prompt', '').strip()
+    if not prompt:
+        return HttpResponseBadRequest("'prompt' is required")
+    
+    subject = body.get('subject', 'General')
+    duration_target = float(body.get('duration_target', 60.0))
+    
+    logger.info(f"Generating lesson: prompt='{prompt}', subject='{subject}'")
+    
+    try:
+        lesson_dict = generate_lesson_json(
+            prompt_text=prompt,
+            subject=subject,
+            duration_target=duration_target
+        )
         
-        subject = request.data.get('subject', 'General')
-        duration_target = float(request.data.get('duration_target', 60.0))
-        
-        logger.info(f"Generating lesson: {prompt}")
-        
-        result = generate_lesson_json(prompt, subject, duration_target)
-        
-        return JsonResponse(result, status=200)
+        return JsonResponse({
+            'ok': True,
+            'lesson': lesson_dict
+        })
         
     except Exception as e:
-        logger.error(f"Failed to generate lesson: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return JsonResponse({'error': str(e)}, status=500)
+        logger.error(f"Lesson generation failed: {e}", exc_info=True)
+        return JsonResponse({
+            'ok': False,
+            'error': str(e)
+        }, status=500)
 
 
-@api_view(['GET'])
-@permission_classes_decorator([AllowAny])
+@csrf_exempt
 def health_check(request):
-    """Health check endpoint"""
-    return JsonResponse({'status': 'healthy', 'service': 'lesson-pipeline'})
+    """
+    GET /api/lesson-pipeline/health/
+    
+    Check if all services are available.
+    """
+    from lesson_pipeline.services.embeddings import get_embedding_service
+    from lesson_pipeline.services.vector_store import get_vector_store
+    from lesson_pipeline.services.image_researcher import get_image_research_service
+    from lesson_pipeline.services.script_writer import get_script_writer_service
+    from lesson_pipeline.services.image_to_image import get_image_to_image_service
+    
+    health = {
+        'ok': True,
+        'services': {}
+    }
+    
+    # Check each service
+    try:
+        embed_svc = get_embedding_service()
+        health['services']['embeddings'] = {
+            'available': embed_svc._initialized or False,
+            'model': embed_svc.model_name
+        }
+    except Exception as e:
+        health['services']['embeddings'] = {'available': False, 'error': str(e)}
+        health['ok'] = False
+    
+    try:
+        vector_svc = get_vector_store()
+        stats = vector_svc.get_stats()
+        health['services']['vector_store'] = {
+            'available': vector_svc._initialized,
+            'stats': stats
+        }
+    except Exception as e:
+        health['services']['vector_store'] = {'available': False, 'error': str(e)}
+        health['ok'] = False
+    
+    try:
+        img_research_svc = get_image_research_service()
+        health['services']['image_researcher'] = {
+            'available': True
+        }
+    except Exception as e:
+        health['services']['image_researcher'] = {'available': False, 'error': str(e)}
+    
+    try:
+        script_svc = get_script_writer_service()
+        health['services']['script_writer'] = {
+            'available': script_svc.available
+        }
+    except Exception as e:
+        health['services']['script_writer'] = {'available': False, 'error': str(e)}
+        health['ok'] = False
+    
+    try:
+        img2img_svc = get_image_to_image_service()
+        health['services']['image_to_image'] = {
+            'available': img2img_svc.is_available()
+        }
+    except Exception as e:
+        health['services']['image_to_image'] = {'available': False, 'error': str(e)}
+    
+    status_code = 200 if health['ok'] else 503
+    return JsonResponse(health, status=status_code)
+
+

@@ -10,10 +10,6 @@ class LessonSession(models.Model):
     current_step_index = models.PositiveIntegerField(default=0)
     is_waiting_for_question = models.BooleanField(default=False)
     is_completed = models.BooleanField(default=False)
-    vector_topic_id = models.CharField(max_length=128, blank=True, default="")
-    lesson_document = models.JSONField(default=dict, blank=True)
-    image_slots = models.JSONField(default=list, blank=True)
-    image_query_log = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

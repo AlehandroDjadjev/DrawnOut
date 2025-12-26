@@ -122,15 +122,6 @@ class GenerateTimelineView(APIView):
             
             logger.info(f"Timeline {timeline.id} created successfully with {len(timeline_data['segments'])} segments")
             
-            # Debug: Check for sketch_image actions in response
-            image_action_count = 0
-            for seg in timeline.segments:
-                for action in seg.get('drawing_actions', []):
-                    if action.get('type') == 'sketch_image':
-                        image_action_count += 1
-                        logger.info(f"🖼️ Segment {seg.get('sequence')} has sketch_image: {action.get('image_url', 'N/A')[:80]}...")
-            logger.info(f"📊 Response includes {image_action_count} sketch_image actions")
-            
             return Response({
                 "timeline_id": timeline.id,
                 "session_id": session.id,

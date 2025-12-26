@@ -162,10 +162,3 @@ class ImageTag {
 }
 
 
-
-
-
-
-
-
-
