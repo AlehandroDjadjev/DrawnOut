@@ -357,3 +357,14 @@ def organize_images():
         reorder_strokes_in_file(p)
 
 
+
+
+
+
+
+
+
+
+
+
+

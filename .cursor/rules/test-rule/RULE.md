@@ -1,0 +1,5 @@
+---
+alwaysApply: true
+---
+- Run all existing unit tests before and after adding a new feature to make sure exsiting functionality is in a working state - thus validating the extent to which project's infratstrucutre can support our new logic and whether the latter has created any kind of malignant dependencies within the project.
+- If a feature has a very nuanced or sophisticated approach or workflow or for example requires certain api keys libraries json format api calls or anything else that can be of help to someone trying to utilize that feature - than after finsihing it write a short but rich and thorough documentation of it's essentials. Store it in a specified folder which can easily be linked as documentation to the agent. Additionally make sure that all of these documentation files have mutual interconnectial references and links which allow the llm to track the data flow of the application and overall peice together the whole pipeline. Also have one summary file converging everything.

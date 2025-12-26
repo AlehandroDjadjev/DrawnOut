@@ -1098,3 +1098,14 @@ def vectorize_images():
         print(f"[OK] {Path(src).name}: strokes={len(meta['strokes'])}, "
               f"time={meta['stats']['time_sec']}s")
 
+
+
+
+
+
+
+
+
+
+
+

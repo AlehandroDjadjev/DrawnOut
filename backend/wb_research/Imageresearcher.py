@@ -2940,3 +2940,14 @@ def research(query: str, subj: str):
     dbg(f"Unique images:{unique}")
     return unique
 
+
+
+
+
+
+
+
+
+
+
+

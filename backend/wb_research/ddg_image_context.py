@@ -174,3 +174,14 @@ def ddg_extract_image_context(
 
     return details
 
+
+
+
+
+
+
+
+
+
+
+

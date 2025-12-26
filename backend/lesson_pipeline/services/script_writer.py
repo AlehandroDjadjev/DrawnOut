@@ -4,9 +4,14 @@ Script writer service - wrapper around existing timeline_generator.
 import logging
 import sys
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
-from lesson_pipeline.types import UserPrompt, ScriptDraft
+from lesson_pipeline.types import (
+    UserPrompt,
+    ScriptOutput,
+    ScriptImageRequest,
+    ImagePlacement,
+)
 from lesson_pipeline.config import config
 from lesson_pipeline.utils.image_tags import count_image_tags
 
@@ -31,7 +36,7 @@ class ScriptWriterService:
             self.timeline_service = None
             self.available = False
     
-    def generate_script(self, prompt: UserPrompt, duration_target: float = 60.0) -> ScriptDraft:
+    def generate_script(self, prompt: UserPrompt, duration_target: float = 60.0) -> ScriptOutput:
         """
         Generate a lesson script with IMAGE tags.
         
@@ -69,9 +74,11 @@ class ScriptWriterService:
             # Convert timeline segments to script content
             content = self._timeline_to_script(timeline_data, prompt.text)
             
-            draft = ScriptDraft(
+            image_requests = self._build_image_requests(timeline_data)
+            draft = ScriptOutput(
                 prompt_id=prompt.id,
-                content=content
+                content=content,
+                image_requests=image_requests,
             )
             
             logger.info(f"Generated script with {len(content)} characters")
@@ -249,7 +256,7 @@ class ScriptWriterService:
         except (TypeError, ValueError):
             return str(value)
     
-    def _generate_fallback_script(self, prompt: UserPrompt) -> ScriptDraft:
+    def _generate_fallback_script(self, prompt: UserPrompt) -> ScriptOutput:
         """Generate a simple fallback script"""
         logger.info("Generating fallback script")
         
@@ -266,9 +273,77 @@ This is an important topic with many applications.
 Let's explore the key concepts and their practical uses.
 """
         
-        return ScriptDraft(
+        return ScriptOutput(
             prompt_id=prompt.id,
-            content=content
+            content=content,
+            image_requests=[],
+        )
+
+    def _build_image_requests(self, timeline_data: Dict[str, Any]) -> List[ScriptImageRequest]:
+        """
+        Extract structured image requests either from the explicit image_requests
+        array (preferred) or derive from sketch_image drawing actions.
+        """
+        requests: List[ScriptImageRequest] = []
+        explicit_reqs = timeline_data.get("image_requests") or []
+
+        if isinstance(explicit_reqs, list) and explicit_reqs:
+            for idx, req in enumerate(explicit_reqs):
+                parsed = self._parse_request_entry(req, idx)
+                if parsed:
+                    requests.append(parsed)
+
+        if requests:
+            return requests
+
+        # Fallback: derive from sketch_image drawing actions
+        segments = timeline_data.get("segments") or []
+        fallback_idx = 0
+        for seg in segments:
+            drawing_actions = seg.get("drawing_actions") or []
+            for action in drawing_actions:
+                if (action or {}).get("type") != "sketch_image":
+                    continue
+                parsed = self._parse_request_entry(action, fallback_idx)
+                if parsed:
+                    requests.append(parsed)
+                    fallback_idx += 1
+
+        return requests
+
+    def _parse_request_entry(self, entry: Dict[str, Any], idx: int) -> Optional[ScriptImageRequest]:
+        """Validate and convert a raw entry into ScriptImageRequest."""
+        if not isinstance(entry, dict):
+            return None
+
+        prompt = entry.get("prompt") or entry.get("query")
+        if not prompt:
+            return None
+
+        placement = entry.get("placement") or {}
+        placement_obj: Optional[ImagePlacement] = None
+        try:
+            if placement and all(k in placement for k in ("x", "y", "width", "height")):
+                placement_obj = ImagePlacement(
+                    x=float(placement["x"]),
+                    y=float(placement["y"]),
+                    width=float(placement["width"]),
+                    height=float(placement["height"]),
+                    scale=float(placement["scale"]) if placement.get("scale") is not None else None,
+                )
+        except (TypeError, ValueError):
+            placement_obj = None
+
+        req_id = entry.get("id") or entry.get("tag_id") or f"img_req_{idx+1}"
+        filename_hint = entry.get("filename_hint")
+        style = entry.get("style")
+
+        return ScriptImageRequest(
+            id=str(req_id),
+            prompt=str(prompt),
+            placement=placement_obj,
+            filename_hint=str(filename_hint) if filename_hint is not None else None,
+            style=str(style) if style is not None else None,
         )
 
 
@@ -285,7 +360,7 @@ def get_script_writer_service() -> ScriptWriterService:
 
 
 # Convenience function
-def generate_script(prompt: UserPrompt, duration_target: float = 60.0) -> ScriptDraft:
+def generate_script(prompt: UserPrompt, duration_target: float = 60.0) -> ScriptOutput:
     """Generate a lesson script"""
     return get_script_writer_service().generate_script(prompt, duration_target)
 

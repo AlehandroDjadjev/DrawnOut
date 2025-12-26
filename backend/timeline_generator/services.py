@@ -148,7 +148,43 @@ class TimelineGeneratorService:
                 return False
             if not isinstance(seg['drawing_actions'], list):
                 return False
+
+        # Optional image_requests contract
+        if 'image_requests' in data and data['image_requests'] is not None:
+            image_requests = data['image_requests']
+            if not isinstance(image_requests, list):
+                logger.warning("image_requests must be a list if provided")
+                return False
+            for req in image_requests:
+                if not self._validate_image_request(req):
+                    logger.warning(f"Invalid image_request: {req}")
+                    return False
         
+        return True
+
+    @staticmethod
+    def _validate_image_request(req: dict) -> bool:
+        """Validate optional image request entries (best-effort, non-fatal)."""
+        if not isinstance(req, dict):
+            return False
+        if 'prompt' not in req or not isinstance(req.get('prompt'), str):
+            return False
+        placement = req.get('placement')
+        if placement is not None:
+            if not isinstance(placement, dict):
+                return False
+            for key in ('x', 'y', 'width', 'height'):
+                if key not in placement:
+                    return False
+                try:
+                    float(placement[key])
+                except (TypeError, ValueError):
+                    return False
+            if 'scale' in placement:
+                try:
+                    float(placement['scale'])
+                except (TypeError, ValueError):
+                    return False
         return True
     
     def _compute_cumulative_timings(self, data: dict) -> dict:

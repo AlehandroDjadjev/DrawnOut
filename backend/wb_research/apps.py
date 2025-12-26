@@ -6,3 +6,14 @@ class WbResearchConfig(AppConfig):
     name = "wb_research"
     verbose_name = "Whiteboard Research"
 
+
+
+
+
+
+
+
+
+
+
+

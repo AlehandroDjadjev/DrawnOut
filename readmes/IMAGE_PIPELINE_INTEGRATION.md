@@ -115,6 +115,47 @@ _handleSyncedDrawingActions
 - 10-second animated sketch with raster underlay
 - Committed to permanent board after animation
 
+## Data Contracts (backend + Flutter)
+
+- `ScriptImageRequest` (per-image ask from the script):
+  ```json
+  {
+    "id": "img-req-1",
+    "prompt": "diagram of a chloroplast",
+    "placement": {"x": 0.12, "y": 0.25, "width": 0.4, "height": 0.3, "scale": 1.0},
+    "filename_hint": "chloroplast-diagram",
+    "style": "sketch"
+  }
+  ```
+- `ScriptOutput` (script plus optional image requests):
+  ```json
+  {
+    "id": "script-123",
+    "prompt_id": "prompt-xyz",
+    "content": "Segment text ...",
+    "image_requests": [/* ScriptImageRequest objects */]
+  }
+  ```
+- Normalized `ResearchedImage` returned by search:
+  ```json
+  {
+    "url": "https://example.com/image.jpg",
+    "source": "wikimedia",
+    "title": "Chloroplast structure",
+    "width": 1200,
+    "height": 900,
+    "license": "CC-BY-SA",
+    "raw": {"provider": "wikimedia", "page": "https://commons..."}
+  }
+  ```
+- `ImageSelectionResult` (UI choice per request):
+  ```json
+  {
+    "image_request_id": "img-req-1",
+    "selected_images": [/* ResearchedImage objects */]
+  }
+  ```
+
 ### Graceful Degradation
 - If image research fails → lesson continues without images
 - If image download fails → skips that image, continues with next

@@ -11,16 +11,14 @@ dependencies:
   flutter:
     sdk: flutter
   external_page:
-    path: packages/external_page.dart
-  http: ^1.0.0           # adjust to latest compatible version
+    path: packages/external_page
+  http: ^1.2.1           # upgraded to match whiteboard_demo
   file_picker: ^8.0.0
   opencv_dart: ^1.4.3
   just_audio: ^0.9.36
 
-
   # Existing frontend deps
   cupertino_icons: ^1.0.8
-  http: ^1.2.1 # upgraded to match whiteboard_demo
   flutter_secure_storage: ^8.0.0
   shared_preferences: ^2.1.0
   flutter_dotenv: ^5.1.0

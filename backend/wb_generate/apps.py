@@ -6,3 +6,14 @@ class WbGenerateConfig(AppConfig):
     name = "wb_generate"
     verbose_name = "Whiteboard Generation"
 
+
+
+
+
+
+
+
+
+
+
+

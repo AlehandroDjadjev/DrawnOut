@@ -6,3 +6,14 @@ class WbPreprocessConfig(AppConfig):
     name = "wb_preprocess"
     verbose_name = "Whiteboard Preprocessing"
 
+
+
+
+
+
+
+
+
+
+
+

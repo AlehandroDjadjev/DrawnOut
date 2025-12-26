@@ -685,3 +685,14 @@ def proccess_images(indir):
     for p in imgs:
         process_one(p)
 
+
+
+
+
+
+
+
+
+
+
+

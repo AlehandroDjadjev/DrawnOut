@@ -7,3 +7,14 @@ urlpatterns = [
     path("generate/", views.generate_image, name="generate"),
 ]
 
+
+
+
+
+
+
+
+
+
+
+

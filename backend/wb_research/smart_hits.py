@@ -580,3 +580,14 @@ def smart_find_image_hits_in_soup(
     results.sort(key=lambda x: x[1], reverse=True)
     return results
 
+
+
+
+
+
+
+
+
+
+
+

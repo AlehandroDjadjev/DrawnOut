@@ -7,3 +7,14 @@ urlpatterns = [
     path("vectorize/", views.vectorize_image, name="vectorize"),
 ]
 
+
+
+
+
+
+
+
+
+
+
+

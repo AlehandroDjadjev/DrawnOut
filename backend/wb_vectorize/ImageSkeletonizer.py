@@ -216,3 +216,14 @@ def skeletonize_images():
         process_one(p, OUT_DIR)
 
 
+
+
+
+
+
+
+
+
+
+
+

@@ -3,7 +3,7 @@ Shared types for the lesson generation pipeline.
 """
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 
@@ -12,7 +12,27 @@ class UserPrompt:
     """User's input prompt for lesson generation"""
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     text: str = ""
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+@dataclass
+class ImagePlacement:
+    """Normalized placement ratios for an image region."""
+    x: float
+    y: float
+    width: float
+    height: float
+    scale: Optional[float] = None
+
+
+@dataclass
+class ScriptImageRequest:
+    """A structured request for an image tied to a script segment."""
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    prompt: str = ""
+    placement: Optional[ImagePlacement] = None
+    filename_hint: Optional[str] = None
+    style: Optional[str] = None
 
 
 @dataclass
@@ -101,6 +121,27 @@ class LessonDocument:
     image_slots: List[ImageSlot] = field(default_factory=list)
 
 
+@dataclass
+class ScriptOutput:
+    """Script output with optional image requests for downstream pipelines."""
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    prompt_id: str = ""
+    content: str = ""
+    image_requests: List[ScriptImageRequest] = field(default_factory=list)
+
+
+@dataclass
+class ResearchedImage:
+    """Normalized image returned from research providers."""
+    url: str
+    source: Optional[str] = None
+    title: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    license: Optional[str] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+
 # Helper functions for type conversions
 def image_candidate_to_dict(candidate: ImageCandidate) -> Dict[str, Any]:
     """Convert ImageCandidate to dict for serialization"""
@@ -175,6 +216,53 @@ def lesson_document_to_dict(lesson: LessonDocument) -> Dict[str, Any]:
         'topic_id': lesson.topic_id,
         'indexed_image_count': lesson.indexed_image_count,
         'image_slots': [image_slot_to_dict(slot) for slot in lesson.image_slots],
+    }
+
+
+def image_placement_to_dict(placement: ImagePlacement) -> Dict[str, Any]:
+    """Convert ImagePlacement to dict for serialization"""
+    return {
+        'x': placement.x,
+        'y': placement.y,
+        'width': placement.width,
+        'height': placement.height,
+        'scale': placement.scale,
+    }
+
+
+def script_image_request_to_dict(request: ScriptImageRequest) -> Dict[str, Any]:
+    """Convert ScriptImageRequest to dict for serialization"""
+    return {
+        'id': request.id,
+        'prompt': request.prompt,
+        'placement': image_placement_to_dict(request.placement) if request.placement else None,
+        'filename_hint': request.filename_hint,
+        'style': request.style,
+    }
+
+
+def script_output_to_dict(script: ScriptOutput) -> Dict[str, Any]:
+    """Convert ScriptOutput to dict for serialization"""
+    return {
+        'id': script.id,
+        'prompt_id': script.prompt_id,
+        'content': script.content,
+        'image_requests': [
+            script_image_request_to_dict(req) for req in script.image_requests
+        ],
+    }
+
+
+def researched_image_to_dict(image: ResearchedImage) -> Dict[str, Any]:
+    """Convert ResearchedImage to dict for serialization"""
+    return {
+        'url': image.url,
+        'source': image.source,
+        'title': image.title,
+        'width': image.width,
+        'height': image.height,
+        'license': image.license,
+        'raw': image.raw,
     }
 
 

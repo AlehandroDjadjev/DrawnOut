@@ -264,3 +264,14 @@ def rerank_image_candidates_siglip(
 
     return results
 
+
+
+
+
+
+
+
+
+
+
+

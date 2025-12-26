@@ -7,11 +7,11 @@ import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'vectorizer.dart';
-import 'assistant_api.dart';
-import 'assistant_audio.dart';
-import 'sdk_live_bridge.dart';
-import 'planner.dart';
+import 'vectorizer.dart.dart';
+import 'assistant_api.dart.dart';
+import 'assistant_audio.dart.dart';
+import 'sdk_live_bridge.dart.dart';
+import 'planner.dart.dart';
 import 'package:http/http.dart' as http;
 import 'models/timeline.dart';
 import 'services/timeline_api.dart';
@@ -1265,7 +1265,6 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     } catch (e, st) {
       debugPrint('❌ Drawing error: $e');
     }
->>>>>>> ba5474038469c73ca8de057e99c052a36484603c
   }
 
   String _diagramPromptFromPlanOrTopic(

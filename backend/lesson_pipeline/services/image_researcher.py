@@ -13,16 +13,29 @@ from lesson_pipeline.config import config
 
 logger = logging.getLogger(__name__)
 
-# Add whiteboard_backend image researcher to path
-IMAGE_RESEARCHER_DIR = Path(__file__).parent.parent.parent / 'whiteboard_backend'
-sys.path.insert(0, str(IMAGE_RESEARCHER_DIR))
+# Add wb_research app to path for Imageresearcher
+WB_RESEARCH_DIR = Path(__file__).parent.parent.parent / 'wb_research'
+if str(WB_RESEARCH_DIR) not in sys.path:
+    sys.path.insert(0, str(WB_RESEARCH_DIR))
 
-try:
-    import Imageresearcher as ir
-    IMAGE_RESEARCHER_AVAILABLE = True
-except ImportError as e:
-    logger.warning(f"Could not import Imageresearcher: {e}")
-    IMAGE_RESEARCHER_AVAILABLE = False
+# Lazy import - will be loaded on first use
+ir = None
+IMAGE_RESEARCHER_AVAILABLE = None
+
+
+def _get_image_researcher():
+    """Lazy load Imageresearcher module."""
+    global ir, IMAGE_RESEARCHER_AVAILABLE
+    if IMAGE_RESEARCHER_AVAILABLE is None:
+        try:
+            import Imageresearcher as _ir
+            ir = _ir
+            IMAGE_RESEARCHER_AVAILABLE = True
+            logger.info("Imageresearcher module loaded from wb_research")
+        except ImportError as e:
+            logger.warning(f"Could not import Imageresearcher: {e}")
+            IMAGE_RESEARCHER_AVAILABLE = False
+    return ir if IMAGE_RESEARCHER_AVAILABLE else None
 
 
 class ImageResearchService:
@@ -187,6 +200,42 @@ class ImageResearchService:
         except (TypeError, ValueError):
             return None
     
+    def _duckduckgo_search(self, query: str, subject: str, limit: int) -> List[ImageCandidate]:
+        """Search for images using DuckDuckGo as fallback."""
+        candidates = []
+        try:
+            from duckduckgo_search import DDGS
+            
+            search_query = f"{subject} {query} diagram illustration"
+            logger.info(f"  DDG search: '{search_query}'")
+            
+            with DDGS() as ddgs:
+                results = ddgs.images(search_query, max_results=min(30, limit), safesearch="moderate")
+                
+                for result in results:
+                    if len(candidates) >= limit:
+                        break
+                    
+                    url = result.get("image")
+                    if url:
+                        candidate = ImageCandidate(
+                            source_url=url,
+                            source="duckduckgo",
+                            title=result.get("title", query),
+                            description=result.get("title", f"{subject}: {query}"),
+                            width=result.get("width"),
+                            height=result.get("height"),
+                            tags=[query, subject]
+                        )
+                        candidates.append(candidate)
+                
+                logger.info(f"  DDG: Found {len(candidates)} images")
+        
+        except Exception as e:
+            logger.warning(f"DuckDuckGo search failed: {e}")
+        
+        return candidates
+
     def _extract_urls_from_api_data(self, source_name: str, data: dict) -> List[str]:
         """
         Extract image URLs directly from API response data.
@@ -291,13 +340,14 @@ class ImageResearchService:
             logger.info("Image research API returned %s candidates", len(api_candidates))
             return api_candidates[:limit]
 
-        if not IMAGE_RESEARCHER_AVAILABLE:
-            logger.error("Image researcher module not available and API returned no usable results")
-            return []
+        ir_module = _get_image_researcher()
+        if ir_module is None:
+            logger.warning("Image researcher module not available, using DuckDuckGo fallback")
+            return self._duckduckgo_search(query, subject, limit)
         
         try:
             # Read sources
-            sources = ir.read_sources()
+            sources = ir_module.read_sources()
             
             candidates = []
             
@@ -312,7 +362,7 @@ class ImageResearchService:
                             "format_field": "json",
                         }
                         
-                        status, data, _ = ir.send_request(src, settings)
+                        status, data, _ = ir_module.send_request(src, settings)
                         logger.info(f"  API {src.name}: status={status}, has_data={data is not None}")
                         
                         if status == 200 and data is not None:
@@ -386,7 +436,7 @@ class ImageResearchService:
                                         break
                     else:
                         # Non-API source (scraping)
-                        ir.handle_result_no_api(src, query, subject, hard_image_cap=limit)
+                        ir_module.handle_result_no_api(src, query, subject, hard_image_cap=limit)
                         
                         # Collect results from this source
                         images = getattr(src, 'img_paths', [])

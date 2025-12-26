@@ -1,2 +1,13 @@
 """Whiteboard vectorization Django app."""
 
+
+
+
+
+
+
+
+
+
+
+

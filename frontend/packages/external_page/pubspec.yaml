@@ -1,0 +1,28 @@
+name: external_page
+description: Whiteboard demo package with vectorization and AI tutor integration.
+publish_to: 'none'
+
+version: 1.0.0
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.1
+  file_picker: ^8.0.0
+  opencv_dart: ^1.4.3
+  just_audio: ^0.9.36
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+
+
+

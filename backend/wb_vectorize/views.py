@@ -49,3 +49,14 @@ def vectorize_image(request):
         }
     )
 
+
+
+
+
+
+
+
+
+
+
+

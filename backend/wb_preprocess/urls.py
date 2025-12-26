@@ -7,3 +7,14 @@ urlpatterns = [
     path("run/", views.run_preprocess, name="run"),
 ]
 
+
+
+
+
+
+
+
+
+
+
+

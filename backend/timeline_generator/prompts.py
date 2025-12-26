@@ -254,7 +254,16 @@ SAMPLE OUTPUT FORMAT (JSON):
       ]
     }
   ],
-  "total_estimated_duration": 71.0
+  "total_estimated_duration": 71.0,
+  "image_requests": [
+    {
+      "id": "img_1",
+      "prompt": "labeled diagram of DNA double helix showing base pairs",
+      "placement": {"x": 0.04, "y": 0.12, "width": 0.5, "height": 0.55, "scale": 1.0},
+      "filename_hint": "dna-helix-diagram",
+      "style": "diagram"
+    }
+  ]
 }
 
 === END OF EXAMPLE - The patterns above are specific to math lessons ===
@@ -351,6 +360,12 @@ Create a synchronized speech-and-drawing timeline where:
 8. EVERY [IMAGE ...] tag must include: query, prompt, style, aspect, x, y, width, height, notes (normalized 0..1 placement)
 9. query must be a short retrieval phrase (3-6 words) that Pinecone can use to locate a researched image
 10. notes should describe spatial context such as "reserve left column for text"
+11. ALSO output a top-level `image_requests` array describing each requested image with:
+    - id (matches the IMAGE tag id)
+    - prompt (same as the IMAGE tag prompt)
+    - placement: {{x, y, width, height, scale?}} normalized 0..1
+    - filename_hint (slug-like, optional)
+    - style (diagram | illustration | photo)
 
 SPEECH STYLE:
 - Use transitional phrases: "Let me explain why...", "Here's what that means...", "Think of it this way..."

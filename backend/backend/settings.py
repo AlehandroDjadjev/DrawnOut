@@ -60,8 +60,8 @@ INSTALLED_APPS = [
     'vision',  # SigLIP2 zero-shot classification & embeddings
     'rest_framework',
     'rest_framework_simplejwt.token_blacklist',
-    'imagePrinting',
-    'TTSVoice'
+    # 'imagePrinting',  # Commented out - app doesn't exist
+    # 'TTSVoice',  # Commented out - not a proper Django app
 ]
 
 MIDDLEWARE = [
@@ -171,7 +171,7 @@ STATIC_URL = '/static/'
 
 # Add this to include your app's static directory
 STATICFILES_DIRS = [
-    BASE_DIR / 'imagePrinting' / 'static',
+    # BASE_DIR / 'imagePrinting' / 'static',  # Commented out - app doesn't exist
     # Add other static directories here if needed
 ]
 

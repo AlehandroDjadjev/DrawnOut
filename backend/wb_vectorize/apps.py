@@ -6,3 +6,14 @@ class WbVectorizeConfig(AppConfig):
     name = "wb_vectorize"
     verbose_name = "Whiteboard Vectorization"
 
+
+
+
+
+
+
+
+
+
+
+

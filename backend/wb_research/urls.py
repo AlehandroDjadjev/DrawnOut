@@ -10,3 +10,4 @@ urlpatterns = [
     path("ddg-search/", views.search_duckduckgo, name="ddg_search"),
 ]
 
+

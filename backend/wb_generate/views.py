@@ -28,3 +28,14 @@ def generate_image(request):
     # Delegate to the whiteboard_backend generation view
     return legacy_imggen_views.generate_images_batch(request)
 
+
+
+
+
+
+
+
+
+
+
+
