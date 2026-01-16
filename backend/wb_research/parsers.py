@@ -39,7 +39,7 @@ def _download_to(u: str, dest_dir: str, idx: int) -> str | None:
         pu = urlparse(u)
         referer = f"{pu.scheme}://{pu.netloc}" if pu.scheme and pu.netloc else None
         headers = {
-            "User-Agent": "diag-scrape/0.3 (+edu-diagrams)",
+            "User-Agent": "DrawnOut/1.0 (https://drawnout.app; contact@drawnout.app) Python/3.x",
         }
         if referer:
             headers["Referer"] = referer

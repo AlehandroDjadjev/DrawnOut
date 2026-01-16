@@ -1,4 +1,4 @@
-"""URL configuration for timeline_generator app"""
+"""URL configuration for timeline_generator app - force reload"""
 from django.urls import path
 from .views import GenerateTimelineView, GetTimelineView, GetSessionTimelineView
 

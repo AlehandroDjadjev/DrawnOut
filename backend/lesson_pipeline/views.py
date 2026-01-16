@@ -2,13 +2,80 @@
 API views for lesson pipeline.
 """
 import logging
-from django.http import JsonResponse, HttpResponseBadRequest
+import requests
+from django.http import JsonResponse, HttpResponseBadRequest, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 import json
 
 from lesson_pipeline.pipelines.orchestrator import generate_lesson_json
 
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Image Proxy (CORS workaround for web frontend)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@csrf_exempt
+def image_proxy_view(request):
+    """
+    GET /api/lesson-pipeline/image-proxy/?url=<encoded_url>
+    
+    Proxies image requests to avoid CORS issues on web frontend.
+    The frontend encodes the target URL as a query parameter.
+    """
+    if request.method != 'GET':
+        return HttpResponseBadRequest("GET only")
+    
+    url = request.GET.get('url', '').strip()
+    if not url:
+        return HttpResponseBadRequest("'url' parameter is required")
+    
+    # Security: only allow http/https URLs
+    if not url.startswith(('http://', 'https://')):
+        return HttpResponseBadRequest("Invalid URL scheme")
+    
+    try:
+        logger.info(f"Proxying image: {url[:100]}...")
+        
+        # Fetch the image with timeout
+        resp = requests.get(
+            url,
+            timeout=30,
+            headers={
+                'User-Agent': 'DrawnOut-ImageProxy/1.0',
+                'Accept': 'image/*',
+            },
+            stream=True
+        )
+        resp.raise_for_status()
+        
+        # Get content type
+        content_type = resp.headers.get('Content-Type', 'image/jpeg')
+        
+        # Stream the response
+        response = HttpResponse(
+            resp.content,
+            content_type=content_type
+        )
+        
+        # Add CORS headers for web
+        response['Access-Control-Allow-Origin'] = '*'
+        response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        response['Cache-Control'] = 'public, max-age=86400'  # Cache for 24h
+        
+        logger.info(f"Proxied image: {len(resp.content)} bytes, {content_type}")
+        return response
+        
+    except requests.Timeout:
+        logger.warning(f"Image proxy timeout: {url}")
+        return HttpResponse("Image fetch timed out", status=504)
+    except requests.RequestException as e:
+        logger.warning(f"Image proxy error: {e}")
+        return HttpResponse(f"Failed to fetch image: {e}", status=502)
+    except Exception as e:
+        logger.error(f"Image proxy unexpected error: {e}")
+        return HttpResponse("Internal error", status=500)
 
 
 @csrf_exempt

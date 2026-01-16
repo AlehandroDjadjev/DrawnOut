@@ -364,3 +364,4 @@ def resolve_single_tag(
         "vector_id": None,
         "resolution_method": None,
     }
+

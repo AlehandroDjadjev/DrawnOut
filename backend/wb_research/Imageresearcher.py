@@ -18,8 +18,19 @@ try:
     from sentence_transformers import SentenceTransformer
     _EMBED_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
 except Exception as _e:
-    _EMBED_MODEL = None
-    print(f"[EMBED] sentence-transformers not available or model load failed: {_e}", flush=True)
+    import sys
+    print(f"""
+================================================================================
+FATAL: Cannot import sentence_transformers
+
+Error: {_e}
+
+To fix:
+    pip install sentence-transformers
+
+================================================================================
+""", file=sys.stderr)
+    raise ImportError(f"sentence_transformers import failed: {_e}") from _e
 
 from ImageRanker import SiglipBackend, rerank_image_candidates_siglip
 
@@ -2068,7 +2079,8 @@ def build_params_from_settings(source: Source, settings: dict) -> dict:
         params["gsrnamespace"] = 6
         q = params.get("gsrsearch", "") or ""
         if "filetype:" not in q.lower():
-            params["gsrsearch"] = q + " filetype:bitmap|drawing|svg"
+            # Only request bitmap images - SVG/GIF don't work with embeddings
+            params["gsrsearch"] = q + " filetype:bitmap"
         try:
             params["gsrlimit"] = min(int(params.get("gsrlimit", 5)), 10)
         except Exception:
@@ -2105,7 +2117,7 @@ def send_request(source: Source, settings: dict):
     built = build_params_from_settings(source, settings)
     if source.type != "API":
         return None, None, built
-    headers = {"User-Agent": "diag-scrape/0.1"}
+    headers = {"User-Agent": "DrawnOut/1.0 (https://drawnout.app; contact@drawnout.app) Python/3.x"}
     try:
         dbg(f"[API][{source.name}] GET {source.url} params={built}")
         resp = requests.get(source.url, params=built, headers=headers, timeout=20)
@@ -2275,7 +2287,7 @@ def _download_to(u: str, dest_dir: str, idx: int, dbg=print) -> str | None:
             dbg(f"[IMG][skip] already exists {path}")
             return path
 
-        headers = {"User-Agent": "diag-scrape/0.1"}
+        headers = {"User-Agent": "DrawnOut/1.0 (https://drawnout.app; contact@drawnout.app) Python/3.x"}
         with requests.get(u, headers=headers, stream=True, timeout=30) as r:
             r.raise_for_status()
             ctype = (r.headers.get("Content-Type") or "").lower()

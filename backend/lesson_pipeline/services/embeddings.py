@@ -305,14 +305,27 @@ class SigLIPEmbeddingService:
         """
         from io import BytesIO
         import requests
+        import time
 
         normalized = (image_url or "").strip()
         parsed = urlparse(normalized)
+        
+        # Skip SVG files - they can't be embedded as raster images
+        if normalized.lower().endswith('.svg'):
+            raise ValueError(f"SVG files cannot be embedded: {normalized}")
 
         if parsed.scheme in ("http", "https"):
+            # Wikimedia requires a proper User-Agent with contact info per their policy
+            # https://meta.wikimedia.org/wiki/User-Agent_policy
             headers = {
-                'User-Agent': 'DrawnOutBot/1.0 (https://github.com/drawnout; educational@example.com) Python-Requests'
+                'User-Agent': 'DrawnOut/1.0 (https://drawnout.app; contact@drawnout.app) Python/3.x requests',
+                'Accept': 'image/png,image/jpeg,image/gif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
             }
+            
+            # Add small delay to avoid rate limiting
+            time.sleep(0.1)
+            
             response = requests.get(
                 normalized, 
                 headers=headers, 

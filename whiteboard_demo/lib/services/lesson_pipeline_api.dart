@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 import 'package:http/http.dart' as http;
 
 /// Service for interacting with the lesson pipeline API
@@ -6,6 +7,56 @@ class LessonPipelineApi {
   final String baseUrl;
 
   LessonPipelineApi({this.baseUrl = 'http://localhost:8000'});
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Image Proxy Helper (CORS workaround for web)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /// Builds a CORS-safe image URL by proxying through the backend on web.
+  ///
+  /// On web platforms, external image URLs often fail due to CORS restrictions.
+  /// This helper routes the request through the backend's image-proxy endpoint.
+  ///
+  /// On non-web platforms, returns the original URL unchanged.
+  ///
+  /// Example:
+  /// ```dart
+  /// final safeUrl = api.buildProxiedImageUrl('https://example.com/image.png');
+  /// // On web: http://localhost:8000/api/lesson-pipeline/image-proxy/?url=https%3A%2F%2Fexample.com%2Fimage.png
+  /// // On native: https://example.com/image.png
+  /// ```
+  String buildProxiedImageUrl(String? rawUrl) {
+    if (rawUrl == null || rawUrl.isEmpty) {
+      return '';
+    }
+
+    // On non-web platforms, return the URL directly (no CORS issues)
+    if (!kIsWeb) {
+      return rawUrl;
+    }
+
+    // On web, proxy through backend to avoid CORS
+    final encodedUrl = Uri.encodeComponent(rawUrl);
+    final proxiedUrl = '$baseUrl/api/lesson-pipeline/image-proxy/?url=$encodedUrl';
+    
+    debugPrint('🔗 Proxying image URL for web: $rawUrl → $proxiedUrl');
+    
+    return proxiedUrl;
+  }
+
+  /// Static version for use without an instance (uses default localhost)
+  static String proxyImageUrl(String? rawUrl, {String baseUrl = 'http://localhost:8000'}) {
+    if (rawUrl == null || rawUrl.isEmpty) {
+      return '';
+    }
+
+    if (!kIsWeb) {
+      return rawUrl;
+    }
+
+    final encodedUrl = Uri.encodeComponent(rawUrl);
+    return '$baseUrl/api/lesson-pipeline/image-proxy/?url=$encodedUrl';
+  }
 
   /// Generate a complete lesson with intelligent image integration
   Future<LessonPipelineResult> generateLesson({
@@ -160,5 +211,6 @@ class ImageTag {
     );
   }
 }
+
 
 

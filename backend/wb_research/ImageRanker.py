@@ -33,7 +33,32 @@ from typing import List, Dict, Any, Optional
 import numpy as np
 import torch
 from PIL import Image
-from transformers import SiglipProcessor, SiglipModel
+
+# Import SigLIP - this MUST work, no fallbacks
+try:
+    from transformers import SiglipProcessor, SiglipModel
+except Exception as e:
+    # Clear error message so user knows exactly what to fix
+    import sys
+    print(f"""
+================================================================================
+FATAL: Cannot import SiglipProcessor/SiglipModel from transformers
+
+Error: {e}
+
+This is likely a torch/torchvision version mismatch. To fix:
+
+    pip uninstall torch torchvision -y
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+    pip install transformers>=4.36.0
+
+Or if you have CUDA:
+
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+================================================================================
+""", file=sys.stderr)
+    raise ImportError(f"SigLIP import failed: {e}") from e
 
 
 # =========================

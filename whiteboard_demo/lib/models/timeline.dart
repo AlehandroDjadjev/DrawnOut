@@ -47,11 +47,32 @@ class TimelineSegment {
 }
 
 class DrawingAction {
-  final String type;  // heading, bullet, formula, label, subbullet
+  /// Action type: heading, bullet, formula, label, subbullet, sketch_image
+  final String type;
+  
+  /// Text content (empty string for sketch_image actions)
   final String text;
+  
+  /// Indentation level for bullets/subbullets
   final int? level;
+  
+  /// Timing hint for animation pacing
   final String? timingHint;
+  
+  /// Style overrides (fontSize, color, etc.)
   final Map<String, dynamic>? style;
+  
+  /// URL for sketch_image actions (primary source)
+  final String? imageUrl;
+  
+  /// Base64-encoded image data (fallback for sketch_image)
+  final String? imageBase64;
+  
+  /// Layout placement for sketch_image: {x, y, width, height, scale}
+  final Map<String, dynamic>? placement;
+  
+  /// Additional metadata from backend (may contain image_url, filename, etc.)
+  final Map<String, dynamic>? metadata;
 
   DrawingAction({
     required this.type,
@@ -59,15 +80,30 @@ class DrawingAction {
     this.level,
     this.timingHint,
     this.style,
+    this.imageUrl,
+    this.imageBase64,
+    this.placement,
+    this.metadata,
   });
 
   factory DrawingAction.fromJson(Map<String, dynamic> json) {
+    // Extract metadata map if present
+    final meta = json['metadata'] as Map<String, dynamic>?;
+    
+    // For sketch_image, text may be empty or contain alt text
+    final textValue = json['text'];
+    final text = textValue is String ? textValue : '';
+    
     return DrawingAction(
       type: json['type'] as String,
-      text: json['text'] as String,
+      text: text,
       level: json['level'] as int?,
       timingHint: json['timing_hint'] as String?,
       style: json['style'] as Map<String, dynamic>?,
+      imageUrl: json['image_url'] as String?,
+      imageBase64: json['image_base64'] as String?,
+      placement: json['placement'] as Map<String, dynamic>?,
+      metadata: meta,
     );
   }
 
@@ -78,7 +114,37 @@ class DrawingAction {
       if (level != null) 'level': level,
       if (timingHint != null) 'timing_hint': timingHint,
       if (style != null) 'style': style,
+      if (imageUrl != null) 'image_url': imageUrl,
+      if (imageBase64 != null) 'image_base64': imageBase64,
+      if (placement != null) 'placement': placement,
+      if (metadata != null) 'metadata': metadata,
     };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Helper getters for sketch_image actions
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /// Returns the best available image URL, checking imageUrl first, then metadata
+  String? get resolvedImageUrl =>
+      imageUrl ?? metadata?['image_url'] as String? ?? metadata?['url'] as String?;
+
+  /// Returns filename hint from metadata if available
+  String? get filename => metadata?['filename'] as String?;
+
+  /// Whether this action is a sketch_image type
+  bool get isSketchImage => type == 'sketch_image';
+
+  /// Returns placement as typed values, with defaults if not specified
+  ({double x, double y, double width, double height, double? scale}) get placementValues {
+    final p = placement ?? {};
+    return (
+      x: (p['x'] as num?)?.toDouble() ?? 0.0,
+      y: (p['y'] as num?)?.toDouble() ?? 0.0,
+      width: (p['width'] as num?)?.toDouble() ?? 200.0,
+      height: (p['height'] as num?)?.toDouble() ?? 200.0,
+      scale: (p['scale'] as num?)?.toDouble(),
+    );
   }
 }
 

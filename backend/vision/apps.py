@@ -6,3 +6,4 @@ class VisionConfig(AppConfig):
     name = 'vision'
     verbose_name = 'Vision - SigLIP2 Embeddings'
 
+

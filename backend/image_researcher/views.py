@@ -248,3 +248,4 @@ def search_duckduckgo(request):
         }, status=500)
 
 
+

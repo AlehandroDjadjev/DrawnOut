@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'vectorizer.dart';
 import 'assistant_api.dart';
@@ -908,10 +909,48 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     double fontScale = 1.0,
     double? overrideSeconds,
   }) async {
+    // ── DEBUG: Log action breakdown ────────────────────────────────────────
+    debugPrint('📥 Processing ${actions.length} whiteboard actions:');
+    final actionTypes = <String, int>{};
+    int sketchImageCount = 0;
+    for (final a in actions) {
+      if (a is! Map) continue;
+      final type = (a['type'] ?? 'unknown').toString();
+      actionTypes[type] = (actionTypes[type] ?? 0) + 1;
+      if (type == 'sketch_image') sketchImageCount++;
+    }
+    for (final entry in actionTypes.entries) {
+      debugPrint('   - ${entry.key}: ${entry.value}');
+    }
+    if (sketchImageCount > 0) {
+      debugPrint('🖼️ Contains $sketchImageCount sketch_image action(s)');
+    }
+    // ── END DEBUG ──────────────────────────────────────────────────────────
+    
     final accum = <List<Offset>>[];
     for (final a in actions) {
       if (a is! Map) continue;
       final type = (a['type'] ?? '').toString();
+      
+      // ── Handle sketch_image actions ──────────────────────────────────────
+      if (type == 'sketch_image') {
+        final imageUrl = a['image_url'] as String?;
+        final imageBase64 = a['image_base64'] as String?;
+        final placement = a['placement'] as Map<String, dynamic>?;
+        final metadata = a['metadata'] as Map<String, dynamic>?;
+        
+        debugPrint('🖼️ Processing sketch_image action');
+        await _sketchImageFromUrl(
+          imageUrl: imageUrl,
+          imageBase64: imageBase64,
+          placement: placement,
+          metadata: metadata,
+          accum: accum,
+        );
+        continue; // Skip to next action
+      }
+      
+      // ── Handle text-based actions (heading, bullet, formula, etc.) ───────
       final text = (a['text'] ?? '').toString();
       final level = (a['level'] is num) ? (a['level'] as num).toInt() : 1;
       final style = a['style'] as Map<String, dynamic>?;
@@ -1240,50 +1279,86 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     try {
       await _ensureLayout();
 
-      final whiteboardActions = actions
-          .map((action) => {
-                'type': action.type,
-                'text': action.text,
-                if (action.level != null) 'level': action.level,
-                if (action.style != null) 'style': action.style,
-              })
-          .toList();
+      // ── DEBUG: Log action breakdown from backend ─────────────────────────
+      debugPrint('📥 Received ${actions.length} drawing actions from backend:');
+      final actionTypes = <String, int>{};
+      for (final a in actions) {
+        actionTypes[a.type] = (actionTypes[a.type] ?? 0) + 1;
+      }
+      for (final entry in actionTypes.entries) {
+        debugPrint('   - ${entry.key}: ${entry.value}');
+      }
+      
+      // Separate sketch_image actions from text actions for duration calculation
+      final textActions = actions.where((a) => !a.isSketchImage).toList();
+      final imageActions = actions.where((a) => a.isSketchImage).toList();
+      
+      // Log sketch_image details if any
+      if (imageActions.isNotEmpty) {
+        debugPrint('🖼️ Found ${imageActions.length} sketch_image action(s):');
+        for (final img in imageActions) {
+          final url = img.resolvedImageUrl ?? 'no URL';
+          final hasPlacement = img.placement != null;
+          final hasBase64 = img.imageBase64 != null && img.imageBase64!.isNotEmpty;
+          debugPrint('   - ID: ${img.text.isEmpty ? "(no alt text)" : img.text.substring(0, img.text.length.clamp(0, 30))}');
+          debugPrint('     URL: ${url.length > 60 ? "${url.substring(0, 60)}..." : url}');
+          debugPrint('     Placement: ${hasPlacement ? "yes" : "auto"}, Base64 fallback: ${hasBase64 ? "yes" : "no"}');
+        }
+      }
+
+      // Calculate total chars only from text actions
+      final totalChars = textActions.fold<int>(0, (sum, a) => sum + a.text.length);
 
       // Drawing duration: MUCH SLOWER - match dictation pace for formulas
       final segment = _timelineController?.currentSegment;
-      final totalChars = whiteboardActions.fold<int>(
-          0, (sum, a) => sum + (a['text'] as String).length);
 
       // Detect formula/dictation segments: short board text with longer speech
       final isDictationSegment = segment != null &&
           segment.actualAudioDuration > 5.0 &&
           totalChars < 50;
 
+      // Add extra time for images (each image adds ~3s)
+      final imageTime = imageActions.length * 3.0;
+
       final drawDuration = isDictationSegment
           ? (segment!.actualAudioDuration * 0.85)
               .clamp(6.0, 25.0) // SLOW: match dictation pace
           : totalChars < 10
-              ? 5.0 // Even short words take 5s
+              ? 5.0 + imageTime // Even short words take 5s
               : totalChars < 20
-                  ? 7.0 // Medium takes 7s
+                  ? 7.0 + imageTime // Medium takes 7s
                   : totalChars < 40
-                      ? 10.0 // Formulas take 10s
+                      ? 10.0 + imageTime // Formulas take 10s
                       : totalChars < 80
-                          ? 14.0 // Lists take 14s
-                          : 18.0; // Very long takes 18s
+                          ? 14.0 + imageTime // Lists take 14s
+                          : 18.0 + imageTime; // Very long takes 18s
 
       debugPrint(
-          '✍️ Drawing "${whiteboardActions.map((a) => a['text']).join(', ')}" over ${drawDuration}s');
+          '✍️ Drawing ${textActions.length} text + ${imageActions.length} image actions over ${drawDuration}s');
 
       // Generate strokes
       final accum = <List<Offset>>[];
-      for (final action in whiteboardActions) {
+      for (final action in actions) {
+        // ── Handle sketch_image actions ────────────────────────────────────
+        if (action.isSketchImage) {
+          debugPrint('🖼️ Processing sketch_image action (synced)');
+          await _sketchImageFromUrl(
+            imageUrl: action.imageUrl,
+            imageBase64: action.imageBase64,
+            placement: action.placement,
+            metadata: action.metadata,
+            accum: accum,
+          );
+          continue; // Skip to next action
+        }
+
+        // ── Handle text-based actions ──────────────────────────────────────
         await _placeBlock(
           _layout!,
-          type: action['type'] as String,
-          text: action['text'] as String,
-          level: (action['level'] as int?) ?? 1,
-          style: action['style'] as Map<String, dynamic>?,
+          type: action.type,
+          text: action.text,
+          level: action.level ?? 1,
+          style: action.style,
           accum: accum,
           fontScale: _tutorFontScale,
         );
@@ -1507,6 +1582,377 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       _diagramAnimEnd =
           now.add(Duration(milliseconds: (_seconds * 1000).round()));
     });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Sketch Image from URL (for sketch_image actions)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /// Fetches an image from URL, vectorizes it, and adds strokes to [accum].
+  ///
+  /// This method is used by sketch_image drawing actions to render remote
+  /// images as hand-drawn sketches on the whiteboard.
+  ///
+  /// Parameters:
+  /// - [imageUrl]: The URL of the image to fetch and sketch
+  /// - [placement]: Optional placement data with x, y, width, height, scale
+  /// - [accum]: The stroke accumulator list to add generated strokes to
+  /// - [metadata]: Optional metadata (may contain fallback URL, filename, etc.)
+  /// - [imageBase64]: Optional base64-encoded image data as fallback
+  ///
+  /// Returns true if the image was successfully sketched, false otherwise.
+  Future<bool> _sketchImageFromUrl({
+    required String? imageUrl,
+    Map<String, dynamic>? placement,
+    required List<List<Offset>> accum,
+    Map<String, dynamic>? metadata,
+    String? imageBase64,
+  }) async {
+    await _ensureLayout();
+    final st = _layout!;
+    final cfg = st.config;
+
+    // ── Step 1: Resolve the image URL ──────────────────────────────────────
+    String? resolvedUrl = imageUrl;
+    
+    // Try metadata fallbacks if direct URL is empty
+    if (resolvedUrl == null || resolvedUrl.isEmpty) {
+      resolvedUrl = metadata?['image_url'] as String? ?? 
+                    metadata?['url'] as String?;
+    }
+
+    // ── Step 2: Get image bytes ────────────────────────────────────────────
+    Uint8List? imageBytes;
+
+    // Try fetching from URL first
+    if (resolvedUrl != null && resolvedUrl.isNotEmpty) {
+      try {
+        // Use proxy for CORS safety on web
+        final baseUrl = _apiUrlCtrl.text.trim().isEmpty
+            ? 'http://localhost:8000'
+            : _apiUrlCtrl.text.trim();
+        final api = LessonPipelineApi(baseUrl: baseUrl);
+        final proxiedUrl = api.buildProxiedImageUrl(resolvedUrl);
+        
+        debugPrint('🖼️ Fetching image: $resolvedUrl');
+        debugPrint('   Proxied URL: $proxiedUrl');
+
+        final response = await http.get(Uri.parse(proxiedUrl)).timeout(
+          const Duration(seconds: 30),
+          onTimeout: () {
+            throw Exception('Image fetch timed out after 30s');
+          },
+        );
+
+        if (response.statusCode == 200) {
+          imageBytes = response.bodyBytes;
+          debugPrint('   ✅ Fetched ${imageBytes.length} bytes');
+        } else {
+          debugPrint('   ❌ HTTP ${response.statusCode}: ${response.reasonPhrase}');
+        }
+      } catch (e) {
+        debugPrint('   ❌ Image fetch failed: $e');
+      }
+    }
+
+    // Fallback to base64 if URL fetch failed
+    if (imageBytes == null && imageBase64 != null && imageBase64.isNotEmpty) {
+      try {
+        debugPrint('🖼️ Using base64 image fallback');
+        imageBytes = base64Decode(imageBase64);
+        debugPrint('   ✅ Decoded ${imageBytes.length} bytes from base64');
+      } catch (e) {
+        debugPrint('   ❌ Base64 decode failed: $e');
+      }
+    }
+
+    // If we still have no image, give up gracefully
+    if (imageBytes == null || imageBytes.isEmpty) {
+      debugPrint('⚠️ No image data available, skipping sketch_image');
+      return false;
+    }
+
+    // ── Step 3: Decode image to get dimensions ─────────────────────────────
+    ui.Image img;
+    try {
+      img = await _decodeUiImage(imageBytes);
+    } catch (e) {
+      debugPrint('❌ Image decode failed: $e');
+      return false;
+    }
+
+    // ── Step 4: Calculate placement ────────────────────────────────────────
+    final p = placement ?? {};
+    final hasExplicitPlacement = p.containsKey('x') && p.containsKey('y');
+    
+    double contentX0 = cfg.page.left + st._columnOffsetX();
+    double cw = st._columnWidth();
+    
+    // Target dimensions
+    double targetW, targetH;
+    double x, y;
+    
+    if (hasExplicitPlacement) {
+      // Use explicit placement from action
+      x = (p['x'] as num?)?.toDouble() ?? contentX0;
+      y = (p['y'] as num?)?.toDouble() ?? st.cursorY;
+      targetW = (p['width'] as num?)?.toDouble() ?? (cw * 0.4);
+      targetH = (p['height'] as num?)?.toDouble() ?? 
+                (targetW * (img.height / math.max(1, img.width)));
+      
+      // Apply scale if specified
+      final scale = (p['scale'] as num?)?.toDouble();
+      if (scale != null && scale > 0) {
+        targetW *= scale;
+        targetH *= scale;
+      }
+    } else {
+      // Auto-place: similar to _sketchDiagramAuto logic
+      double maxW = cw * 0.4; // 40% of column width for images
+      
+      // Center horizontally in column
+      x = contentX0 + (cw - maxW) / 2.0;
+      y = st.cursorY;
+      
+      // Check for column overflow
+      final pageBottom = cfg.page.height - cfg.page.bottom;
+      if ((pageBottom - y) < 100 &&
+          cfg.columns != null &&
+          st.columnIndex < (cfg.columns!.count - 1)) {
+        st.columnIndex += 1;
+        contentX0 = cfg.page.left + st._columnOffsetX();
+        cw = st._columnWidth();
+        maxW = cw * 0.4;
+        x = contentX0 + (cw - maxW) / 2.0;
+        y = cfg.page.top;
+      }
+      
+      // Scale to fit available space
+      final remainH = (cfg.page.height - cfg.page.bottom) - y - cfg.gutterY;
+      final scaleW = (img.width == 0) ? 1.0 : (maxW / img.width);
+      final scaleH = (img.height == 0) ? scaleW : math.max(0.1, remainH / img.height);
+      final effScale = math.min(scaleW, scaleH);
+      
+      targetW = img.width * effScale;
+      targetH = img.height * effScale;
+      
+      // Avoid overlaps with previous blocks
+      y = _nextNonCollidingY(st, x, targetH, y);
+    }
+
+    debugPrint('   📐 Placement: ($x, $y) size: ${targetW}x$targetH');
+
+    // ── Step 5: Vectorize the image ────────────────────────────────────────
+    List<List<Offset>> strokes;
+    try {
+      strokes = await Vectorizer.vectorize(
+        bytes: imageBytes,
+        worldScale: _worldScale,
+        edgeMode: 'Canny',
+        blurK: 3,
+        cannyLo: 35,
+        cannyHi: 140,
+        epsilon: 0.9,
+        resampleSpacing: 1.1,
+        minPerimeter: math.max(20.0, _minPerim),
+        retrExternalOnly: false,
+        angleThresholdDeg: 85,
+        angleWindow: 3,
+        smoothPasses: 2,
+        mergeParallel: true,
+        mergeMaxDist: 14.0,
+        minStrokeLen: 16.0,
+        minStrokePoints: 10,
+      );
+    } catch (e) {
+      debugPrint('❌ Vectorization failed: $e');
+      return false;
+    }
+
+    if (strokes.isEmpty) {
+      debugPrint('⚠️ Vectorization produced no strokes');
+      return false;
+    }
+
+    debugPrint('   ✏️ Vectorized: ${strokes.length} strokes');
+
+    // ── Step 6: Filter and transform strokes ───────────────────────────────
+    final filtered = _filterDiagramStrokes(strokes, minLength: 24.0, minExtent: 8.0);
+    
+    // Calculate scale factor for strokes (image px → target size)
+    final effScale = targetW / math.max(1, img.width);
+    
+    // Convert content-space to world-space and apply scaling
+    final worldTopLeft = Offset(
+      x - (cfg.page.width / 2),
+      y - (cfg.page.height / 2),
+    );
+    final centerOffset = Offset(targetW / 2.0, targetH / 2.0);
+    final centerWorld = worldTopLeft + centerOffset;
+    
+    final placedStrokes = filtered
+        .map((s) => s.map((p) => (p * effScale) + centerWorld).toList())
+        .toList();
+
+    // ── Step 7: Update layout state ────────────────────────────────────────
+    final bbox = _BBox(x: x, y: y, w: targetW, h: targetH);
+    st.blocks.add(_DrawnBlock(
+      id: 'sketch_img_${st.blocks.length + 1}',
+      type: 'sketch_image',
+      bbox: bbox,
+      meta: {
+        'w': img.width,
+        'h': img.height,
+        'url': resolvedUrl,
+        if (metadata != null) ...metadata,
+      },
+    ));
+    
+    // Advance cursor for next content
+    st.cursorY = y + targetH + cfg.gutterY * 1.25;
+
+    // ── Step 8: Add strokes to accumulator ─────────────────────────────────
+    accum.addAll(placedStrokes);
+    
+    debugPrint('   ✅ Added ${placedStrokes.length} strokes to accum');
+    return true;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // DEBUG: Test sketch_image without backend
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /// Injects a test sketch_image action to verify the image sketching pipeline.
+  ///
+  /// This method is only available in debug mode and allows testing the
+  /// sketch_image functionality without requiring a backend connection.
+  ///
+  /// Uses a sample image from picsum.photos (placeholder image service).
+  Future<void> _debugInjectSketchImage() async {
+    if (!kDebugMode) return;
+
+    debugPrint('🧪 DEBUG: Injecting test sketch_image action...');
+
+    setState(() {
+      _busy = true;
+    });
+
+    try {
+      await _ensureLayout();
+
+      // Sample test images (reliable placeholder services)
+      final testImages = [
+        'https://picsum.photos/400/300', // Random placeholder
+        'https://via.placeholder.com/400x300/4a90d9/ffffff?text=Test+Image',
+        'https://placehold.co/400x300/3498db/ffffff?text=Sketch+Test',
+      ];
+
+      // Pick a random test image
+      final randomIndex = DateTime.now().millisecond % testImages.length;
+      final testImageUrl = testImages[randomIndex];
+
+      // Create test actions: heading + sketch_image + bullet
+      final testActions = [
+        {
+          'type': 'heading',
+          'text': '🧪 Debug: sketch_image Test',
+        },
+        {
+          'type': 'sketch_image',
+          'image_url': testImageUrl,
+          'placement': {
+            'x': null, // Let auto-placement handle it
+            'y': null,
+            'width': 300.0,
+            'height': 225.0,
+          },
+          'metadata': {
+            'source': 'debug_injection',
+            'test': true,
+          },
+        },
+        {
+          'type': 'bullet',
+          'text': 'Image rendered via sketch_image pipeline',
+          'level': 1,
+        },
+      ];
+
+      debugPrint('🧪 DEBUG: Processing ${testActions.length} test actions...');
+
+      // Pass through normal action dispatcher
+      await _handleWhiteboardActions(
+        testActions,
+        fontScale: _tutorFontScale,
+        overrideSeconds: 8.0, // Longer duration to see the sketch
+      );
+
+      debugPrint('🧪 DEBUG: Test actions processed successfully!');
+
+    } catch (e, st) {
+      debugPrint('❌ DEBUG: Error injecting sketch_image: $e');
+      debugPrint('Stack: $st');
+      _showError('Debug error: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  /// Injects a test with explicit placement coordinates
+  Future<void> _debugInjectSketchImageWithPlacement() async {
+    if (!kDebugMode) return;
+
+    debugPrint('🧪 DEBUG: Injecting positioned sketch_image...');
+
+    setState(() {
+      _busy = true;
+    });
+
+    try {
+      await _ensureLayout();
+      
+      final cfg = _layout!.config;
+
+      // Create a positioned image action
+      final testActions = [
+        {
+          'type': 'sketch_image',
+          'image_url': 'https://picsum.photos/seed/drawnout/300/200',
+          'placement': {
+            'x': cfg.page.left + 50.0,
+            'y': cfg.page.top + 50.0,
+            'width': 250.0,
+            'height': 167.0,
+            'scale': 1.0,
+          },
+          'metadata': {
+            'source': 'debug_positioned',
+          },
+        },
+      ];
+
+      await _handleWhiteboardActions(
+        testActions,
+        fontScale: 1.0,
+        overrideSeconds: 6.0,
+      );
+
+      debugPrint('🧪 DEBUG: Positioned image processed!');
+
+    } catch (e) {
+      debugPrint('❌ DEBUG: Error: $e');
+      _showError('Debug error: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+        });
+      }
+    }
   }
 
   Future<void> _placeBlock(
@@ -1909,6 +2355,68 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
               ),
             ],
           ),
+          // ── DEBUG: Test sketch_image (only in debug mode) ──────────────
+          if (kDebugMode) ...[
+            const SizedBox(height: 8),
+            Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.orange.shade300, width: 2),
+                borderRadius: BorderRadius.circular(8),
+                color: Colors.orange.shade50,
+              ),
+              padding: const EdgeInsets.all(8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.bug_report, color: Colors.orange.shade700, size: 18),
+                      const SizedBox(width: 4),
+                      Text(
+                        'DEBUG: sketch_image',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.orange.shade800,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _busy ? null : _debugInjectSketchImage,
+                          icon: const Icon(Icons.image, size: 16),
+                          label: const Text('Auto-Place', style: TextStyle(fontSize: 12)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.orange.shade100,
+                            foregroundColor: Colors.orange.shade900,
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _busy ? null : _debugInjectSketchImageWithPlacement,
+                          icon: const Icon(Icons.place, size: 16),
+                          label: const Text('Positioned', style: TextStyle(fontSize: 12)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.orange.shade100,
+                            foregroundColor: Colors.orange.shade900,
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+          // ── END DEBUG ──────────────────────────────────────────────────
           const SizedBox(height: 16),
           const Divider(height: 24),
           Text('Orchestrator Layout', style: t.textTheme.titleLarge),

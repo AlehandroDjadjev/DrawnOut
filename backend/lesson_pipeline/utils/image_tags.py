@@ -3,7 +3,7 @@ Utilities for parsing and handling IMAGE tags in lesson scripts.
 """
 import re
 from typing import List, Tuple, Dict
-from lesson_pipeline.types import ImageTag, ResolvedImage
+from lesson_pipeline.types import ImageTag, ResolvedImage, ImageSlot
 
 
 # Regex to match [IMAGE ...] tags
@@ -188,4 +188,35 @@ def _is_valid_aspect_ratio(ratio: str) -> bool:
     except ValueError:
         return False
 
+
+def build_image_slots(tags: List[ImageTag]) -> List[ImageSlot]:
+    """
+    Convert ImageTag objects into ImageSlot objects for the lesson document.
+    
+    Args:
+        tags: List of parsed ImageTag objects
+    
+    Returns:
+        List of ImageSlot objects with default timing and placement values
+    """
+    slots: List[ImageSlot] = []
+    
+    for index, tag in enumerate(tags):
+        # Use tag's time_offset if available, otherwise calculate based on sequence
+        min_time = tag.time_offset if tag.time_offset is not None else index * 5.0
+        duration = tag.duration if tag.duration is not None else 5.0
+        
+        slot = ImageSlot(
+            id=tag.id,
+            tag=tag,
+            sequence_index=index,
+            min_time_seconds=min_time,
+            duration_seconds=duration,
+            placement=tag.placement if tag.placement else {},
+            notes=None,
+            status="pending",
+        )
+        slots.append(slot)
+    
+    return slots
 
