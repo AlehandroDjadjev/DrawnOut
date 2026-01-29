@@ -8,6 +8,8 @@ import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:provider/provider.dart';
 import 'vectorizer.dart';
 import 'assistant_api.dart';
 import 'assistant_audio.dart';
@@ -18,18 +20,77 @@ import 'models/timeline.dart';
 import 'services/timeline_api.dart';
 import 'controllers/timeline_playback_controller.dart';
 import 'services/lesson_pipeline_api.dart';
+import 'services/app_config_service.dart';
+import 'theme_provider.dart';
+import 'providers/developer_mode_provider.dart';
+import 'pages/login.dart';
+import 'pages/signup.dart';
+import 'pages/home.dart';
+import 'pages/lessons_page.dart';
+import 'pages/settings_page.dart';
 
-void main() => runApp(const App());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await dotenv.load(fileName: 'assets/.env');
+  runApp(
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => ThemeProvider()),
+        ChangeNotifierProvider(create: (_) => DeveloperModeProvider()),
+        ChangeNotifierProvider(create: (_) => AppConfigService()),
+      ],
+      child: const DrawnOutApp(),
+    ),
+  );
+}
 
-class App extends StatelessWidget {
-  const App({super.key});
+class DrawnOutApp extends StatelessWidget {
+  const DrawnOutApp({super.key});
+
+  ThemeData _buildTheme(bool dark) {
+    final base = dark ? ThemeData.dark() : ThemeData.light();
+    return base.copyWith(
+      useMaterial3: true,
+      colorScheme: base.colorScheme.copyWith(
+        primary: dark ? Colors.tealAccent.shade200 : Colors.blue,
+        secondary: dark ? Colors.tealAccent : Colors.blueAccent,
+      ),
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: ElevatedButton.styleFrom(
+          backgroundColor:
+              dark ? Colors.tealAccent.shade200 : Colors.blueAccent,
+          foregroundColor: dark ? Colors.black : Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+          ),
+          elevation: 3,
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          foregroundColor: dark ? Colors.tealAccent.shade200 : Colors.blue,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+
     return MaterialApp(
-      title: 'Vector Sketch Whiteboard',
-      theme: ThemeData.light(useMaterial3: true),
       debugShowCheckedModeBanner: false,
-      home: const WhiteboardPage(),
+      title: 'DrawnOut',
+      theme: _buildTheme(themeProvider.isDarkMode),
+      routes: {
+        '/login': (context) => const LoginPage(),
+        '/signup': (context) => const SignupPage(),
+        '/home': (context) => const HomePage(),
+        '/lessons': (context) => const LessonsPage(),
+        '/settings': (context) => const SettingsPage(),
+        '/whiteboard': (context) => const WhiteboardPage(),
+      },
+      initialRoute: '/login',
     );
   }
 }

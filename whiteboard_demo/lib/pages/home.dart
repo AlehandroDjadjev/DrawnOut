@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 import '../theme_provider.dart';
 import '../providers/developer_mode_provider.dart';
 import 'profile_page.dart';
-import 'whiteboard_page.dart' show WhiteboardPage, LessonContext;
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -121,7 +120,7 @@ class _HomePageState extends State<HomePage> {
                       SnackBar(
                         content: Text(
                           devMode.isEnabled 
-                            ? '🔧 Developer mode enabled' 
+                            ? 'Developer mode enabled' 
                             : 'Developer mode disabled',
                         ),
                         behavior: SnackBarBehavior.floating,
@@ -166,6 +165,14 @@ class _HomePageState extends State<HomePage> {
             onTap: () {
               Navigator.pop(context);
               Navigator.pushNamed(context, '/lessons');
+            },
+          ),
+          ListTile(
+            leading: Icon(Icons.draw, color: theme.colorScheme.primary),
+            title: const Text("Whiteboard Demo"),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.pushNamed(context, '/whiteboard');
             },
           ),
           ListTile(
@@ -288,27 +295,7 @@ class _HomePageState extends State<HomePage> {
                               horizontal: 20, vertical: 12),
                         ),
                         onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => WhiteboardPage(
-                                lessonContext: const LessonContext(
-                                  lessonId: 1,
-                                  title: 'Pythagoras Theorem',
-                                  topic: 'mathematics',
-                                ),
-                                onLessonComplete: () {
-                                  Navigator.pop(context);
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text('Lesson completed!'),
-                                      backgroundColor: Colors.green,
-                                    ),
-                                  );
-                                },
-                              ),
-                            ),
-                          );
+                          Navigator.pushNamed(context, '/whiteboard');
                         },
                         icon: const Icon(Icons.play_arrow),
                         label: const Text(

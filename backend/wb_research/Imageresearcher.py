@@ -2951,15 +2951,3 @@ def research(query: str, subj: str):
     unique = collect_unique_images(IMAGES_PATH, base_ctx_embedding, prompt_text=query, dbg=dbg)
     dbg(f"Unique images:{unique}")
     return unique
-
-
-
-
-
-
-
-
-
-
-
-

@@ -225,19 +225,16 @@ class ImageResearchService:
                             # Extract URLs and metadata from API response
                             if src.name == "wikimedia":
                                 pages = data.get("query", {}).get("pages", {})
+                                # Separate raster images from SVGs - prefer raster
+                                raster_candidates = []
+                                svg_candidates = []
+                                
                                 for page in pages.values():
                                     info = page.get("imageinfo", [])
                                     for img_info in info:
                                         url = img_info.get("url")
-                                        mime = (img_info.get("mime") or "").lower()
                                         
-                                        # Skip SVG/GIF - can't be embedded, often return 403
                                         if not url:
-                                            continue
-                                        url_lower = url.lower()
-                                        if '.svg' in url_lower or '.gif' in url_lower:
-                                            continue
-                                        if 'svg' in mime or 'gif' in mime:
                                             continue
                                         
                                         candidate = ImageCandidate(
@@ -247,7 +244,23 @@ class ImageResearchService:
                                             description=img_info.get("extmetadata", {}).get("ImageDescription", {}).get("value", query),
                                             tags=[query, subject]
                                         )
-                                        candidates.append(candidate)
+                                        
+                                        # Prioritize raster images (PNG, JPG) over SVG
+                                        url_lower = url.lower()
+                                        if '.svg' in url_lower:
+                                            svg_candidates.append(candidate)
+                                        else:
+                                            raster_candidates.append(candidate)
+                                
+                                # Add raster first, then SVGs if we need more
+                                for c in raster_candidates:
+                                    candidates.append(c)
+                                    if len(candidates) >= limit:
+                                        break
+                                
+                                if len(candidates) < limit:
+                                    for c in svg_candidates:
+                                        candidates.append(c)
                                         if len(candidates) >= limit:
                                             break
                             
@@ -256,6 +269,7 @@ class ImageResearchService:
                                 for item in results:
                                     url = item.get("url")
                                     if url:
+                                        # SVG/GIF are now converted to PNG during embedding
                                         candidate = ImageCandidate(
                                             source_url=url,
                                             source=src.name,
@@ -275,6 +289,7 @@ class ImageResearchService:
                                         url = file_entry.get("url") or file_entry.get("downloadUri")
                                         ctype = (file_entry.get("contentType") or "").lower()
                                         if url and "image/" in ctype:
+                                            # SVG/GIF are now converted to PNG during embedding
                                             candidate = ImageCandidate(
                                                 source_url=url,
                                                 source=src.name,
@@ -290,6 +305,7 @@ class ImageResearchService:
                                 # Fallback: just extract URLs
                                 img_urls = self._extract_urls_from_api_data(src.name, data)
                                 for img_url in img_urls[:limit]:
+                                    # SVG/GIF are now converted to PNG during embedding
                                     candidate = ImageCandidate(
                                         source_url=img_url,
                                         source=src.name,
@@ -309,7 +325,7 @@ class ImageResearchService:
                         logger.info(f"  Source {src.name}: found {len(images)} images")
                         
                         for img_path in images:
-                            # Convert to ImageCandidate with metadata
+                            # SVG/GIF are now converted to PNG during embedding
                             candidate = ImageCandidate(
                                 source_url=img_path,
                                 source=src.name,
@@ -351,6 +367,7 @@ class ImageResearchService:
                             
                             url = result.get("image")
                             if url:
+                                # SVG/GIF are now converted to PNG during embedding
                                 candidate = ImageCandidate(
                                     source_url=url,
                                     source="duckduckgo",

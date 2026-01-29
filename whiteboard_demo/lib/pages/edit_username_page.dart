@@ -60,7 +60,7 @@ class _EditUsernamePageState extends State<EditUsernamePage> {
 
       if (response.statusCode == 200) {
         setState(() {
-          _message = "✅ Username updated successfully!";
+          _message = "Username updated successfully!";
         });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text("Username updated successfully")),
@@ -68,12 +68,12 @@ class _EditUsernamePageState extends State<EditUsernamePage> {
         Navigator.pop(context, true); // return success to ProfilePage
       } else {
         setState(() {
-          _message = "❌ Failed to update username";
+          _message = "Failed to update username";
         });
       }
     } catch (e) {
       setState(() {
-        _message = "⚠️ Could not connect to server";
+        _message = "Could not connect to server";
       });
     } finally {
       setState(() {
@@ -84,7 +84,6 @@ class _EditUsernamePageState extends State<EditUsernamePage> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(title: const Text("Edit Username")),
       body: Padding(
@@ -123,7 +122,7 @@ class _EditUsernamePageState extends State<EditUsernamePage> {
                 const SizedBox(height: 12),
                 Text(_message!,
                     style: TextStyle(
-                        color: _message!.startsWith("✅")
+                        color: _message!.contains("success")
                             ? Colors.green
                             : Colors.red)),
               ],

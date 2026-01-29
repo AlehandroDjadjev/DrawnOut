@@ -48,6 +48,14 @@ Pillow==11.3.0
 opencv-python==4.12.0.88
 scikit-image==0.25.2
 imageio==2.37.0
+Wand==0.6.13       # SVG conversion via ImageMagick (optional - needs ImageMagick installed)
+                   # Windows: https://imagemagick.org/script/download.php
+svglib==1.6.0      # Alternative SVG parsing (needs Cairo for renderPM)
+reportlab==4.4.9   # PDF/image generation
+# cairosvg==2.7.1  # Best quality SVG conversion. Requires Cairo library.
+                   # Windows: Install GTK3 runtime from https://github.com/nickveld/win-gtk3
+                   # Linux: apt install libcairo2-dev
+                   # macOS: brew install cairo
 
 # Audio Processing
 pydub==0.25.1

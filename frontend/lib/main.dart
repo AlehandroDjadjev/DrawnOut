@@ -1,17 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'pages/login.dart';
 import 'pages/signup.dart';
 import 'pages/home.dart';
+import 'pages/lessons_page.dart';
+import 'pages/settings_page.dart';
+import 'providers/developer_mode_provider.dart';
+import 'services/app_config_service.dart';
+import 'theme_provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await dotenv.load(fileName: 'assets/.env');
   runApp(
-    ChangeNotifierProvider(
-      create: (_) => ThemeProvider(),
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => ThemeProvider()),
+        ChangeNotifierProvider(create: (_) => DeveloperModeProvider()),
+        ChangeNotifierProvider(create: (_) => AppConfigService()),
+      ],
       child: const MyApp(),
     ),
   );
@@ -58,35 +66,11 @@ class MyApp extends StatelessWidget {
         '/login': (context) => const LoginPage(),
         '/signup': (context) => const SignupPage(),
         '/home': (context) => const HomePage(),
+        '/lessons': (context) => const LessonsPage(),
+        '/settings': (context) => const SettingsPage(),
       },
       initialRoute: '/login',
     );
   }
 }
 
-/// 🌙 Theme Provider to manage light/dark mode globally and persist it
-class ThemeProvider extends ChangeNotifier {
-  bool _isDarkMode = false;
-  bool get isDarkMode => _isDarkMode;
-
-  ThemeProvider() {
-    _loadTheme();
-  }
-
-  void toggleTheme() {
-    _isDarkMode = !_isDarkMode;
-    _saveTheme();
-    notifyListeners();
-  }
-
-  Future<void> _loadTheme() async {
-    final prefs = await SharedPreferences.getInstance();
-    _isDarkMode = prefs.getBool('isDarkMode') ?? false;
-    notifyListeners();
-  }
-
-  Future<void> _saveTheme() async {
-    final prefs = await SharedPreferences.getInstance();
-    prefs.setBool('isDarkMode', _isDarkMode);
-  }
-}
