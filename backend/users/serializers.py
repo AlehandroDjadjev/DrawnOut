@@ -1,17 +1,17 @@
 from rest_framework import serializers
-from .models import CustomUser, ProfilePicture
+from .models import CustomUser, Avatar
 
-class ProfilePictureSerializer(serializers.ModelSerializer):
+class AvatarSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ProfilePicture
+        model = Avatar
         fields = ['image', 'price']
 
 
 class CustomUserSerializer(serializers.ModelSerializer):
     # Keep password write-only so it is only used on creation
     password = serializers.CharField(write_only=True, required=True)
-    owned_pictures = ProfilePictureSerializer(many=True, read_only=True)
-    current_pfp = ProfilePictureSerializer(read_only=True)
+    owned_avatars = AvatarSerializer(many=True, read_only=True)
+    current_avatar = AvatarSerializer(read_only=True)
 
     class Meta:
         model = CustomUser

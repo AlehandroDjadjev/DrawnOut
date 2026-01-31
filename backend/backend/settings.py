@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     'wb_preprocess',
     'wb_vectorize',
     'wb_generate',
+    'market',
     'vision',  # SigLIP2 zero-shot classification & embeddings
     'rest_framework',
     'rest_framework_simplejwt.token_blacklist',
