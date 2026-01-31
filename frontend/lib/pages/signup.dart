@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../main.dart'; // import ThemeProvider
 
 class SignupPage extends StatefulWidget {
@@ -24,8 +25,42 @@ class _SignupPageState extends State<SignupPage> {
 
   final String baseUrl = "${dotenv.env['API_URL']}/api/auth/";
 
+  String _formatApiError(dynamic data, {String fallback = 'Signup failed'}) {
+    if (data == null) return fallback;
+
+    if (data is Map) {
+      if (data['detail'] != null) return data['detail'].toString();
+      if (data['error'] != null) return data['error'].toString();
+
+      final parts = <String>[];
+      for (final entry in data.entries) {
+        final key = entry.key.toString();
+        final value = entry.value;
+        if (value is List) {
+          parts.add('$key: ${value.join(' ')}');
+        } else {
+          parts.add('$key: $value');
+        }
+      }
+
+      if (parts.isNotEmpty) return parts.join('\n');
+    }
+
+    if (data is List) {
+      return data.map((e) => e.toString()).join('\n');
+    }
+
+    return data.toString();
+  }
+
   void _signup() async {
     if (!_formKey.currentState!.validate()) return;
+
+    final username = _username.trim();
+    final password = _password;
+    final email = _email.trim();
+    final firstName = _firstName.trim();
+    final lastName = _lastName.trim();
 
     setState(() {
       _isLoading = true;
@@ -37,22 +72,46 @@ class _SignupPageState extends State<SignupPage> {
         Uri.parse('${baseUrl}register/'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'username': _username,
-          'password': _password,
-          'email': _email,
-          'first_name': _firstName,
-          'last_name': _lastName,
+          'username': username,
+          'password': password,
+          'email': email,
+          'first_name': firstName,
+          'last_name': lastName,
         }),
       );
 
-      final data = jsonDecode(response.body);
+      final dynamic data =
+          response.body.isNotEmpty ? jsonDecode(response.body) : null;
 
       if (response.statusCode == 201) {
-        if (!mounted) return;
-        Navigator.pushReplacementNamed(context, '/login');
+        // Auto-login after signup
+        final tokenResp = await http.post(
+          Uri.parse('${baseUrl}token/'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'username': username, 'password': password}),
+        );
+
+        if (tokenResp.statusCode == 200) {
+          final tokenData = jsonDecode(tokenResp.body);
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('token', tokenData['access']);
+          if (!mounted) return;
+          Navigator.pushReplacementNamed(context, '/home');
+        } else {
+          // If token obtain fails, fall back to login screen.
+          if (!mounted) return;
+          Navigator.pushReplacementNamed(context, '/login');
+        }
       } else {
         setState(() {
-          _errorMessage = data['detail'] ?? 'Signup failed';
+          final formatted = _formatApiError(data);
+          if (formatted.toLowerCase().contains('username') &&
+              formatted.toLowerCase().contains('already')) {
+            _errorMessage =
+                '$formatted\n\nIf you already created this username, try logging in.';
+          } else {
+            _errorMessage = formatted;
+          }
         });
       }
     } catch (e) {

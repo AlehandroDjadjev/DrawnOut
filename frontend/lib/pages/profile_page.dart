@@ -160,11 +160,25 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             child: CircleAvatar(
                               radius: 60,
-                              backgroundImage: _userData?['pfp'] != null
-                                  ? NetworkImage(_userData!['pfp'])
-                                  : const AssetImage(
-                                          'assets/default_avatar.png')
-                                      as ImageProvider,
+                              backgroundImage: (_userData?['pfp'] is String &&
+                                      (_userData!['pfp'] as String)
+                                          .trim()
+                                          .isNotEmpty)
+                                  ? NetworkImage(
+                                      (_userData!['pfp'] as String).trim(),
+                                    )
+                                  : null,
+                              child: (_userData?['pfp'] is String &&
+                                      (_userData!['pfp'] as String)
+                                          .trim()
+                                          .isNotEmpty)
+                                  ? null
+                                  : Icon(
+                                      Icons.person,
+                                      size: 56,
+                                      color: theme.colorScheme.onSurface
+                                          .withOpacity(0.6),
+                                    ),
                             ),
                           ),
                         ),

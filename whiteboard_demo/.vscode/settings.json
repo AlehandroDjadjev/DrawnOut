@@ -1,0 +1,5 @@
+{
+  // Ensure VS Code uses the Flutter SDK for analysis in this Flutter project.
+  "dart.flutterSdkPath": "C:\\Users\\KiKi\\dev\\flutter",
+  "dart.projectSearchDepth": 6
+}

@@ -3,9 +3,11 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 
 void main() {
@@ -49,17 +51,10 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
   static String get _fontMetricsPath =>
       '$_fontVectorsFolder${Platform.pathSeparator}font_metrics.json';
 
-  // RAW strokes from last loaded file (kept for debugging)
-  List<StrokePolyline> _polyStrokes = const [];
-  List<StrokeCubic> _cubicStrokes = const [];
-
   // DRAWABLE strokes on the board
   List<DrawableStroke> _drawableStrokes = const [];
   List<DrawableStroke> _staticStrokes = const [];
   List<DrawableStroke> _animStrokes = const [];
-
-  double? _srcWidth;
-  double? _srcHeight;
 
   String _status = 'Idle';
 
@@ -75,8 +70,13 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
 
   // ------------ Backend API config ------------
   // Keep your backend behavior. Change IP/port as needed.
-  static const String _apiBaseUrl = 'http://127.0.0.1:8000';
   static const bool _backendEnabled = true;
+
+  String get _apiBaseUrl {
+    final raw = (dotenv.env['API_URL'] ?? '').trim();
+    if (raw.isEmpty) return 'http://127.0.0.1:8000';
+    return raw.endsWith('/') ? raw.substring(0, raw.length - 1) : raw;
+  }
 
   Uri _apiUri(String path) => Uri.parse('$_apiBaseUrl$path');
 
@@ -90,27 +90,27 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
   // ------------------- CORE TIMING PARAMETERS (NON-TEXT) -------------------
 
   // Stroke draw timing (seconds) for normal objects/images
-  double _minStrokeTimeSec = 0.18;
-  double _maxStrokeTimeSec = 0.32;
+  final double _minStrokeTimeSec = 0.18;
+  final double _maxStrokeTimeSec = 0.32;
 
   // Extra time from length: seconds per 1000px of stroke length
-  double _lengthTimePerKPxSec = 0.08;
+  final double _lengthTimePerKPxSec = 0.08;
 
   // Extra time from curvature: max seconds added at "full" curvature
-  double _curvatureExtraMaxSec = 0.08;
+  final double _curvatureExtraMaxSec = 0.08;
 
   // Curvature profile along the stroke (local slowdowns)
-  double _curvatureProfileFactor = 1.5;
-  double _curvatureAngleScale = 80.0;
+  final double _curvatureProfileFactor = 1.5;
+  final double _curvatureAngleScale = 80.0;
 
   // Travel / pause between strokes (seconds) for normal objects
-  double _baseTravelTimeSec = 0.15;
-  double _travelTimePerKPxSec = 0.12;
-  double _minTravelTimeSec = 0.15;
-  double _maxTravelTimeSec = 0.35;
+  final double _baseTravelTimeSec = 0.15;
+  final double _travelTimePerKPxSec = 0.12;
+  final double _minTravelTimeSec = 0.15;
+  final double _maxTravelTimeSec = 0.35;
 
   // Global animation timing
-  double _globalSpeedMultiplier = 1.0;
+  final double _globalSpeedMultiplier = 1.0;
 
   double _textLetterGapPx = 20.0;
 
@@ -139,12 +139,11 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
 
   // text timing
   bool _animIsText = false;
-  double _textStrokeBaseTimeSec = 0.035;
-  double _textStrokeCurveExtraFrac = 0.25;
-  double _textLetterPauseSec = 0.0; // kept (unused)
+  final double _textStrokeBaseTimeSec = 0.035;
+  final double _textStrokeCurveExtraFrac = 0.25;
 
   // reference used only for text scaling UI defaults
-  double _textBaseFontSizeRef = 200.0;
+  final double _textBaseFontSizeRef = 200.0;
 
   // text UI controllers
   final TextEditingController _textPromptController =
@@ -164,6 +163,8 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
   @override
   void initState() {
     super.initState();
+
+    _lockLandscape();
 
     _controller = AnimationController(
       vsync: this,
@@ -198,8 +199,35 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
 
   @override
   void dispose() {
+    _unlockOrientation();
     _controller.dispose();
     super.dispose();
+  }
+
+  Future<void> _lockLandscape() async {
+    if (kIsWeb) return;
+    try {
+      await SystemChrome.setPreferredOrientations(const [
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    } catch (_) {
+      // Best-effort only (platform may not support forced orientations).
+    }
+  }
+
+  Future<void> _unlockOrientation() async {
+    if (kIsWeb) return;
+    try {
+      await SystemChrome.setPreferredOrientations(const [
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.portraitDown,
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    } catch (_) {
+      // Best-effort only.
+    }
   }
 
   /// Resolve a subdirectory relative to the `whiteboard_backend` folder.
@@ -468,8 +496,6 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
 
       final srcWidth = (decoded['width'] as num?)?.toDouble();
       final srcHeight = (decoded['height'] as num?)?.toDouble();
-      _srcWidth = srcWidth;
-      _srcHeight = srcHeight;
 
       if (format == 'bezier_cubic') {
         for (final s in strokesJson) {
@@ -506,9 +532,6 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
         }
       }
 
-      _polyStrokes = poly;
-      _cubicStrokes = cubics;
-
       double useWidth = srcWidth ?? 1000.0;
       double useHeight = srcHeight ?? 1000.0;
       if ((srcWidth == null || srcHeight == null) &&
@@ -516,8 +539,6 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
         final bounds = _computeRawBounds(poly, cubics);
         useWidth = bounds.width;
         useHeight = bounds.height;
-        _srcWidth = useWidth;
-        _srcHeight = useHeight;
       }
 
       final newStrokes = _buildDrawableStrokesForObject(
@@ -933,90 +954,120 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Column(
-          children: [
-            // Canvas
-            Expanded(
-              child: Container(
-                color: Colors.white,
-                child: RepaintBoundary(
-                  child: CustomPaint(
-                    painter: WhiteboardPainter(
-                      staticStrokes: _staticStrokes,
-                      animStrokes: _animStrokes,
-                      animationT: _animValue,
-                      basePenWidth: _basePenWidthPx,
-                      stepMode: _stepMode,
-                      stepStrokeCount: _stepStrokeCount,
-                      boardWidth: _boardWidth,
-                      boardHeight: _boardHeight,
-                    ),
-                    child: const SizedBox.expand(),
+    return OrientationBuilder(
+      builder: (context, orientation) {
+        if (!kIsWeb && orientation == Orientation.portrait) {
+          return Scaffold(
+            backgroundColor: Colors.black,
+            body: SafeArea(
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: const [
+                      Icon(Icons.screen_rotation, color: Colors.white70, size: 56),
+                      SizedBox(height: 14),
+                      Text(
+                        'Rotate your phone to landscape to use the whiteboard.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.white70, fontSize: 16),
+                      ),
+                    ],
                   ),
                 ),
               ),
             ),
+          );
+        }
 
-            // Status bar (compact)
-            Container(
-              width: double.infinity,
-              color: Colors.grey.shade900,
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              child: Text(
-                _status,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
-              ),
-            ),
+        return Scaffold(
+          backgroundColor: Colors.black,
+          body: SafeArea(
+            child: Column(
+              children: [
+                // Canvas
+                Expanded(
+                  child: Container(
+                    color: Colors.white,
+                    child: RepaintBoundary(
+                      child: CustomPaint(
+                        painter: WhiteboardPainter(
+                          staticStrokes: _staticStrokes,
+                          animStrokes: _animStrokes,
+                          animationT: _animValue,
+                          basePenWidth: _basePenWidthPx,
+                          stepMode: _stepMode,
+                          stepStrokeCount: _stepStrokeCount,
+                          boardWidth: _boardWidth,
+                          boardHeight: _boardHeight,
+                        ),
+                        child: const SizedBox.expand(),
+                      ),
+                    ),
+                  ),
+                ),
 
-            // Bottom navigation (simple, user-focused)
-            NavigationBar(
-              backgroundColor: Colors.grey.shade900,
-              selectedIndex: _navIndex,
-              onDestinationSelected: (i) async {
-                setState(() => _navIndex = i);
+                // Status bar (compact)
+                Container(
+                  width: double.infinity,
+                  color: Colors.grey.shade900,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  child: Text(
+                    _status,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                ),
 
-                switch (i) {
-                  case 0:
-                    _showLoadBottomSheet(context);
-                    break;
-                  case 1:
-                    _showTextBottomSheet(context);
-                    break;
-                  case 2:
-                    _restartAnimationMode();
-                    break;
-                  case 3:
-                    _showEraseBottomSheet(context, scheme: scheme);
-                    break;
-                }
-              },
-              destinations: const [
-                NavigationDestination(
-                  icon: Icon(Icons.add_photo_alternate_outlined),
-                  label: 'Load',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.edit_outlined),
-                  label: 'Text',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.play_arrow_outlined),
-                  label: 'Replay',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.delete_outline),
-                  label: 'Erase',
+                // Bottom navigation (simple, user-focused)
+                NavigationBar(
+                  backgroundColor: Colors.grey.shade900,
+                  selectedIndex: _navIndex,
+                  onDestinationSelected: (i) async {
+                    setState(() => _navIndex = i);
+
+                    switch (i) {
+                      case 0:
+                        _showLoadBottomSheet(context);
+                        break;
+                      case 1:
+                        _showTextBottomSheet(context);
+                        break;
+                      case 2:
+                        _restartAnimationMode();
+                        break;
+                      case 3:
+                        _showEraseBottomSheet(context, scheme: scheme);
+                        break;
+                    }
+                  },
+                  destinations: const [
+                    NavigationDestination(
+                      icon: Icon(Icons.add_photo_alternate_outlined),
+                      label: 'Load',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.edit_outlined),
+                      label: 'Text',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.play_arrow_outlined),
+                      label: 'Replay',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.delete_outline),
+                      label: 'Erase',
+                    ),
+                  ],
                 ),
               ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
@@ -1288,7 +1339,8 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
               else ...[
                 DropdownButtonFormField<String>(
                   dropdownColor: Colors.grey.shade900,
-                  value: _selectedEraseName ?? _drawnJsonNames.last,
+                  key: ValueKey(_selectedEraseName ?? _drawnJsonNames.last),
+                  initialValue: _selectedEraseName ?? _drawnJsonNames.last,
                   items: _drawnJsonNames
                       .map(
                         (n) => DropdownMenuItem(
@@ -1303,7 +1355,7 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
                     labelText: 'Choose object',
                     labelStyle: const TextStyle(color: Colors.white70),
                     filled: true,
-                    fillColor: Colors.black.withOpacity(0.25),
+                    fillColor: Colors.black.withValues(alpha: 64),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                     ),
@@ -1361,9 +1413,9 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
         labelText: label,
         hintText: hint,
         labelStyle: const TextStyle(color: Colors.white70),
-        hintStyle: TextStyle(color: Colors.white.withOpacity(0.35)),
+        hintStyle: TextStyle(color: Colors.white.withValues(alpha: 89)),
         filled: true,
-        fillColor: Colors.black.withOpacity(0.25),
+        fillColor: Colors.black.withValues(alpha: 64),
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),

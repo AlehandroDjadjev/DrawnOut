@@ -22,8 +22,39 @@ class _LoginPageState extends State<LoginPage> {
 
   final String baseUrl = "${dotenv.env['API_URL']}/api/auth/";
 
+  String _formatApiError(dynamic data, {String fallback = 'Login failed'}) {
+    if (data == null) return fallback;
+
+    if (data is Map) {
+      if (data['detail'] != null) return data['detail'].toString();
+      if (data['error'] != null) return data['error'].toString();
+
+      final parts = <String>[];
+      for (final entry in data.entries) {
+        final key = entry.key.toString();
+        final value = entry.value;
+        if (value is List) {
+          parts.add('$key: ${value.join(' ')}');
+        } else {
+          parts.add('$key: $value');
+        }
+      }
+
+      if (parts.isNotEmpty) return parts.join('\n');
+    }
+
+    if (data is List) {
+      return data.map((e) => e.toString()).join('\n');
+    }
+
+    return data.toString();
+  }
+
   void _login() async {
     if (!_formKey.currentState!.validate()) return;
+
+    final username = _username.trim();
+    final password = _password;
 
     setState(() {
       _isLoading = true;
@@ -34,7 +65,7 @@ class _LoginPageState extends State<LoginPage> {
       final response = await http.post(
         Uri.parse('${baseUrl}token/'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'username': _username, 'password': _password}),
+        body: jsonEncode({'username': username, 'password': password}),
       );
 
       if (response.statusCode == 200) {
@@ -47,9 +78,16 @@ class _LoginPageState extends State<LoginPage> {
         // Try to decode error message, but fallback safely
         String message = 'Login failed';
         try {
-          final data = jsonDecode(response.body);
-          message = data['detail'] ?? message;
-        } catch (_) {}
+          final data = response.body.isNotEmpty ? jsonDecode(response.body) : null;
+          message = _formatApiError(data, fallback: message);
+        } catch (_) {
+          // Keep fallback
+        }
+
+        if (message.toLowerCase().contains('no active account found') ||
+            message.toLowerCase().contains('given credentials')) {
+          message = 'Incorrect username or password.';
+        }
         setState(() {
           _errorMessage = message;
         });

@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;  // <-- ADD THIS
 
 
@@ -70,8 +71,13 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
   static const double _basePenWidthPx = 3.0; // logical image px
 
   // ------------ Backend API config ------------
-  static const String _apiBaseUrl = 'http://127.0.0.1:8000'; // change if needed
   static const bool _backendEnabled = true;
+
+  String get _apiBaseUrl {
+    final raw = (dotenv.env['API_URL'] ?? '').trim();
+    if (raw.isEmpty) return 'http://127.0.0.1:8000';
+    return raw.endsWith('/') ? raw.substring(0, raw.length - 1) : raw;
+  }
 
   Uri _apiUri(String path) => Uri.parse('$_apiBaseUrl$path');
 

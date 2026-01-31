@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../main.dart';
 import 'profile_page.dart';
 import 'whiteboard_page.dart';
@@ -16,6 +17,9 @@ class _HomePageState extends State<HomePage> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   void _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('token');
+    if (!mounted) return;
     Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
   }
 
@@ -109,15 +113,20 @@ class _HomePageState extends State<HomePage> {
             ),
             child: Center(
               child: Row(
+                mainAxisSize: MainAxisSize.min,
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(Icons.school,
                       size: 32, color: theme.colorScheme.primary),
                   const SizedBox(width: 10),
-                  Text(
-                    "DrawnOut",
-                    style: TextStyle(
-                        fontSize: 24, color: theme.colorScheme.primary),
+                  Flexible(
+                    child: Text(
+                      "DrawnOut",
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 24, color: theme.colorScheme.primary),
+                    ),
                   ),
                 ],
               ),
@@ -156,10 +165,14 @@ class _HomePageState extends State<HomePage> {
                             ? Colors.tealAccent.shade100
                             : Colors.blueGrey),
                     const SizedBox(width: 8),
-                    const Text(
-                      'Welcome to DrawnOut',
-                      style:
-                          TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
+                    const Expanded(
+                      child: Text(
+                        'Welcome to DrawnOut',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: 26, fontWeight: FontWeight.bold),
+                      ),
                     ),
                   ],
                 ),

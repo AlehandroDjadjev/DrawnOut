@@ -1,0 +1,8 @@
+{
+  // Ensure VS Code uses the Flutter SDK (not standalone Dart) for analysis.
+  // Update this path if your Flutter SDK lives elsewhere.
+  "dart.flutterSdkPath": "C:\\Users\\KiKi\\dev\\flutter",
+
+  // Optional: helps when the workspace contains multiple Flutter/Dart projects.
+  "dart.projectSearchDepth": 6
+}

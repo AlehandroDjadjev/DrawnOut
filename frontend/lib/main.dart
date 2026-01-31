@@ -2,13 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'pages/auth_gate.dart';
 import 'pages/login.dart';
 import 'pages/signup.dart';
 import 'pages/home.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await dotenv.load(fileName: 'assets/.env');
+  try {
+    await dotenv.load(fileName: 'assets/.env');
+  } catch (_) {
+    // Best-effort: allow running without an env file.
+  }
   runApp(
     ChangeNotifierProvider(
       create: (_) => ThemeProvider(),
@@ -54,12 +59,12 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'DrawnOut',
       theme: _buildTheme(themeProvider.isDarkMode),
+      home: const AuthGate(),
       routes: {
         '/login': (context) => const LoginPage(),
         '/signup': (context) => const SignupPage(),
         '/home': (context) => const HomePage(),
       },
-      initialRoute: '/login',
     );
   }
 }
