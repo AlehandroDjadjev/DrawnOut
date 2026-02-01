@@ -23,7 +23,12 @@ class _LoginPageState extends State<LoginPage> {
   String? _errorMessage;
   bool _isLoading = false;
 
-  final String baseUrl = "${dotenv.env['API_URL']}/api/auth/";
+  String? get _apiUrl {
+    final v = dotenv.env['API_URL']?.trim();
+    return (v == null || v.isEmpty) ? null : v;
+  }
+
+  String get _baseUrl => "${_apiUrl ?? ''}/api/auth/";
 
  
   String _formatApiError(dynamic data, {String fallback = 'Login failed'}) {
@@ -57,6 +62,15 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
 
+    final apiUrl = _apiUrl;
+    if (apiUrl == null) {
+      setState(() {
+        _errorMessage =
+            'Missing API_URL. Check frontend/assets/.env and restart the app.';
+      });
+      return;
+    }
+
     final username = _username.trim();
     final password = _password;
 
@@ -67,11 +81,11 @@ class _LoginPageState extends State<LoginPage> {
 
     try {
       final response = await http.post(
-        Uri.parse('${baseUrl}token/'),
+        Uri.parse('${_baseUrl}token/'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'username': _username,
-          'password': _password,
+          'username': username,
+          'password': password,
         }),
       );
 
@@ -130,7 +144,7 @@ class _LoginPageState extends State<LoginPage> {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            _Logo(isDarkMode: isDarkMode),
+                            const _Logo(),
                             _FormContent(
                               formKey: _formKey,
                               isLoading: _isLoading,

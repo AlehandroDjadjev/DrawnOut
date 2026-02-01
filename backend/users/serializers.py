@@ -24,12 +24,12 @@ class CustomUserSerializer(serializers.ModelSerializer):
             'last_name',
             'credits',
             'owned_avatars',     # ✅ MUST be here
-            'current_avatar',    # ✅ MUST be here
+            'avatar',            # ✅ MUST be here
         ]
         read_only_fields = [
             'credits',
             'owned_avatars',
-            'current_avatar',
+            'avatar',
         ]
 
     def create(self, validated_data):

@@ -21,7 +21,12 @@ class _ProfilePageState extends State<ProfilePage> {
   bool _isLoading = true;
   String? _errorMessage;
 
-  final String baseUrl = "${dotenv.env['API_URL']}/api/";
+  String? get _apiUrl {
+    final v = dotenv.env['API_URL']?.trim();
+    return (v == null || v.isEmpty) ? null : (v.endsWith('/') ? v.substring(0, v.length - 1) : v);
+  }
+
+  String get _baseUrl => "${_apiUrl ?? ''}/api/";
 
   @override
   void initState() {
@@ -34,6 +39,16 @@ class _ProfilePageState extends State<ProfilePage> {
       _isLoading = true;
       _errorMessage = null;
     });
+
+    final apiUrl = _apiUrl;
+    if (apiUrl == null) {
+      setState(() {
+        _errorMessage =
+            'Missing API_URL. Check frontend/assets/.env and restart the app.';
+        _isLoading = false;
+      });
+      return;
+    }
 
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -48,14 +63,14 @@ class _ProfilePageState extends State<ProfilePage> {
       }
 
       final userResponse = await http.get(
-        Uri.parse('${baseUrl}auth/profile/'),
+        Uri.parse('${_baseUrl}auth/profile/'),
         headers: {
           'Authorization': 'Bearer $token',
         },
       );
 
       final lessonsResponse = await http.get(
-        Uri.parse('${baseUrl}lessons/list/'),
+        Uri.parse('${_baseUrl}lessons/list/'),
         headers: {
           'Authorization': 'Bearer $token',
         },
@@ -70,7 +85,9 @@ class _ProfilePageState extends State<ProfilePage> {
         });
       } else {
         setState(() {
-          _errorMessage = 'Failed to load profile data';
+          _errorMessage =
+              'Failed to load profile data. Backend at $apiUrl\n'
+              'profile: HTTP ${userResponse.statusCode}, lessons: HTTP ${lessonsResponse.statusCode}';
         });
       }
     } catch (_) {
@@ -171,8 +188,15 @@ class _ProfilePageState extends State<ProfilePage> {
                       radius: 60,
                       backgroundImage: _userData?['pfp'] != null
                           ? NetworkImage(_userData!['pfp'])
-                          : const AssetImage('assets/default_avatar.png')
-                              as ImageProvider,
+                          : null,
+                      child: _userData?['pfp'] == null
+                          ? Icon(
+                              Icons.person,
+                              size: 60,
+                              color:
+                                  theme.colorScheme.onSurface.withOpacity(0.6),
+                            )
+                          : null,
                     ),
                   ),
                 ),

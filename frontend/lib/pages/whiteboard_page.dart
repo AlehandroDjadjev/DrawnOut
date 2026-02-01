@@ -60,7 +60,6 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
 
   // ------------ Backend API config ------------
   // Keep your backend behavior. Change IP/port as needed.
-  static const String _apiBaseUrl = 'http://127.0.0.1:8000';
   static const bool _backendEnabled = true;
 
   String get _apiBaseUrl {
@@ -81,37 +80,26 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
   // ------------------- CORE TIMING PARAMETERS (NON-TEXT) -------------------
 
   // Stroke draw timing (seconds) for normal objects/images
-  final double _minStrokeTimeSec = 0.18;
-  final double _maxStrokeTimeSec = 0.32;
-
-  // Extra time from length: seconds per 1000px of stroke length
-  final double _lengthTimePerKPxSec = 0.08;
-
-  // Extra time from curvature: max seconds added at "full" curvature
-  final double _curvatureExtraMaxSec = 0.08;
-
-  // Curvature profile along the stroke (local slowdowns)
-  final double _curvatureProfileFactor = 1.5;
-  final double _curvatureAngleScale = 80.0;
   double _minStrokeTimeSec = 0.18;
   double _maxStrokeTimeSec = 0.32;
+
+  // Extra time from length: seconds per 1000px of stroke length
   double _lengthTimePerKPxSec = 0.08;
+
+  // Extra time from curvature: max seconds added at "full" curvature
   double _curvatureExtraMaxSec = 0.08;
+
+  // Curvature profile along the stroke (local slowdowns)
   double _curvatureProfileFactor = 1.5;
   double _curvatureAngleScale = 80.0;
 
   // Travel / pause between strokes (seconds) for normal objects
-  final double _baseTravelTimeSec = 0.15;
-  final double _travelTimePerKPxSec = 0.12;
-  final double _minTravelTimeSec = 0.15;
-  final double _maxTravelTimeSec = 0.35;
   double _baseTravelTimeSec = 0.15;
   double _travelTimePerKPxSec = 0.12;
   double _minTravelTimeSec = 0.15;
   double _maxTravelTimeSec = 0.35;
 
   // Global animation timing
-  final double _globalSpeedMultiplier = 1.0;
   double _globalSpeedMultiplier = 1.0;
 
   double _textLetterGapPx = 20.0;
@@ -135,14 +123,10 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
   double? _fontImageHeightPx;
 
   bool _animIsText = false;
-  final double _textStrokeBaseTimeSec = 0.035;
-  final double _textStrokeCurveExtraFrac = 0.25;
   double _textStrokeBaseTimeSec = 0.035;
   double _textStrokeCurveExtraFrac = 0.25;
-  double _textLetterPauseSec = 0.0;
 
   // reference used only for text scaling UI defaults
-  final double _textBaseFontSizeRef = 200.0;
   double _textBaseFontSizeRef = 200.0;
 
   final TextEditingController _textPromptController =

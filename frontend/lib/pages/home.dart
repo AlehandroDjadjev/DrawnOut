@@ -4,8 +4,6 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../theme_provider/theme_provider.dart';
 import 'profile_page.dart';
-import 'whiteboard_page.dart';
-import 'market_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});

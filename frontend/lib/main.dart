@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'pages/auth_gate.dart';
 import 'pages/login.dart';
 import 'pages/signup.dart';
@@ -72,8 +71,6 @@ class MyApp extends StatelessWidget {
         '/whiteboard': (_) => const VectorViewerScreen(),
         '/market': (_) => const MarketPage(),
       },
-
-      initialRoute: '/login',
     );
   }
 }

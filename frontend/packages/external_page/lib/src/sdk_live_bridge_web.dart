@@ -1,27 +1,42 @@
+import 'dart:async';
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as html;
-import 'dart:js_util' as js_util;
+
+Future<void> _awaitThenable(dynamic result) async {
+  if (result == null) return;
+  if (result is Future) {
+    await result;
+    return;
+  }
+
+  // Best-effort: if it's a JS Promise/thenable, await it.
+  try {
+    final thenFn = (result as dynamic).then;
+    if (thenFn == null) return;
+    final c = Completer<void>();
+    (result as dynamic).then(
+      (_) => c.complete(),
+      (Object? _) => c.complete(),
+    );
+    await c.future;
+  } catch (_) {
+    // Ignore
+  }
+}
 
 Future<void> startSdkLive({bool oneTurn = false}) async {
   try {
-    final current = js_util.getProperty(html.window, '__ASSISTANT_API_BASE');
-    if (current == null || (current is String && current.isEmpty)) {
-      final origin = html.window.location.origin;
-      js_util.setProperty(html.window, '__ASSISTANT_API_BASE', '$origin/api/lessons');
-    }
-  } catch (_) {}
-  try {
-    final result = js_util.callMethod(html.window, 'startSdkLive', [oneTurn]);
-    if (result is Future) { await result; }
-    else { try { await js_util.promiseToFuture(result); } catch (_) {} }
+    final w = html.window as dynamic;
+    final result = w.startSdkLive(oneTurn);
+    await _awaitThenable(result);
   } catch (_) {}
 }
 
 Future<void> stopSdkLive() async {
   try {
-    final result = js_util.callMethod(html.window, 'stopSdkLive', const []);
-    if (result is Future) { await result; }
-    else { try { await js_util.promiseToFuture(result); } catch (_) {} }
+    final w = html.window as dynamic;
+    final result = w.stopSdkLive();
+    await _awaitThenable(result);
   } catch (_) {}
 }
 

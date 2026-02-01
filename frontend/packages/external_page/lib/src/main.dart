@@ -7,11 +7,11 @@ import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'vectorizer.dart.dart';
-import 'assistant_api.dart.dart';
-import 'assistant_audio.dart.dart';
-import 'sdk_live_bridge.dart.dart';
-import 'planner.dart.dart';
+import 'vectorizer.dart';
+import 'assistant_api.dart';
+import 'assistant_audio.dart';
+import 'sdk_live_bridge.dart';
+import 'planner.dart';
 import 'package:http/http.dart' as http;
 import 'models/timeline.dart';
 import 'services/timeline_api.dart';

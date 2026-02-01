@@ -163,7 +163,7 @@ class _SignupPageState extends State<SignupPage> {
           }
         });
       }
-    } catch (_) {
+    } catch (e) {
       setState(() {
         _errorMessage =
             'Signup request failed. Check that the backend is running at $apiUrl.\n\nDetails: ${e.toString()}';
