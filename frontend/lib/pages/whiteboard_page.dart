@@ -1323,14 +1323,15 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
               else ...[
                 DropdownButtonFormField<String>(
                   dropdownColor: Colors.grey.shade900,
-                  key: ValueKey(_selectedEraseName ?? _drawnJsonNames.last),
-                  initialValue: _selectedEraseName ?? _drawnJsonNames.last,
+                  value: _selectedEraseName ?? _drawnJsonNames.last,
                   items: _drawnJsonNames
                       .map(
-                        (n) => DropdownMenuItem(
+                        (n) => DropdownMenuItem<String>(
                           value: n,
-                          child: Text(n,
-                              style: const TextStyle(color: Colors.white)),
+                          child: Text(
+                            n,
+                            style: const TextStyle(color: Colors.white),
+                          ),
                         ),
                       )
                       .toList(),
