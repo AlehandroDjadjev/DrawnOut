@@ -8,34 +8,24 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
-void main() {
-  runApp(const WhiteboardApp());
-}
-
-/// User-friendly, mobile-first whiteboard page.
-/// ✅ Keeps your old drawing + animation + backend sync logic.
-/// ✅ UI is redesigned: bottom NavigationBar + bottom sheets for Load/Text/Erase.
-/// ✅ Cuts ONLY the “dev control panel” clutter (sliders, huge right panel), but logic stays.
-class WhiteboardApp extends StatelessWidget {
-  const WhiteboardApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark(useMaterial3: true).copyWith(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.tealAccent),
-      ),
-      home: const VectorViewerScreen(),
-    );
-  }
-}
-
+/// ✅ This file is a PAGE, not a whole app.
+/// - NO main()
+/// - NO MaterialApp
+/// - Navigation works: Home -> Whiteboard -> Back (pop)
 class VectorViewerScreen extends StatefulWidget {
   const VectorViewerScreen({super.key});
 
   @override
   State<VectorViewerScreen> createState() => _VectorViewerScreenState();
+}
+
+class WhiteboardPage extends StatelessWidget {
+  const WhiteboardPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const VectorViewerScreen();
+  }
 }
 
 class _VectorViewerScreenState extends State<VectorViewerScreen>
@@ -74,7 +64,6 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
   static const double _basePenWidthPx = 3.0; // logical image px
 
   // ------------ Backend API config ------------
-  // Keep your backend behavior. Change IP/port as needed.
   static const String _apiBaseUrl = 'http://127.0.0.1:8000';
   static const bool _backendEnabled = true;
 
@@ -88,35 +77,23 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
   static const int _maxDisplayPointsPerStroke = 120;
 
   // ------------------- CORE TIMING PARAMETERS (NON-TEXT) -------------------
-
-  // Stroke draw timing (seconds) for normal objects/images
   double _minStrokeTimeSec = 0.18;
   double _maxStrokeTimeSec = 0.32;
-
-  // Extra time from length: seconds per 1000px of stroke length
   double _lengthTimePerKPxSec = 0.08;
-
-  // Extra time from curvature: max seconds added at "full" curvature
   double _curvatureExtraMaxSec = 0.08;
-
-  // Curvature profile along the stroke (local slowdowns)
   double _curvatureProfileFactor = 1.5;
   double _curvatureAngleScale = 80.0;
 
-  // Travel / pause between strokes (seconds) for normal objects
   double _baseTravelTimeSec = 0.15;
   double _travelTimePerKPxSec = 0.12;
   double _minTravelTimeSec = 0.15;
   double _maxTravelTimeSec = 0.35;
 
-  // Global animation timing
   double _globalSpeedMultiplier = 1.0;
 
   double _textLetterGapPx = 20.0;
 
   // --------------- MULTI-OBJECT SUPPORT ---------------
-
-  // UI controllers for loading JSONs (images)
   final TextEditingController _fileNameController =
       TextEditingController(text: 'edges_0_skeleton.json');
   final TextEditingController _posXController =
@@ -126,27 +103,21 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
   final TextEditingController _scaleController =
       TextEditingController(text: '1.0');
 
-  // list of distinct json names currently on board (including text prompts)
   final List<String> _drawnJsonNames = [];
   String? _selectedEraseName;
 
   // --------------- TEXT ENGINE STATE ---------------
-
-  // cached glyphs by code unit
   final Map<int, GlyphData> _glyphCache = {};
-  double? _fontLineHeightPx; // ascent+descent in font pixels
-  double? _fontImageHeightPx; // image_height used in font generation
+  double? _fontLineHeightPx;
+  double? _fontImageHeightPx;
 
-  // text timing
   bool _animIsText = false;
   double _textStrokeBaseTimeSec = 0.035;
   double _textStrokeCurveExtraFrac = 0.25;
-  double _textLetterPauseSec = 0.0; // kept (unused)
+  double _textLetterPauseSec = 0.0;
 
-  // reference used only for text scaling UI defaults
   double _textBaseFontSizeRef = 200.0;
 
-  // text UI controllers
   final TextEditingController _textPromptController =
       TextEditingController(text: 'Hello, world');
   final TextEditingController _textXController =
@@ -158,7 +129,6 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
   final TextEditingController _textGapController =
       TextEditingController(text: '20');
 
-  // UI-only state
   int _navIndex = 0;
 
   @override
@@ -171,16 +141,15 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
     )
       ..addListener(() {
         if (!_stepMode) {
-          // small throttle helps stability on some devices
           final v = _controller.value;
           if ((v - _animValue).abs() > 0.003) {
-            setState(() => _animValue = v);
+            if (mounted) setState(() => _animValue = v);
           }
         }
       })
       ..addStatusListener((status) {
         if (status == AnimationStatus.completed) {
-          if (_animStrokes.isNotEmpty) {
+          if (_animStrokes.isNotEmpty && mounted) {
             setState(() {
               _staticStrokes = [..._staticStrokes, ..._animStrokes];
               _animStrokes = const [];
@@ -199,11 +168,19 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
   @override
   void dispose() {
     _controller.dispose();
+    _fileNameController.dispose();
+    _posXController.dispose();
+    _posYController.dispose();
+    _scaleController.dispose();
+    _textPromptController.dispose();
+    _textXController.dispose();
+    _textYController.dispose();
+    _textSizeController.dispose();
+    _textGapController.dispose();
     super.dispose();
   }
 
   /// Resolve a subdirectory relative to the `whiteboard_backend` folder.
-  /// Walks up to 10 levels to find it.
   static String _resolveBackendSubdir(String subdir) {
     var dir = Directory.current;
 
@@ -313,7 +290,6 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
       body: body,
     );
 
-    // 404 is ok – already deleted backend-side
     if (resp.statusCode >= 400 && resp.statusCode != 404) {
       throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
     }
@@ -325,17 +301,15 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
       final uri = _apiUri('/api/whiteboard/objects/');
       final resp = await http.get(uri);
       if (resp.statusCode != 200) {
-        setState(() {
-          _status = 'Backend list error: HTTP ${resp.statusCode}';
-        });
+        if (!mounted) return;
+        setState(() => _status = 'Backend list error: HTTP ${resp.statusCode}');
         return;
       }
 
       final decoded = json.decode(resp.body);
       if (decoded is! Map || decoded['objects'] is! List) {
-        setState(() {
-          _status = 'Backend list invalid format';
-        });
+        if (!mounted) return;
+        setState(() => _status = 'Backend list invalid format');
         return;
       }
 
@@ -370,21 +344,18 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
         }
       }
 
-      if (mounted) {
-        _controller.stop();
-        setState(() {
-          _staticStrokes = [..._staticStrokes, ..._animStrokes];
-          _animStrokes = const [];
-          _drawableStrokes = [..._staticStrokes];
-          _animValue = 1.0;
-          _status = 'Synced ${objs.length} object(s) from backend.';
-        });
-      }
+      if (!mounted) return;
+      _controller.stop();
+      setState(() {
+        _staticStrokes = [..._staticStrokes, ..._animStrokes];
+        _animStrokes = const [];
+        _drawableStrokes = [..._staticStrokes];
+        _animValue = 1.0;
+        _status = 'Synced ${objs.length} object(s) from backend.';
+      });
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _status = 'Backend sync failed: $e';
-      });
+      setState(() => _status = 'Backend sync failed: $e');
     }
   }
 
@@ -429,9 +400,7 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
           );
         } catch (e) {
           if (!mounted) return;
-          setState(() {
-            _status += '\n[Backend create image failed: $e]';
-          });
+          setState(() => _status += '\n[Backend create image failed: $e]');
         }
       }();
     }
@@ -609,9 +578,7 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
           );
         } catch (e) {
           if (!mounted) return;
-          setState(() {
-            _status += '\n[Backend text sync failed: $e]';
-          });
+          setState(() => _status += '\n[Backend text sync failed: $e]');
         }
       }();
     }
@@ -725,7 +692,6 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
     final cached = _glyphCache[codeUnit];
     if (cached != null) return cached;
 
-    // Common formats: "0041.json" for 'A' (0x41)
     final hex = codeUnit.toRadixString(16).padLeft(4, '0').toLowerCase();
     final path = '$_fontVectorsFolder${Platform.pathSeparator}$hex.json';
 
@@ -739,11 +705,7 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
 
       final format = (decoded['vector_format'] as String?)?.toLowerCase() ??
           'bezier_cubic';
-      if (format != 'bezier_cubic') {
-        // Your text system expects cubics. If your glyphs are polyline,
-        // convert there instead. For now we just ignore.
-        return null;
-      }
+      if (format != 'bezier_cubic') return null;
 
       final List strokesJson = decoded['strokes'] as List;
       final cubics = <StrokeCubic>[];
@@ -919,9 +881,7 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
           await _syncDeleteOnBackend(name);
         } catch (e) {
           if (!mounted) return;
-          setState(() {
-            _status += '\n[Backend delete failed: $e]';
-          });
+          setState(() => _status += '\n[Backend delete failed: $e]');
         }
       }();
     }
@@ -936,88 +896,130 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
-        child: Column(
+        child: Stack(
           children: [
-            // Canvas
-            Expanded(
-              child: Container(
-                color: Colors.white,
-                child: RepaintBoundary(
-                  child: CustomPaint(
-                    painter: WhiteboardPainter(
-                      staticStrokes: _staticStrokes,
-                      animStrokes: _animStrokes,
-                      animationT: _animValue,
-                      basePenWidth: _basePenWidthPx,
-                      stepMode: _stepMode,
-                      stepStrokeCount: _stepStrokeCount,
-                      boardWidth: _boardWidth,
-                      boardHeight: _boardHeight,
+            Column(
+              children: [
+                Expanded(
+                  child: Container(
+                    color: Colors.white,
+                    child: RepaintBoundary(
+                      child: CustomPaint(
+                        painter: WhiteboardPainter(
+                          staticStrokes: _staticStrokes,
+                          animStrokes: _animStrokes,
+                          animationT: _animValue,
+                          basePenWidth: _basePenWidthPx,
+                          stepMode: _stepMode,
+                          stepStrokeCount: _stepStrokeCount,
+                          boardWidth: _boardWidth,
+                          boardHeight: _boardHeight,
+                        ),
+                        child: const SizedBox.expand(),
+                      ),
                     ),
-                    child: const SizedBox.expand(),
                   ),
                 ),
-              ),
-            ),
-
-            // Status bar (compact)
-            Container(
-              width: double.infinity,
-              color: Colors.grey.shade900,
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              child: Text(
-                _status,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
-              ),
-            ),
-
-            // Bottom navigation (simple, user-focused)
-            NavigationBar(
-              backgroundColor: Colors.grey.shade900,
-              selectedIndex: _navIndex,
-              onDestinationSelected: (i) async {
-                setState(() => _navIndex = i);
-
-                switch (i) {
-                  case 0:
-                    _showLoadBottomSheet(context);
-                    break;
-                  case 1:
-                    _showTextBottomSheet(context);
-                    break;
-                  case 2:
-                    _restartAnimationMode();
-                    break;
-                  case 3:
-                    _showEraseBottomSheet(context, scheme: scheme);
-                    break;
-                }
-              },
-              destinations: const [
-                NavigationDestination(
-                  icon: Icon(Icons.add_photo_alternate_outlined),
-                  label: 'Load',
+                Container(
+                  width: double.infinity,
+                  color: Colors.grey.shade900,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  child: Text(
+                    _status,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
                 ),
-                NavigationDestination(
-                  icon: Icon(Icons.edit_outlined),
-                  label: 'Text',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.play_arrow_outlined),
-                  label: 'Replay',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.delete_outline),
-                  label: 'Erase',
+                NavigationBar(
+                  backgroundColor: Colors.grey.shade900,
+                  selectedIndex: _navIndex,
+                  onDestinationSelected: (i) {
+                    setState(() => _navIndex = i);
+                    switch (i) {
+                      case 0:
+                        _showLoadBottomSheet(context);
+                        break;
+                      case 1:
+                        _showTextBottomSheet(context);
+                        break;
+                      case 2:
+                        _restartAnimationMode();
+                        break;
+                      case 3:
+                        _showEraseBottomSheet(context, scheme: scheme);
+                        break;
+                    }
+                  },
+                  destinations: const [
+                    NavigationDestination(
+                      icon: Icon(Icons.add_photo_alternate_outlined),
+                      label: 'Load',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.edit_outlined),
+                      label: 'Text',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.play_arrow_outlined),
+                      label: 'Replay',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.delete_outline),
+                      label: 'Erase',
+                    ),
+                  ],
                 ),
               ],
+            ),
+
+            // ✅ Back overlay: pop the current route (this fixes blank screen)
+            Positioned(
+              top: 12,
+              left: 12,
+              child: IconButton(
+                icon: const Icon(Icons.arrow_back_ios_new),
+                color: Colors.black,
+                iconSize: 22,
+                tooltip: 'Back',
+                onPressed: () async {
+                  final shouldLeave = await _confirmExit(context);
+                  if (shouldLeave && mounted) {
+                    Navigator.of(context).pop();
+                  }
+                },
+              ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  Future<bool> _confirmExit(BuildContext context) async {
+    if (_drawableStrokes.isEmpty) return true;
+
+    return await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Leave whiteboard?'),
+            content: const Text(
+              'If you go back now, your current drawing will be lost.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('Stay'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text('Leave'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   void _showLoadBottomSheet(BuildContext context) {
@@ -1403,9 +1405,7 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
       }
     }
 
-    if (minX == double.infinity) {
-      return const Rect.fromLTWH(0, 0, 1, 1);
-    }
+    if (minX == double.infinity) return const Rect.fromLTWH(0, 0, 1, 1);
     final w = math.max(1e-3, maxX - minX);
     final h = math.max(1e-3, maxY - minY);
     return Rect.fromLTWH(minX, minY, w, h);
@@ -1424,12 +1424,9 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
       totalLen += d;
     }
 
-    if (totalLen <= 1e-6) {
-      return <Offset>[pts.first, pts.last];
-    }
+    if (totalLen <= 1e-6) return <Offset>[pts.first, pts.last];
 
-    final out = <Offset>[];
-    out.add(pts.first);
+    final out = <Offset>[pts.first];
 
     final step = totalLen / (maxPoints - 1);
     double accum = 0.0;
@@ -1598,8 +1595,7 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
         }
       }
 
-      double sharpNorm = (angDeg / angleScale).clamp(0.0, 1.5);
-
+      final sharpNorm = (angDeg / angleScale).clamp(0.0, 1.5);
       final smoothedSharp = 0.7 * prevSharpNorm + 0.3 * sharpNorm;
       prevSharpNorm = smoothedSharp;
 
@@ -1611,8 +1607,6 @@ class _VectorViewerScreenState extends State<VectorViewerScreen>
       cumGeom[i] = length;
       cumCost[i] = cost;
     }
-
-    if (length < 0.0) length = 0.0;
 
     double drawCostTotal;
     if (cost <= 0.0) {
@@ -1798,6 +1792,7 @@ class CubicSegment {
   final Offset c1;
   final Offset c2;
   final Offset p1;
+
   const CubicSegment({
     required this.p0,
     required this.c1,
