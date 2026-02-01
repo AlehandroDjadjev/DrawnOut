@@ -32,6 +32,7 @@ urlpatterns = [
     path('api/wb/vectorize/', include('wb_vectorize.urls')),
     path('api/wb/generate/', include('wb_generate.urls')),
     path('api/vision/', include('vision.urls')),  # SigLIP2 endpoints
+    path('api/market/', include('market.urls')),
     path('', TemplateView.as_view(template_name='canvasapp/index.html'), name='index'),
     path('tts-demo/', TemplateView.as_view(template_name='canvasapp/tts-demo.html'), name='tts_demo'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

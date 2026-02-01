@@ -120,19 +120,22 @@ class _LoginPageState extends State<LoginPage> {
             children: [
               Center(
                 child: isSmallScreen
-                    ? Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          _Logo(isDarkMode: isDarkMode),
-                          _FormContent(
-                            formKey: _formKey,
-                            isLoading: _isLoading,
-                            onLogin: _login,
-                            onUserChange: (v) => _username = v,
-                            onPassChange: (v) => _password = v,
-                            errorMessage: _errorMessage,
-                          ),
-                        ],
+                    ? SingleChildScrollView(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _Logo(isDarkMode: isDarkMode),
+                            _FormContent(
+                              formKey: _formKey,
+                              isLoading: _isLoading,
+                              onLogin: _login,
+                              onUserChange: (v) => _username = v,
+                              onPassChange: (v) => _password = v,
+                              errorMessage: _errorMessage,
+                            ),
+                          ],
+                        ),
                       )
                     : Container(
                         padding: const EdgeInsets.all(32.0),

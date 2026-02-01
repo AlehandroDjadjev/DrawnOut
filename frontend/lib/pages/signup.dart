@@ -23,7 +23,12 @@ class _SignupPageState extends State<SignupPage> {
   String? _errorMessage;
   bool _isLoading = false;
 
-  final String baseUrl = "${dotenv.env['API_URL']}/api/auth/";
+  String? get _apiUrl {
+    final v = dotenv.env['API_URL']?.trim();
+    return (v == null || v.isEmpty) ? null : v;
+  }
+
+  String get _baseUrl => "${_apiUrl ?? ''}/api/auth/";
 
   String _formatApiError(dynamic data, {String fallback = 'Signup failed'}) {
     if (data == null) return fallback;
@@ -56,6 +61,15 @@ class _SignupPageState extends State<SignupPage> {
   void _signup() async {
     if (!_formKey.currentState!.validate()) return;
 
+    final apiUrl = _apiUrl;
+    if (apiUrl == null) {
+      setState(() {
+        _errorMessage =
+            'Missing API_URL. Check frontend/assets/.env and restart the app.';
+      });
+      return;
+    }
+
     final username = _username.trim();
     final password = _password;
     final email = _email.trim();
@@ -69,7 +83,7 @@ class _SignupPageState extends State<SignupPage> {
 
     try {
       final response = await http.post(
-        Uri.parse('${baseUrl}register/'),
+        Uri.parse('${_baseUrl}register/'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'username': username,
@@ -80,31 +94,63 @@ class _SignupPageState extends State<SignupPage> {
         }),
       );
 
-      final dynamic data =
-          response.body.isNotEmpty ? jsonDecode(response.body) : null;
+      dynamic data;
+      if (response.body.isNotEmpty) {
+        try {
+          data = jsonDecode(response.body);
+        } catch (_) {
+          // Backend returned non-JSON (e.g., HTML error). Don't treat as offline.
+          data = {'detail': response.body};
+        }
+      } else {
+        data = null;
+      }
 
       if (response.statusCode == 201) {
         // Auto-login after signup
         final tokenResp = await http.post(
-          Uri.parse('${baseUrl}token/'),
+          Uri.parse('${_baseUrl}token/'),
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode({'username': username, 'password': password}),
         );
 
         if (tokenResp.statusCode == 200) {
-          final tokenData = jsonDecode(tokenResp.body);
+          dynamic tokenData;
+          try {
+            tokenData = jsonDecode(tokenResp.body);
+          } catch (_) {
+            tokenData = null;
+          }
+          if (tokenData is! Map || tokenData['access'] == null) {
+            throw Exception('Token response was not valid JSON');
+          }
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('token', tokenData['access']);
           if (!mounted) return;
           Navigator.pushReplacementNamed(context, '/home');
         } else {
-          // If token obtain fails, fall back to login screen.
+          // If token obtain fails, show error and fall back to login screen.
+          dynamic tokenErr;
+          try {
+            tokenErr = tokenResp.body.isNotEmpty ? jsonDecode(tokenResp.body) : null;
+          } catch (_) {
+            tokenErr = {'detail': tokenResp.body};
+          }
+          setState(() {
+            _errorMessage = _formatApiError(
+              tokenErr,
+              fallback: 'Signup succeeded but login failed (HTTP ${tokenResp.statusCode})',
+            );
+          });
           if (!mounted) return;
           Navigator.pushReplacementNamed(context, '/login');
         }
       } else {
         setState(() {
-          final formatted = _formatApiError(data);
+          final formatted = _formatApiError(
+            data,
+            fallback: 'Signup failed (HTTP ${response.statusCode})',
+          );
           if (formatted.toLowerCase().contains('username') &&
               formatted.toLowerCase().contains('already')) {
             _errorMessage =
@@ -116,7 +162,8 @@ class _SignupPageState extends State<SignupPage> {
       }
     } catch (e) {
       setState(() {
-        _errorMessage = 'Could not connect to server';
+        _errorMessage =
+            'Signup request failed. Check that the backend is running at $apiUrl.\n\nDetails: ${e.toString()}';
       });
     }
 
