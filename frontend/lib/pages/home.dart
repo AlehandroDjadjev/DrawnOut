@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../theme_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../theme_provider/theme_provider.dart';
 import '../providers/developer_mode_provider.dart';
 import 'profile_page.dart';
 import 'whiteboard_page.dart' show WhiteboardPage, LessonContext;
@@ -9,7 +11,7 @@ class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
   @override
-  _HomePageState createState() => _HomePageState();
+  State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
@@ -17,17 +19,20 @@ class _HomePageState extends State<HomePage> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   void _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('token');
+    if (!mounted) return;
     Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
   }
 
   @override
   Widget build(BuildContext context) {
-    final themeProvider = Provider.of<ThemeProvider>(context);
-    final isDarkMode = themeProvider.isDarkMode;
     final theme = Theme.of(context);
+    final isDarkMode = context.watch<ThemeProvider>().isDarkMode;
+    final themeProvider = context.read<ThemeProvider>();
 
     final List<Widget> pages = [
-      _buildHomeContent(theme, isDarkMode),
+      _buildHomeContent(theme),
       const ProfilePage(),
     ];
 
@@ -35,12 +40,8 @@ class _HomePageState extends State<HomePage> {
       key: _scaffoldKey,
       drawer: _buildDrawer(theme),
       appBar: AppBar(
-        title: Text(_selectedIndex == 0 ? "Home" : "Profile"),
+        title: Text(_selectedIndex == 0 ? 'Home' : 'Profile'),
         centerTitle: true,
-        backgroundColor: isDarkMode ? Colors.black : Colors.white,
-        foregroundColor: theme.colorScheme.primary,
-        elevation: 1,
-        iconTheme: IconThemeData(color: theme.colorScheme.primary),
         actions: [
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 400),
@@ -51,7 +52,7 @@ class _HomePageState extends State<HomePage> {
               );
             },
             child: IconButton(
-              key: ValueKey(isDarkMode ? "dark" : "light"),
+              key: ValueKey(isDarkMode),
               icon: Icon(isDarkMode ? Icons.dark_mode : Icons.light_mode),
               onPressed: themeProvider.toggleTheme,
             ),
@@ -62,17 +63,16 @@ class _HomePageState extends State<HomePage> {
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _selectedIndex,
         type: BottomNavigationBarType.fixed,
-        backgroundColor: isDarkMode ? Colors.black : Colors.white,
         selectedItemColor: theme.colorScheme.primary,
-        unselectedItemColor: isDarkMode ? Colors.grey[400] : Colors.grey[600],
+        unselectedItemColor: theme.colorScheme.onSurface.withOpacity(0.6),
         onTap: (index) => setState(() => _selectedIndex = index),
         items: [
           BottomNavigationBarItem(
-            icon: _navIcon(Icons.home_outlined, 0, theme, isDarkMode),
+            icon: _navIcon(Icons.home_outlined, 0, theme),
             label: 'Home',
           ),
           BottomNavigationBarItem(
-            icon: _navIcon(Icons.person_outline_rounded, 1, theme, isDarkMode),
+            icon: _navIcon(Icons.person_outline_rounded, 1, theme),
             label: 'Profile',
           ),
         ],
@@ -80,8 +80,12 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _navIcon(IconData icon, int index, ThemeData theme, bool isDarkMode) {
-    final bool isSelected = _selectedIndex == index;
+  Widget _navIcon(
+    IconData icon,
+    int index,
+    ThemeData theme,
+  ) {
+    final isSelected = _selectedIndex == index;
     return Container(
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
@@ -94,7 +98,7 @@ class _HomePageState extends State<HomePage> {
         icon,
         color: isSelected
             ? theme.colorScheme.primary
-            : (isDarkMode ? Colors.grey[400] : Colors.grey[600]),
+            : theme.colorScheme.onSurface.withOpacity(0.6),
       ),
     );
   }
@@ -160,6 +164,8 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
           ),
+
+          // Lessons
           ListTile(
             leading: Icon(Icons.menu_book, color: theme.colorScheme.primary),
             title: const Text("All Lessons"),
@@ -168,6 +174,28 @@ class _HomePageState extends State<HomePage> {
               Navigator.pushNamed(context, '/lessons');
             },
           ),
+
+          // Market
+          ListTile(
+            leading: Icon(Icons.storefront_outlined, color: theme.colorScheme.primary),
+            title: const Text('Market'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.pushNamed(context, '/market');
+            },
+          ),
+
+          // Whiteboard
+          ListTile(
+            leading: Icon(Icons.draw_outlined, color: theme.colorScheme.primary),
+            title: const Text('Whiteboard'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.pushNamed(context, '/whiteboard');
+            },
+          ),
+
+          // Settings
           ListTile(
             leading: Icon(Icons.settings, color: theme.colorScheme.primary),
             title: const Text("Settings"),
@@ -176,6 +204,8 @@ class _HomePageState extends State<HomePage> {
               Navigator.pushNamed(context, '/settings');
             },
           ),
+
+          // Developer mode controls
           if (devMode.isEnabled)
             ListTile(
               leading: const Icon(Icons.developer_mode, color: Colors.orange),
@@ -185,7 +215,10 @@ class _HomePageState extends State<HomePage> {
                 Navigator.pop(context);
               },
             ),
+
           const Divider(),
+
+          // Logout
           ListTile(
             leading: Icon(Icons.logout, color: theme.colorScheme.primary),
             title: const Text("Logout"),
@@ -196,7 +229,7 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildHomeContent(ThemeData theme, bool isDarkMode) {
+  Widget _buildHomeContent(ThemeData theme) {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -205,7 +238,7 @@ class _HomePageState extends State<HomePage> {
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: isDarkMode ? Colors.teal.shade700 : Colors.blue.shade100,
+              color: theme.colorScheme.primary.withOpacity(0.15),
               borderRadius: BorderRadius.circular(16),
             ),
             child: Column(
@@ -213,23 +246,28 @@ class _HomePageState extends State<HomePage> {
               children: [
                 Row(
                   children: [
-                    Icon(Icons.school,
-                        size: 28,
-                        color: isDarkMode
-                            ? Colors.tealAccent.shade100
-                            : Colors.blueGrey),
+                    Icon(
+                      Icons.school,
+                      size: 28,
+                      color: theme.colorScheme.primary,
+                    ),
                     const SizedBox(width: 8),
-                    const Text(
-                      'Welcome to DrawnOut',
-                      style:
-                          TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
+                    const Expanded(
+                      child: Text(
+                        'Welcome to DrawnOut',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: 26, fontWeight: FontWeight.bold),
+                      ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 10),
-                const Text(
-                  'Learn, interact, and practice with your AI tutor.\nStart with the demo lesson below!',
-                  style: TextStyle(fontSize: 16),
+                Text(
+                  'Learn, interact, and practice with your AI tutor.\n'
+                  'Start with the demo lesson below!',
+                  style: theme.textTheme.bodyMedium,
                 ),
               ],
             ),
@@ -237,16 +275,13 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(height: 24),
           Text(
             'Available Lesson',
-            style: TextStyle(
-              fontSize: 22,
+            style: theme.textTheme.titleLarge?.copyWith(
               fontWeight: FontWeight.bold,
-              color: isDarkMode ? Colors.tealAccent.shade100 : Colors.grey[800],
             ),
           ),
           const SizedBox(height: 12),
           Card(
-            color: isDarkMode ? Colors.grey[900] : Colors.white,
-            elevation: 5,
+            elevation: 4,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16),
             ),
@@ -256,17 +291,18 @@ class _HomePageState extends State<HomePage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
+                  Text(
                     'Pythagoras Theorem',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Explore the relationship between the sides of a right-angled triangle and understand one of the most fundamental theorems in mathematics.',
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: isDarkMode ? Colors.grey[300] : Colors.grey[700],
-                    ),
+                    'Explore the relationship between the sides of a '
+                    'right-angled triangle and understand one of the most '
+                    'fundamental theorems in mathematics.',
+                    style: theme.textTheme.bodyMedium,
                   ),
                   const SizedBox(height: 16),
                   Row(

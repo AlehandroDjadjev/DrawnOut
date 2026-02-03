@@ -32,6 +32,7 @@ urlpatterns = [
     path('api/wb/vectorize/', include('wb_vectorize.urls')),
     path('api/wb/generate/', include('wb_generate.urls')),
     path('api/vision/', include('vision.urls')),  # SigLIP2 endpoints
+    path('api/market/', include('market.urls')),
     # NOTE: Whiteboard object API disabled - imggen models not ready
     # path('api/whiteboard/', include('wb_generate.imggen.urls')),
     path('', TemplateView.as_view(template_name='canvasapp/index.html'), name='index'),

@@ -1,6 +1,6 @@
 import 'dart:ui' show Offset;
 
-import 'vectorizer_web.dart.dart' if (dart.library.io) 'vectorizer_native.dart.dart' as impl;
+import 'vectorizer_web.dart' if (dart.library.io) 'vectorizer_native.dart' as impl;
 
 class Vectorizer {
   static Future<List<List<Offset>>> vectorize({

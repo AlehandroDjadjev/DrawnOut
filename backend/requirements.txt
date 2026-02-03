@@ -87,6 +87,7 @@ sqlparse==0.5.3
 SQLAlchemy==2.0.44
 psycopg==3.2.6
 psycopg2-binary==2.9.10
+pgvector==0.4.1
 alembic==1.17.0
 
 # Utilities

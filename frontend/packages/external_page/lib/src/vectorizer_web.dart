@@ -5,7 +5,6 @@ import 'dart:ui' show Offset;
 
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as html;
-import 'dart:js_util' as js_util;
 
 class Vectorizer {
   static Future<List<List<Offset>>> vectorize({
@@ -129,13 +128,35 @@ class Vectorizer {
 
   static Future<dynamic> _cvVectorizeContours(
       html.ImageData imageData, Map<String, dynamic> options) async {
-    // Call window.cvVectorizeContours(imageData, opts) which returns a Promise
-    final jsPromise = js_util.callMethod(html.window, 'cvVectorizeContours',
-        [imageData, js_util.jsify(options)]);
-    final jsObject = await js_util.promiseToFuture<Object?>(jsPromise);
-    // Convert JS object to Dart structures (Map/List). Leave as dynamic to avoid type casts.
-    final dartified = js_util.dartify(jsObject);
-    return dartified;
+    // Call window.cvVectorizeContours(imageData, opts) which typically returns a JS Promise.
+    // We avoid dart:js_util (removed in newer SDKs) and use dynamic interop best-effort.
+    final w = html.window as dynamic;
+    dynamic result;
+    try {
+      result = w.cvVectorizeContours(imageData, options);
+    } catch (_) {
+      // If the JS function isn't present or options can't be marshaled, fail loudly.
+      throw StateError('cvVectorizeContours JS glue not available');
+    }
+
+    if (result is Future) return await result;
+
+    // Best-effort await for Promise/thenable
+    try {
+      final thenFn = (result as dynamic).then;
+      if (thenFn != null) {
+        final c = Completer<dynamic>();
+        (result as dynamic).then(
+          (value) => c.complete(value),
+          (Object? err) => c.completeError(err ?? StateError('Promise rejected')),
+        );
+        return await c.future;
+      }
+    } catch (_) {
+      // Ignore
+    }
+
+    return result;
   }
 
   // --- Dart-side shaping helpers (same as native) ---

@@ -2,35 +2,28 @@
 Endpoints exposing the whiteboard image researcher logic.
 """
 import json
-import sys
-from pathlib import Path
 
-from django.http import JsonResponse, HttpResponseBadRequest, HttpResponseNotAllowed
+from django.http import (
+    JsonResponse,
+    HttpResponseBadRequest,
+    HttpResponseNotAllowed,
+)
 from django.views.decorators.csrf import csrf_exempt
-
-# Import local wrapper which re-exports the whiteboard_backend implementation
-try:
-    from . import Imageresearcher as ir
-except Exception as e:  # pragma: no cover - defensive
-    ir = None
-    _IMPORT_ERROR = str(e)
-else:
-    _IMPORT_ERROR = None
-
-
-def _module_check():
-    if ir:
-        return None
-    return JsonResponse({"ok": False, "error": f"Imageresearcher unavailable: {_IMPORT_ERROR}"}, status=500)
 
 
 @csrf_exempt
 def search_images(request):
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
-    err = _module_check()
-    if err:
-        return err
+
+    # ✅ Lazy import (CRITICAL FIX)
+    try:
+        from . import Imageresearcher as ir
+    except Exception as e:
+        return JsonResponse(
+            {"ok": False, "error": f"Imageresearcher unavailable: {e}"},
+            status=500,
+        )
 
     try:
         body = json.loads((request.body or b"{}").decode("utf-8"))
@@ -69,7 +62,12 @@ def search_images(request):
                     if parse_fn:
                         parse_fn(src, data)
             else:
-                ir.handle_result_no_api(src, query, subject, hard_image_cap=limit)
+                ir.handle_result_no_api(
+                    src,
+                    query,
+                    subject,
+                    hard_image_cap=limit,
+                )
 
             images = getattr(src, "img_paths", [])
             results.append(
@@ -80,7 +78,7 @@ def search_images(request):
                 }
             )
             total_images += len(images)
-        except Exception as e:  # pragma: no cover - runtime fallback
+        except Exception as e:
             results.append(
                 {
                     "source": src.name,
@@ -102,9 +100,12 @@ def search_images(request):
 
 
 def list_sources(request):
-    err = _module_check()
-    if err:
-        return err
+    # ✅ Lazy import
+    try:
+        from . import Imageresearcher as ir
+    except Exception as e:
+        return JsonResponse({"ok": False, "error": str(e)}, status=500)
+
     try:
         sources = ir.read_sources()
         data = [
@@ -117,9 +118,12 @@ def list_sources(request):
 
 
 def get_subjects(request):
-    err = _module_check()
-    if err:
-        return err
+    # ✅ Lazy import
+    try:
+        from . import Imageresearcher as ir
+    except Exception as e:
+        return JsonResponse({"ok": False, "error": str(e)}, status=500)
+
     return JsonResponse({"ok": True, "subjects": ir.SUBJECTS})
 
 
@@ -127,9 +131,6 @@ def get_subjects(request):
 def search_duckduckgo(request):
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
-    err = _module_check()
-    if err:
-        return err
 
     try:
         body = json.loads((request.body or b"{}").decode("utf-8"))
@@ -138,6 +139,7 @@ def search_duckduckgo(request):
 
     query = (body.get("query") or "").strip()
     max_results = body.get("max_results", 100)
+
     if not query:
         return HttpResponseBadRequest("'query' is required")
 
@@ -145,8 +147,15 @@ def search_duckduckgo(request):
         from duckduckgo_search import DDGS
 
         with DDGS() as ddgs:
-            results = list(ddgs.images(query, max_results=max_results, safesearch="moderate"))
-        return JsonResponse({"ok": True, "results": results, "count": len(results)})
+            results = list(
+                ddgs.images(
+                    query,
+                    max_results=max_results,
+                    safesearch="moderate",
+                )
+            )
+        return JsonResponse(
+            {"ok": True, "results": results, "count": len(results)}
+        )
     except Exception as e:
         return JsonResponse({"ok": False, "error": str(e)}, status=500)
-
