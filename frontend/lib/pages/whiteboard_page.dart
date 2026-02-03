@@ -79,8 +79,22 @@ class _WhiteboardPageState extends State<WhiteboardPage>
     
     _playbackController = TimelinePlaybackController();
     _playbackController.setBaseUrl(baseUrl);
+    
+    // Use the new duration-aware callback for better timing synchronization
+    _playbackController.onDrawingActionsTriggeredWithDuration = 
+        _controller.handleDrawingActionsWithDuration;
+    
+    // Also set the legacy callback for fallback
     _playbackController.onDrawingActionsTriggered = _controller.handleDrawingActions;
+    
     _playbackController.onTimelineCompleted = _onLessonComplete;
+    
+    // Log timing analysis during development
+    _playbackController.onTimingAnalysis = (analysis) {
+      debugPrint('📊 Segment timing: chars=${analysis.totalCharacters}, '
+          'dictation=${analysis.isDictationSegment}, '
+          'duration=${analysis.drawDurationSeconds.toStringAsFixed(1)}s');
+    };
 
     _initialize();
   }

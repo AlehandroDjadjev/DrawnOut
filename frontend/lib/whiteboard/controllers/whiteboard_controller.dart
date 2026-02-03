@@ -485,6 +485,8 @@ class WhiteboardController extends ChangeNotifier {
 
 
   /// Handle drawing actions from timeline
+  ///
+  /// Processes all action types: heading, bullet, subbullet, label, formula, sketch_image
   Future<void> handleDrawingActions(List<DrawingAction> actions) async {
     debugPrint('🎨 handleDrawingActions called with ${actions.length} actions');
     
@@ -493,9 +495,21 @@ class WhiteboardController extends ChangeNotifier {
       return;
     }
     
+    // Log action type distribution
+    final actionTypes = <String, int>{};
+    for (final a in actions) {
+      actionTypes[a.type] = (actionTypes[a.type] ?? 0) + 1;
+    }
+    for (final entry in actionTypes.entries) {
+      debugPrint('   - ${entry.key}: ${entry.value}');
+    }
+    
     for (int i = 0; i < actions.length; i++) {
       final action = actions[i];
-      debugPrint('  [$i] Action type: ${action.type}, text: "${action.text.length > 30 ? action.text.substring(0, 30) + '...' : action.text}"');
+      final textPreview = action.text.length > 30 
+          ? '${action.text.substring(0, 30)}...' 
+          : action.text;
+      debugPrint('  [$i] Action type: ${action.type}, text: "$textPreview"');
       
       try {
         switch (action.type) {
@@ -514,10 +528,19 @@ class WhiteboardController extends ChangeNotifier {
             );
             debugPrint('    ✓ Text added');
             break;
+            
           case 'sketch_image':
-            // Image action - would need image processing
-            debugPrint('    → sketch_image action: ${action.resolvedImageUrl}');
+            // Image action - use ImageSketchService
+            debugPrint('    → sketch_image action');
+            final imageUrl = action.resolvedImageUrl;
+            if (imageUrl != null && imageUrl.isNotEmpty) {
+              debugPrint('      URL: ${imageUrl.length > 50 ? '${imageUrl.substring(0, 50)}...' : imageUrl}');
+            }
+            // Note: Full sketch_image handling requires ImageSketchService integration
+            // with layout state. For now, log the action.
+            debugPrint('    ⚠️ sketch_image requires full layout integration');
             break;
+            
           default:
             debugPrint('    ⚠️ Unknown action type: ${action.type}');
         }
@@ -528,6 +551,21 @@ class WhiteboardController extends ChangeNotifier {
     }
     
     debugPrint('🎨 handleDrawingActions completed');
+  }
+  
+  /// Handle drawing actions with explicit duration (from dictation detection)
+  ///
+  /// This method is called by TimelinePlaybackController with the calculated
+  /// draw duration based on dictation detection.
+  Future<void> handleDrawingActionsWithDuration(
+    List<DrawingAction> actions, 
+    double drawDurationSeconds,
+  ) async {
+    debugPrint('🎨 handleDrawingActionsWithDuration: ${actions.length} actions, ${drawDurationSeconds.toStringAsFixed(1)}s');
+    
+    // TODO: Use drawDurationSeconds to set animation controller duration
+    // For now, delegate to standard handler
+    await handleDrawingActions(actions);
   }
 
   /// Erase object by name

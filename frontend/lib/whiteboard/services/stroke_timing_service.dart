@@ -1,6 +1,124 @@
 import 'dart:math' as math;
 import 'dart:ui' show Offset;
 import '../models/drawable_stroke.dart';
+import '../models/timeline.dart';
+
+/// Result of analyzing drawing actions for timing
+class DrawingTimingAnalysis {
+  /// Total character count of text actions
+  final int totalCharacters;
+
+  /// Number of text-based actions
+  final int textActionCount;
+
+  /// Number of image actions
+  final int imageActionCount;
+
+  /// Whether this is detected as a dictation segment
+  final bool isDictationSegment;
+
+  /// Calculated draw duration in seconds
+  final double drawDurationSeconds;
+
+  /// Extra time added for images (seconds)
+  final double imageTimeSeconds;
+
+  /// Audio duration of the segment (if available)
+  final double? audioDurationSeconds;
+
+  const DrawingTimingAnalysis({
+    required this.totalCharacters,
+    required this.textActionCount,
+    required this.imageActionCount,
+    required this.isDictationSegment,
+    required this.drawDurationSeconds,
+    required this.imageTimeSeconds,
+    this.audioDurationSeconds,
+  });
+
+  @override
+  String toString() => 'DrawingTimingAnalysis('
+      'chars: $totalCharacters, '
+      'text: $textActionCount, '
+      'images: $imageActionCount, '
+      'dictation: $isDictationSegment, '
+      'duration: ${drawDurationSeconds.toStringAsFixed(1)}s)';
+}
+
+/// Tracks when animations are expected to finish
+class AnimationEndTracker {
+  DateTime? _textAnimationEnd;
+  DateTime? _imageAnimationEnd;
+
+  /// When the current text animation is expected to finish
+  DateTime? get textAnimationEnd => _textAnimationEnd;
+
+  /// When the current image/diagram animation is expected to finish
+  DateTime? get imageAnimationEnd => _imageAnimationEnd;
+
+  /// Set when text animation should end
+  void setTextEnd(Duration duration) {
+    _textAnimationEnd = DateTime.now().add(duration);
+  }
+
+  /// Set when image animation should end
+  void setImageEnd(Duration duration) {
+    _imageAnimationEnd = DateTime.now().add(duration);
+  }
+
+  /// Clear the text animation end
+  void clearTextEnd() => _textAnimationEnd = null;
+
+  /// Clear the image animation end
+  void clearImageEnd() => _imageAnimationEnd = null;
+
+  /// Clear all animation ends
+  void clearAll() {
+    _textAnimationEnd = null;
+    _imageAnimationEnd = null;
+  }
+
+  /// Check if all animations are complete and we can advance to next segment
+  bool canAdvanceSegment() {
+    final now = DateTime.now();
+    final textDone = _textAnimationEnd == null || !_textAnimationEnd!.isAfter(now);
+    final imageDone = _imageAnimationEnd == null || !_imageAnimationEnd!.isAfter(now);
+    return textDone && imageDone;
+  }
+
+  /// Get remaining time until all animations complete (in milliseconds)
+  int remainingMilliseconds() {
+    final now = DateTime.now();
+    int remaining = 0;
+
+    if (_textAnimationEnd != null && _textAnimationEnd!.isAfter(now)) {
+      remaining = math.max(remaining, _textAnimationEnd!.difference(now).inMilliseconds);
+    }
+    if (_imageAnimationEnd != null && _imageAnimationEnd!.isAfter(now)) {
+      remaining = math.max(remaining, _imageAnimationEnd!.difference(now).inMilliseconds);
+    }
+
+    return remaining;
+  }
+
+  /// Wait until the text animation end is reached (or timeout)
+  Future<void> waitForTextEnd({int maxWaitMs = 1000}) async {
+    int waited = 0;
+    const checkInterval = Duration(milliseconds: 50);
+
+    while (_textAnimationEnd == null && waited < maxWaitMs) {
+      await Future.delayed(checkInterval);
+      waited += 50;
+    }
+
+    if (_textAnimationEnd != null) {
+      final now = DateTime.now();
+      if (_textAnimationEnd!.isAfter(now)) {
+        await Future.delayed(_textAnimationEnd!.difference(now));
+      }
+    }
+  }
+}
 
 /// Configuration for stroke timing calculations
 class StrokeTimingConfig {
@@ -171,4 +289,136 @@ class StrokeTimingService {
     if (cnt == 0) return 0.0;
     return sumAng / cnt;
   }
+
+  // ==========================================================================
+  // DICTATION DETECTION & TIMELINE-AWARE TIMING
+  // ==========================================================================
+
+  /// Analyze drawing actions and determine optimal timing
+  ///
+  /// This implements the dictation detection logic from whiteboard_demo:
+  /// - Short text (<50 chars) with long audio (>5s) = dictation mode
+  /// - Dictation mode uses 85% of audio duration for slow, deliberate drawing
+  /// - Non-dictation uses character count to estimate duration
+  DrawingTimingAnalysis analyzeDrawingActions(
+    List<DrawingAction> actions, {
+    TimelineSegment? segment,
+    double secondsPerImage = 3.0,
+  }) {
+    // Separate text and image actions
+    final textActions = actions.where((a) => !a.isSketchImage).toList();
+    final imageActions = actions.where((a) => a.isSketchImage).toList();
+
+    // Calculate total characters from text actions
+    final totalChars = textActions.fold<int>(0, (sum, a) => sum + a.text.length);
+
+    // Calculate image time
+    final imageTime = imageActions.length * secondsPerImage;
+
+    // Check for dictation segment
+    final audioDuration = segment?.actualAudioDuration ?? 0.0;
+    final isDictation = segment != null &&
+        audioDuration > 5.0 &&
+        totalChars < 50;
+
+    // Calculate draw duration based on detection
+    double drawDuration;
+    if (isDictation) {
+      // DICTATION MODE: Use 85% of audio duration, clamped to reasonable range
+      drawDuration = (audioDuration * 0.85).clamp(6.0, 25.0);
+    } else {
+      // STANDARD MODE: Use character count heuristics
+      drawDuration = _characterCountToDuration(totalChars);
+    }
+
+    // Add image time to total
+    drawDuration += imageTime;
+
+    return DrawingTimingAnalysis(
+      totalCharacters: totalChars,
+      textActionCount: textActions.length,
+      imageActionCount: imageActions.length,
+      isDictationSegment: isDictation,
+      drawDurationSeconds: drawDuration,
+      imageTimeSeconds: imageTime,
+      audioDurationSeconds: segment?.actualAudioDuration,
+    );
+  }
+
+  /// Convert character count to drawing duration using heuristics
+  ///
+  /// This matches the whiteboard_demo logic:
+  /// - < 10 chars: 5s (even short words take time)
+  /// - < 20 chars: 7s (medium text)
+  /// - < 40 chars: 10s (formulas)
+  /// - < 80 chars: 14s (lists)
+  /// - >= 80 chars: 18s (very long)
+  double _characterCountToDuration(int charCount) {
+    if (charCount < 10) return 5.0;
+    if (charCount < 20) return 7.0;
+    if (charCount < 40) return 10.0;
+    if (charCount < 80) return 14.0;
+    return 18.0;
+  }
+
+  /// Calculate optimal duration for a set of actions with segment context
+  ///
+  /// Convenience method that returns just the duration.
+  double calculateDuration(
+    List<DrawingAction> actions, {
+    TimelineSegment? segment,
+    double secondsPerImage = 3.0,
+    double? minDuration,
+    double? maxDuration,
+  }) {
+    final analysis = analyzeDrawingActions(
+      actions,
+      segment: segment,
+      secondsPerImage: secondsPerImage,
+    );
+
+    double duration = analysis.drawDurationSeconds;
+
+    // Apply optional bounds
+    if (minDuration != null) duration = math.max(duration, minDuration);
+    if (maxDuration != null) duration = math.min(duration, maxDuration);
+
+    return duration;
+  }
+
+  /// Check if actions represent a dictation segment
+  ///
+  /// Dictation segments are detected when:
+  /// - Audio duration > 5 seconds
+  /// - Total text content < 50 characters
+  ///
+  /// This indicates the tutor is speaking slowly while drawing,
+  /// such as when dictating "a squared plus b squared equals c squared"
+  /// while writing "a² + b² = c²".
+  bool isDictationSegment(
+    List<DrawingAction> actions,
+    TimelineSegment? segment,
+  ) {
+    if (segment == null) return false;
+    final audioDuration = segment.actualAudioDuration;
+    if (audioDuration <= 5.0) return false;
+
+    final totalChars = actions
+        .where((a) => !a.isSketchImage)
+        .fold<int>(0, (sum, a) => sum + a.text.length);
+
+    return totalChars < 50;
+  }
+
+  /// Get the dictation pace multiplier
+  ///
+  /// Returns the fraction of audio duration to use for drawing.
+  /// Default is 0.85 (85% of audio duration).
+  static const double dictationPaceMultiplier = 0.85;
+
+  /// Minimum duration for dictation mode
+  static const double dictationMinDuration = 6.0;
+
+  /// Maximum duration for dictation mode
+  static const double dictationMaxDuration = 25.0;
 }

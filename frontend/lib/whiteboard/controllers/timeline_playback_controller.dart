@@ -2,8 +2,16 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import '../models/timeline.dart';
+import '../services/stroke_timing_service.dart';
 
 /// Controller for synchronized audio + drawing playback
+///
+/// This controller manages the synchronized playback of audio and drawing
+/// actions from a [SyncedTimeline]. It includes:
+/// - Audio playback via just_audio
+/// - Drawing action triggering with timing analysis
+/// - Dictation detection for formula segments
+/// - Animation end tracking to gate segment advancement
 class TimelinePlaybackController extends ChangeNotifier {
   SyncedTimeline? _timeline;
   int _currentSegmentIndex = 0;
@@ -15,11 +23,24 @@ class TimelinePlaybackController extends ChangeNotifier {
   double _currentTime = 0.0;
   String _baseUrl = 'http://localhost:8000';
 
+  // Timing services
+  final StrokeTimingService _timingService = StrokeTimingService();
+  final AnimationEndTracker _animationTracker = AnimationEndTracker();
+
   // Callbacks
+  /// Called when drawing actions should be triggered for a segment.
+  /// The callback receives the actions and the calculated draw duration.
+  Future<void> Function(List<DrawingAction> actions, double drawDuration)? onDrawingActionsTriggeredWithDuration;
+  
+  /// Legacy callback (without duration) - use onDrawingActionsTriggeredWithDuration instead
   Future<void> Function(List<DrawingAction> actions)? onDrawingActionsTriggered;
+  
   void Function(int segmentIndex)? onSegmentChanged;
   void Function()? onSegmentChangedCompleted;
   void Function()? onTimelineCompleted;
+  
+  /// Called with timing analysis for each segment (for debugging/logging)
+  void Function(DrawingTimingAnalysis analysis)? onTimingAnalysis;
 
   SyncedTimeline? get timeline => _timeline;
   int get currentSegmentIndex => _currentSegmentIndex;
@@ -31,6 +52,12 @@ class TimelinePlaybackController extends ChangeNotifier {
       _timeline != null && _currentSegmentIndex < _timeline!.segments.length
           ? _timeline!.segments[_currentSegmentIndex]
           : null;
+  
+  /// Access to the animation end tracker for external monitoring
+  AnimationEndTracker get animationTracker => _animationTracker;
+  
+  /// Check if we can advance to the next segment (all animations complete)
+  bool canAdvanceSegment() => _animationTracker.canAdvanceSegment();
 
   void setBaseUrl(String url) {
     _baseUrl = url.trim();
@@ -91,6 +118,7 @@ class TimelinePlaybackController extends ChangeNotifier {
         '🎬 Playing segment $index: "${segment.speechText.substring(0, segment.speechText.length > 50 ? 50 : segment.speechText.length)}..."');
     debugPrint('   📋 Segment has ${segment.drawingActions.length} drawing actions');
     debugPrint('   🔊 Audio file: ${segment.audioFile}');
+    debugPrint('   ⏱️ Audio duration: ${segment.actualAudioDuration}s');
 
     onSegmentChanged?.call(index);
 
@@ -100,9 +128,45 @@ class TimelinePlaybackController extends ChangeNotifier {
 
       await _audioPlayer.setUrl(audioUrl);
 
+      // ── Analyze timing with dictation detection ─────────────────────────
+      final timingAnalysis = _timingService.analyzeDrawingActions(
+        segment.drawingActions,
+        segment: segment,
+      );
+      
+      debugPrint('   📊 Timing analysis:');
+      debugPrint('      - Characters: ${timingAnalysis.totalCharacters}');
+      debugPrint('      - Text actions: ${timingAnalysis.textActionCount}');
+      debugPrint('      - Image actions: ${timingAnalysis.imageActionCount}');
+      debugPrint('      - Is dictation: ${timingAnalysis.isDictationSegment}');
+      debugPrint('      - Draw duration: ${timingAnalysis.drawDurationSeconds.toStringAsFixed(1)}s');
+      
+      // Notify timing analysis callback if set
+      onTimingAnalysis?.call(timingAnalysis);
+      
+      // Set animation end tracker
+      _animationTracker.setTextEnd(
+        Duration(milliseconds: (timingAnalysis.drawDurationSeconds * 1000).round())
+      );
+      
+      if (timingAnalysis.imageActionCount > 0) {
+        _animationTracker.setImageEnd(
+          Duration(milliseconds: (timingAnalysis.imageTimeSeconds * 1000).round())
+        );
+      }
+
       // Fire drawing actions in parallel with audio
       debugPrint('   🎨 Triggering drawing actions...');
-      if (onDrawingActionsTriggered != null) {
+      
+      // Use the new callback with duration if available, otherwise fall back
+      if (onDrawingActionsTriggeredWithDuration != null) {
+        onDrawingActionsTriggeredWithDuration!(
+          segment.drawingActions, 
+          timingAnalysis.drawDurationSeconds
+        ).catchError((e) {
+          debugPrint('   ❌ Drawing error: $e');
+        });
+      } else if (onDrawingActionsTriggered != null) {
         onDrawingActionsTriggered!(segment.drawingActions).catchError((e) {
           debugPrint('   ❌ Drawing error: $e');
         });
@@ -125,6 +189,16 @@ class TimelinePlaybackController extends ChangeNotifier {
       }
 
       debugPrint('   ✅ Segment $index audio completed');
+      
+      // ── Wait for animations to complete before advancing ────────────────
+      if (!_animationTracker.canAdvanceSegment()) {
+        final remaining = _animationTracker.remainingMilliseconds();
+        debugPrint('   ⏳ Waiting ${remaining}ms for animations to complete...');
+        await Future.delayed(Duration(milliseconds: remaining + 100));
+      }
+      
+      // Clear animation tracking for next segment
+      _animationTracker.clearAll();
 
       onSegmentChangedCompleted?.call();
 
@@ -135,6 +209,7 @@ class TimelinePlaybackController extends ChangeNotifier {
     } catch (e, st) {
       debugPrint('❌ Error playing segment $index: $e');
       debugPrint('Stack: $st');
+      _animationTracker.clearAll();
       await Future.delayed(const Duration(milliseconds: 500));
       if (_isPlaying) {
         await _playSegment(index + 1);
@@ -172,6 +247,7 @@ class TimelinePlaybackController extends ChangeNotifier {
     debugPrint('⏹️ Stopping playback');
     await _audioPlayer.stop();
     _stopProgressTimer();
+    _animationTracker.clearAll();
     _currentSegmentIndex = 0;
     _currentTime = 0.0;
     _isPlaying = false;
