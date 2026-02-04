@@ -6,6 +6,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 
 import '../theme_provider/theme_provider.dart';
+import '../ui/apple_ui.dart';
 import 'edit_username_page.dart';
 
 class ProfilePage extends StatefulWidget {
@@ -113,6 +114,8 @@ class _ProfilePageState extends State<ProfilePage> {
       ),
     );
 
+    if (!mounted) return;
+
     if (updated == true) {
       _fetchProfile();
     }
@@ -121,146 +124,121 @@ class _ProfilePageState extends State<ProfilePage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isDarkMode = context.watch<ThemeProvider>().isDarkMode;
+    context.watch<ThemeProvider>().isDarkMode;
 
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
 
     if (_errorMessage != null) {
-      return Center(
-        child: Text(
-          _errorMessage!,
-          style: TextStyle(
-            color: theme.colorScheme.error,
-            fontSize: 16,
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                AppleErrorBanner(message: _errorMessage!),
+                const SizedBox(height: 12),
+                ApplePrimaryButton(
+                  label: 'Retry',
+                  onPressed: _fetchProfile,
+                ),
+              ],
+            ),
           ),
         ),
       );
     }
 
+    final username = (_userData?['username'] ?? '').toString();
+    final firstName = (_userData?['first_name'] ?? '').toString();
+    final lastName = (_userData?['last_name'] ?? '').toString();
+    final fullName = ('$firstName $lastName').trim();
+    final email = (_userData?['email'] ?? '').toString();
+    final pfpUrl = _userData?['pfp']?.toString();
+
     return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header
-          Stack(
-            clipBehavior: Clip.none,
-            children: [
-              Container(
-                height: 220,
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: isDarkMode
-                        ? const [
-                            Color(0xFF0F2027),
-                            Color(0xFF203A43),
-                            Color(0xFF2C5364),
-                          ]
-                        : const [
-                            Color(0xFF6DD5FA),
-                            Color(0xFF2980B9),
-                          ],
-                  ),
-                  borderRadius: const BorderRadius.only(
-                    bottomLeft: Radius.circular(60),
-                    bottomRight: Radius.circular(60),
-                  ),
+          AppleCard(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                CircleAvatar(
+                  radius: 28,
+                  backgroundColor: theme.colorScheme.primary.withOpacity(0.12),
+                  backgroundImage:
+                      (pfpUrl != null && pfpUrl.isNotEmpty) ? NetworkImage(pfpUrl) : null,
+                  child: (pfpUrl == null || pfpUrl.isEmpty)
+                      ? Icon(
+                          Icons.person,
+                          color: theme.colorScheme.primary,
+                        )
+                      : null,
                 ),
-              ),
-              Positioned(
-                bottom: -60,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: theme.colorScheme.surface,
-                        width: 4,
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        username,
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -0.2,
+                        ),
                       ),
-                    ),
-                    child: CircleAvatar(
-                      radius: 60,
-                      backgroundImage: _userData?['pfp'] != null
-                          ? NetworkImage(_userData!['pfp'])
-                          : null,
-                      child: _userData?['pfp'] == null
-                          ? Icon(
-                              Icons.person,
-                              size: 60,
-                              color:
-                                  theme.colorScheme.onSurface.withOpacity(0.6),
-                            )
-                          : null,
-                    ),
+                      if (fullName.isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          fullName,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color:
+                                theme.colorScheme.onSurface.withOpacity(0.75),
+                          ),
+                        ),
+                      ],
+                      if (email.isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          email,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color:
+                                theme.colorScheme.onSurface.withOpacity(0.65),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 70),
-
-          // Username + name + edit
-          Stack(
-            clipBehavior: Clip.none,
-            children: [
-              Column(
-                children: [
-                  Text(
-                    _userData?['username'] ?? '',
-                    style: theme.textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    "${_userData?['first_name'] ?? ''} ${_userData?['last_name'] ?? ''}",
-                    style: theme.textTheme.bodyLarge,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    _userData?['email'] ?? '',
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: theme.colorScheme.onSurface.withOpacity(0.6),
-                    ),
-                  ),
-                ],
-              ),
-              Positioned(
-                right: -8,
-                top: -8,
-                child: IconButton(
+                IconButton(
                   onPressed: _navigateToEditUsername,
-                  icon: const Icon(Icons.edit, size: 20),
-                  tooltip: 'Edit Username',
+                  tooltip: 'Edit username',
+                  icon: Icon(
+                    Icons.edit,
+                    size: 20,
+                    color: theme.colorScheme.onSurface.withOpacity(0.75),
+                  ),
                 ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 24),
-          const Divider(),
-          const SizedBox(height: 12),
-
-          Text(
-            "Your Lessons",
-            style: theme.textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.bold,
+              ],
             ),
           ),
 
-          const SizedBox(height: 12),
+          const SizedBox(height: 18),
+          const AppleSectionTitle(title: 'Your lessons'),
+          const SizedBox(height: 10),
 
           if (_lessons.isEmpty)
-            const Text(
-              "You are not enrolled in any lessons yet.",
-              style: TextStyle(fontSize: 16),
+            AppleCard(
+              child: Text(
+                'You are not enrolled in any lessons yet.',
+                style: theme.textTheme.bodyMedium?.copyWith(height: 1.25),
+              ),
             )
           else
             ListView.builder(
@@ -269,24 +247,56 @@ class _ProfilePageState extends State<ProfilePage> {
               itemCount: _lessons.length,
               itemBuilder: (context, index) {
                 final lesson = _lessons[index];
-                return Card(
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
+                final title = (lesson['title'] ?? '').toString();
+                final desc = (lesson['description'] ?? '').toString();
+
+                return AppleCard(
                   margin: const EdgeInsets.symmetric(vertical: 6),
-                  elevation: 3,
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor:
-                          theme.colorScheme.primary.withOpacity(0.1),
-                      child: Icon(
-                        Icons.book,
-                        color: theme.colorScheme.primary,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.primary.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child:
+                            Icon(Icons.book, color: theme.colorScheme.primary),
                       ),
-                    ),
-                    title: Text(lesson['title']),
-                    subtitle: Text(lesson['description'] ?? ''),
-                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              title,
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: -0.2,
+                              ),
+                            ),
+                            if (desc.isNotEmpty) ...[
+                              const SizedBox(height: 2),
+                              Text(
+                                desc,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: theme.colorScheme.onSurface
+                                      .withOpacity(0.70),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      Icon(
+                        Icons.chevron_right,
+                        color: theme.colorScheme.onSurface.withOpacity(0.45),
+                      ),
+                    ],
                   ),
                 );
               },

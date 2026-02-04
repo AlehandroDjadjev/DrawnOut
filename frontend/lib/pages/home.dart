@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
 import '../theme_provider/theme_provider.dart';
+import '../ui/apple_ui.dart';
 import 'profile_page.dart';
 
 class HomePage extends StatefulWidget {
@@ -57,7 +58,7 @@ class _HomePageState extends State<HomePage> {
           ),
         ],
       ),
-      body: pages[_selectedIndex],
+      body: AppleBackground(child: pages[_selectedIndex]),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _selectedIndex,
         type: BottomNavigationBarType.fixed,
@@ -179,96 +180,169 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildHomeContent(ThemeData theme) {
+    final size = MediaQuery.of(context).size;
+    final isWide = size.width >= 720;
+
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.primary.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      Icons.school,
-                      size: 28,
-                      color: theme.colorScheme.primary,
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 900),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const AppleHeader(
+                title: 'Welcome',
+                subtitle:
+                    'Learn, interact, and practice with your AI tutor. Start with a quick lesson or jump into the whiteboard.',
+              ),
+              const SizedBox(height: 16),
+              isWide
+                  ? Row(
+                      children: [
+                        Expanded(
+                          child: _QuickActionCard(
+                            icon: Icons.storefront_outlined,
+                            title: 'Market',
+                            subtitle: 'Buy cosmetics',
+                            onTap: () => Navigator.pushNamed(context, '/market'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _QuickActionCard(
+                            icon: Icons.draw_outlined,
+                            title: 'Whiteboard',
+                            subtitle: 'Practice and explore',
+                            onTap: () =>
+                                Navigator.pushNamed(context, '/whiteboard'),
+                          ),
+                        ),
+                      ],
+                    )
+                  : Column(
+                      children: [
+                        _QuickActionCard(
+                          icon: Icons.storefront_outlined,
+                          title: 'Market',
+                          subtitle: 'Browse available lessons',
+                          onTap: () => Navigator.pushNamed(context, '/market'),
+                        ),
+                        const SizedBox(height: 12),
+                        _QuickActionCard(
+                          icon: Icons.draw_outlined,
+                          title: 'Whiteboard',
+                          subtitle: 'Practice and explore',
+                          onTap: () =>
+                              Navigator.pushNamed(context, '/whiteboard'),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 8),
-                    const Expanded(
-                      child: Text(
-                        'Welcome to DrawnOut',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontSize: 26, fontWeight: FontWeight.bold),
+              const SizedBox(height: 20),
+              const AppleSectionTitle(title: 'Available lesson'),
+              const SizedBox(height: 10),
+              AppleCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Pythagoras Theorem',
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -0.2,
                       ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Explore the relationship between the sides of a right-angled triangle and understand one of the most fundamental theorems in mathematics.',
+                      style: theme.textTheme.bodyMedium?.copyWith(height: 1.25),
+                    ),
+                    const SizedBox(height: 14),
+                    ApplePrimaryButton(
+                      label: 'Start lesson',
+                      onPressed: () {
+                        Navigator.pushNamed(context, '/whiteboard');
+                      },
                     ),
                   ],
                 ),
-                const SizedBox(height: 10),
-                Text(
-                  'Learn, interact, and practice with your AI tutor.\n'
-                  'Start with the demo lesson below!',
-                  style: theme.textTheme.bodyMedium,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _QuickActionCard extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _QuickActionCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return AppleCard(
+      padding: EdgeInsets.zero,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(18),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primary.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(icon, color: theme.colorScheme.primary),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -0.2,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color:
+                              theme.colorScheme.onSurface.withOpacity(0.70),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  Icons.chevron_right,
+                  color: theme.colorScheme.onSurface.withOpacity(0.45),
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 24),
-          Text(
-            'Available Lesson',
-            style: theme.textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Card(
-            elevation: 4,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-            margin: const EdgeInsets.symmetric(vertical: 10),
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Pythagoras Theorem',
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Explore the relationship between the sides of a '
-                    'right-angled triangle and understand one of the most '
-                    'fundamental theorems in mathematics.',
-                    style: theme.textTheme.bodyMedium,
-                  ),
-                  const SizedBox(height: 16),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: ElevatedButton.icon(
-                      onPressed: () {
-                        Navigator.pushNamed(context, '/whiteboard');
-                      },
-                      icon: const Icon(Icons.play_arrow),
-                      label: const Text('Start Lesson'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
