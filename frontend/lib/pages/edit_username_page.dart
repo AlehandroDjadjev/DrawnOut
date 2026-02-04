@@ -3,6 +3,8 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:provider/provider.dart';
+import '../services/app_config_service.dart';
 
 class EditUsernamePage extends StatefulWidget {
   final String currentUsername;
@@ -19,7 +21,15 @@ class _EditUsernamePageState extends State<EditUsernamePage> {
   bool _isLoading = false;
   String? _message;
 
-  final String baseUrl = "${dotenv.env['API_URL']}/api/";
+  String get baseUrl {
+    try {
+      final config = Provider.of<AppConfigService>(context, listen: false);
+      return '${config.backendUrl}/api/';
+    } catch (_) {
+      final envUrl = dotenv.env['API_URL'];
+      return '${envUrl ?? 'http://127.0.0.1:8000'}/api/';
+    }
+  }
 
   @override
   void initState() {

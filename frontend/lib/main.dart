@@ -1,12 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
+
+// Auth & pages
 import 'pages/auth_gate.dart';
 import 'pages/login.dart';
 import 'pages/signup.dart';
 import 'pages/home.dart';
-import 'pages/whiteboard_page.dart';
+import 'pages/lessons_page.dart';
+import 'pages/settings_page.dart';
 import 'pages/market_page.dart';
+import 'pages/whiteboard_page.dart';
+
+// Providers & services
+import 'providers/developer_mode_provider.dart';
+import 'services/app_config_service.dart';
 import 'theme_provider/theme_provider.dart';
 
 void main() async {
@@ -17,8 +25,12 @@ void main() async {
     // Best-effort: allow running without an env file.
   }
   runApp(
-    ChangeNotifierProvider(
-      create: (_) => ThemeProvider(),
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => ThemeProvider()),
+        ChangeNotifierProvider(create: (_) => DeveloperModeProvider()),
+        ChangeNotifierProvider(create: (_) => AppConfigService()),
+      ],
       child: const MyApp(),
     ),
   );
@@ -68,11 +80,11 @@ class MyApp extends StatelessWidget {
         '/login': (_) => const LoginPage(),
         '/signup': (_) => const SignupPage(),
         '/home': (_) => const HomePage(),
-        '/whiteboard': (_) => const VectorViewerScreen(),
+        '/lessons': (_) => const LessonsPage(),
+        '/settings': (_) => const SettingsPage(),
         '/market': (_) => const MarketPage(),
+        '/whiteboard': (_) => const WhiteboardPage(),
       },
     );
   }
 }
-
-/// 🌙 Theme Provider

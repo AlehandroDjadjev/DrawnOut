@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme_provider/theme_provider.dart';
 import '../ui/apple_ui.dart';
+import '../services/app_config_service.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -25,13 +26,19 @@ class _LoginPageState extends State<LoginPage> {
   bool _isLoading = false;
 
   String? get _apiUrl {
+    // Try AppConfigService first, then dotenv
+    try {
+      final config = Provider.of<AppConfigService>(context, listen: false);
+      final url = config.backendUrl;
+      if (url.isNotEmpty) return url;
+    } catch (_) {}
+    
     final v = dotenv.env['API_URL']?.trim();
     return (v == null || v.isEmpty) ? null : v;
   }
 
   String get _baseUrl => "${_apiUrl ?? ''}/api/auth/";
 
- 
   String _formatApiError(dynamic data, {String fallback = 'Login failed'}) {
     if (data == null) return fallback;
 

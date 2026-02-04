@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import '../theme_provider/theme_provider.dart';
 import '../ui/apple_ui.dart';
+import '../services/app_config_service.dart';
 import 'edit_username_page.dart';
 
 class ProfilePage extends StatefulWidget {
@@ -23,6 +24,15 @@ class _ProfilePageState extends State<ProfilePage> {
   String? _errorMessage;
 
   String? get _apiUrl {
+    // Try AppConfigService first, then dotenv
+    try {
+      final config = Provider.of<AppConfigService>(context, listen: false);
+      final url = config.backendUrl;
+      if (url.isNotEmpty) {
+        return url.endsWith('/') ? url.substring(0, url.length - 1) : url;
+      }
+    } catch (_) {}
+
     final v = dotenv.env['API_URL']?.trim();
     return (v == null || v.isEmpty) ? null : (v.endsWith('/') ? v.substring(0, v.length - 1) : v);
   }

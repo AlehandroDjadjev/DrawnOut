@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../theme_provider/theme_provider.dart';
 import '../ui/apple_ui.dart';
+import '../providers/developer_mode_provider.dart';
 import 'profile_page.dart';
+import 'whiteboard_page.dart' show WhiteboardPage, LessonContext;
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -103,6 +105,8 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildDrawer(ThemeData theme) {
+    final devMode = Provider.of<DeveloperModeProvider>(context);
+    
     return Drawer(
       child: ListView(
         padding: EdgeInsets.zero,
@@ -112,37 +116,69 @@ class _HomePageState extends State<HomePage> {
               color: theme.colorScheme.primary.withOpacity(0.1),
             ),
             child: Center(
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    Icons.school,
-                    size: 32,
-                    color: theme.colorScheme.primary,
-                  ),
-                  const SizedBox(width: 10),
-                  Flexible(
-                    child: Text(
-                      'DrawnOut',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.headlineSmall?.copyWith(
-                        color: theme.colorScheme.primary,
+              // Secret tap area to enable developer mode
+              child: GestureDetector(
+                onTap: () {
+                  final toggled = devMode.handleSecretTap();
+                  if (toggled) {
+                    Navigator.pop(context); // Close drawer
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          devMode.isEnabled 
+                            ? '🔧 Developer mode enabled' 
+                            : 'Developer mode disabled',
+                        ),
+                        behavior: SnackBarBehavior.floating,
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  }
+                },
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.school,
+                        size: 32, color: theme.colorScheme.primary),
+                    const SizedBox(width: 10),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "DrawnOut",
+                          style: TextStyle(
+                              fontSize: 24, color: theme.colorScheme.primary),
+                        ),
+                        if (devMode.isEnabled)
+                          Text(
+                            "Developer Mode",
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: theme.colorScheme.primary.withOpacity(0.7),
+                            ),
+                          ),
+                      ],
                     ),
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
 
+          // Lessons
+          ListTile(
+            leading: Icon(Icons.menu_book, color: theme.colorScheme.primary),
+            title: const Text("All Lessons"),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.pushNamed(context, '/lessons');
+            },
+          ),
+
           // Market
           ListTile(
-            leading: Icon(
-              Icons.storefront_outlined,
-              color: theme.colorScheme.primary,
-            ),
+            leading: Icon(Icons.storefront_outlined, color: theme.colorScheme.primary),
             title: const Text('Market'),
             onTap: () {
               Navigator.pop(context);
@@ -152,10 +188,7 @@ class _HomePageState extends State<HomePage> {
 
           // Whiteboard
           ListTile(
-            leading: Icon(
-              Icons.draw_outlined,
-              color: theme.colorScheme.primary,
-            ),
+            leading: Icon(Icons.draw_outlined, color: theme.colorScheme.primary),
             title: const Text('Whiteboard'),
             onTap: () {
               Navigator.pop(context);
@@ -163,15 +196,33 @@ class _HomePageState extends State<HomePage> {
             },
           ),
 
+          // Settings
+          ListTile(
+            leading: Icon(Icons.settings, color: theme.colorScheme.primary),
+            title: const Text("Settings"),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.pushNamed(context, '/settings');
+            },
+          ),
+
+          // Developer mode controls
+          if (devMode.isEnabled)
+            ListTile(
+              leading: const Icon(Icons.developer_mode, color: Colors.orange),
+              title: const Text("Disable Dev Mode"),
+              onTap: () {
+                devMode.disable();
+                Navigator.pop(context);
+              },
+            ),
+
           const Divider(),
 
           // Logout
           ListTile(
-            leading: Icon(
-              Icons.logout,
-              color: theme.colorScheme.primary,
-            ),
-            title: const Text('Logout'),
+            leading: Icon(Icons.logout, color: theme.colorScheme.primary),
+            title: const Text("Logout"),
             onTap: _logout,
           ),
         ],

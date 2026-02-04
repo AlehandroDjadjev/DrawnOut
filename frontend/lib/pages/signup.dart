@@ -3,10 +3,11 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
-
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../theme_provider/theme_provider.dart';
 import '../ui/apple_ui.dart';
+import '../services/app_config_service.dart';
 
 class SignupPage extends StatefulWidget {
   const SignupPage({super.key});
@@ -28,6 +29,13 @@ class _SignupPageState extends State<SignupPage> {
   bool _isLoading = false;
 
   String? get _apiUrl {
+    // Try AppConfigService first, then dotenv
+    try {
+      final config = Provider.of<AppConfigService>(context, listen: false);
+      final url = config.backendUrl;
+      if (url.isNotEmpty) return url;
+    } catch (_) {}
+    
     final v = dotenv.env['API_URL']?.trim();
     return (v == null || v.isEmpty) ? null : v;
   }
@@ -170,7 +178,7 @@ class _SignupPageState extends State<SignupPage> {
       if (!mounted) return;
       setState(() {
         _errorMessage =
-            'Signup request failed. Check that the backend is running at $apiUrl.\n\nDetails: ${e.toString()}';
+            'Signup request failed. Check that the backend is running at $_apiUrl.\n\nDetails: ${e.toString()}';
       });
     }
 
