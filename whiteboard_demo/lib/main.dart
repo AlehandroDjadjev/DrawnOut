@@ -30,6 +30,9 @@ import 'pages/signup.dart';
 import 'pages/home.dart';
 import 'pages/lessons_page.dart';
 import 'pages/settings_page.dart';
+import 'pages/auth_gate.dart';
+import 'pages/market_page.dart';
+import 'pages/whiteboard_page.dart';
 
 // Whiteboard module
 import 'whiteboard/whiteboard.dart';
@@ -87,17 +90,19 @@ class DrawnOutApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'DrawnOut',
       theme: _buildTheme(themeProvider.isDarkMode),
+      home: const AuthGate(),
       routes: {
         '/login': (context) => const LoginPage(),
         '/signup': (context) => const SignupPage(),
         '/home': (context) => const HomePage(),
         '/lessons': (context) => const LessonsPage(),
         '/settings': (context) => const SettingsPage(),
+        '/market': (context) => const MarketPage(),
         '/whiteboard': (context) => const WhiteboardPageWrapper(),
         '/whiteboard/user': (context) => const WhiteboardPageWrapper(startInDeveloperMode: false),
         '/whiteboard/dev': (context) => const WhiteboardPageWrapper(startInDeveloperMode: true),
+        '/whiteboard/mobile': (context) => const WhiteboardPageMobile(),
       },
-      initialRoute: '/login',
     );
   }
 }
@@ -470,8 +475,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         worldScale: _worldScale,
         edgeMode: _edgeMode,
         blurK: _blurK.toInt().isOdd ? _blurK.toInt() : _blurK.toInt() + 1,
-        cannyLo: _cannyLo,
-        cannyHi: _cannyHi,
+        cannyLo: _cannyLo.toDouble(),
+        cannyHi: _cannyHi.toDouble(),
         dogSigma: _dogSigma,
         dogK: _dogK,
         dogThresh: _dogThresh,
@@ -481,7 +486,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         retrExternalOnly: _externalOnly,
 
         // Stroke shaping
-        angleThresholdDeg: _angleThreshold,
+        angleThresholdDeg: _angleThreshold.toDouble(),
         angleWindow: _angleWindow.round(),
         smoothPasses: _smoothPasses.round(),
         mergeParallel: _mergeParallel,
@@ -605,8 +610,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         worldScale: _worldScale,
         edgeMode: 'Canny', // consistent edges for glyphs
         blurK: 3, // light blur
-        cannyLo: 30,
-        cannyHi: 120,
+        cannyLo: 30.0,
+        cannyHi: 120.0,
         dogSigma: _dogSigma,
         dogK: _dogK,
         dogThresh: _dogThresh,
@@ -616,7 +621,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         retrExternalOnly: false,
 
         // Keep contours intact; avoid splitting curves aggressively
-        angleThresholdDeg: 85,
+        angleThresholdDeg: 85.0,
         angleWindow: 3,
         smoothPasses: centerlineMode ? _clSmoothPasses.round() : 1,
         mergeParallel: true,
@@ -1346,13 +1351,13 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       worldScale: _worldScale,
       edgeMode: 'Canny',
       blurK: 3,
-      cannyLo: 35,
-      cannyHi: 140,
+      cannyLo: 35.0,
+      cannyHi: 140.0,
       epsilon: 0.9,
       resampleSpacing: 1.1,
       minPerimeter: math.max(20.0, _minPerim),
       retrExternalOnly: false,
-      angleThresholdDeg: 85,
+      angleThresholdDeg: 85.0,
       angleWindow: 3,
       smoothPasses: 2,
       mergeParallel: true,
@@ -1567,13 +1572,13 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         worldScale: _worldScale,
         edgeMode: 'Canny',
         blurK: 3,
-        cannyLo: 35,
-        cannyHi: 140,
+        cannyLo: 35.0,
+        cannyHi: 140.0,
         epsilon: 0.9,
         resampleSpacing: 1.1,
         minPerimeter: math.max(20.0, _minPerim),
         retrExternalOnly: false,
-        angleThresholdDeg: 85,
+        angleThresholdDeg: 85.0,
         angleWindow: 3,
         smoothPasses: 2,
         mergeParallel: true,

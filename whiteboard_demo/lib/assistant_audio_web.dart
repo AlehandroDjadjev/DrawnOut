@@ -6,7 +6,7 @@
 import 'dart:async';
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as html;
-import 'dart:js_util' as js_util;
+import 'dart:js' as js;
 
 String _apiBaseUrl = '';
 final List<Map<String, dynamic>> _queue = [];
@@ -25,7 +25,7 @@ void setAssistantAudioBaseUrl(String baseUrl) {
       .replaceFirst(RegExp(r'/api/lessons$'), '')
       .replaceFirst(RegExp(r'/api$'), '');
     final lessonsBase = '$cleaned/api/lessons';
-    js_util.setProperty(html.window, '__ASSISTANT_API_BASE', lessonsBase);
+    js.context['__ASSISTANT_API_BASE'] = lessonsBase;
   } catch (_) {}
 }
 

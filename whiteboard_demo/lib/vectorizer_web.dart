@@ -1,11 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:math' as math;
 import 'dart:ui' show Offset;
 
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as html;
-import 'dart:js_util' as js_util;
+import 'dart:js' as js;
+import 'package:js/js.dart' show allowInterop;
 
 class Vectorizer {
   static Future<List<List<Offset>>> vectorize({
@@ -13,8 +15,8 @@ class Vectorizer {
     double worldScale = 1.0,
     String edgeMode = 'Canny',
     int blurK = 5,
-    double cannyLo = 50,
-    double cannyHi = 160,
+    double cannyLo = 50.0,
+    double cannyHi = 160.0,
     double dogSigma = 1.2,
     double dogK = 1.6,
     double dogThresh = 6.0,
@@ -22,7 +24,7 @@ class Vectorizer {
     double resampleSpacing = 1.410714285714286,
     double minPerimeter = 19.839285714285793,
     bool retrExternalOnly = true,
-    double angleThresholdDeg = 30,
+    double angleThresholdDeg = 30.0,
     int angleWindow = 4,
     int smoothPasses = 3,
     bool mergeParallel = true,
@@ -129,13 +131,45 @@ class Vectorizer {
 
   static Future<dynamic> _cvVectorizeContours(
       html.ImageData imageData, Map<String, dynamic> options) async {
-    // Call window.cvVectorizeContours(imageData, opts) which returns a Promise
-    final jsPromise = js_util.callMethod(html.window, 'cvVectorizeContours',
-        [imageData, js_util.jsify(options)]);
-    final jsObject = await js_util.promiseToFuture<Object?>(jsPromise);
-    // Convert JS object to Dart structures (Map/List). Leave as dynamic to avoid type casts.
-    final dartified = js_util.dartify(jsObject);
-    return dartified;
+    // Call global cvVectorizeContours(imageData, opts) which returns a Promise.
+    final jsOpts = js.JsObject.jsify(options);
+    final promise = js.context.callMethod('cvVectorizeContours', [imageData, jsOpts]);
+
+    final jsObject = await _promiseToFuture<Object?>(promise);
+    if (jsObject == null) return null;
+
+    // Safest generic conversion: JSON.stringify in JS, then jsonDecode in Dart.
+    // The expected return shape is JSON-safe (polylines arrays of numbers).
+    try {
+      final jsonStr = js.context['JSON'].callMethod('stringify', [jsObject]);
+      if (jsonStr is String && jsonStr.isNotEmpty) {
+        return jsonDecode(jsonStr);
+      }
+    } catch (_) {}
+
+    return jsObject;
+  }
+
+  static Future<T?> _promiseToFuture<T>(dynamic promise) {
+    if (promise is Future<T>) return promise;
+    if (promise is! js.JsObject) return Future<T?>.value(promise as T?);
+
+    final c = Completer<T?>();
+    try {
+      promise.callMethod('then', [
+        allowInterop((dynamic value) {
+          if (!c.isCompleted) c.complete(value as T?);
+        })
+      ]);
+      promise.callMethod('catch', [
+        allowInterop((dynamic _) {
+          if (!c.isCompleted) c.complete(null);
+        })
+      ]);
+    } catch (_) {
+      if (!c.isCompleted) c.complete(null);
+    }
+    return c.future;
   }
 
   // --- Dart-side shaping helpers (same as native) ---

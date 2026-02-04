@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 import '../theme_provider.dart';
+import '../ui/apple_ui.dart';
 import '../providers/developer_mode_provider.dart';
 import 'profile_page.dart';
 
@@ -8,7 +11,7 @@ class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
   @override
-  _HomePageState createState() => _HomePageState();
+  State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
@@ -16,17 +19,20 @@ class _HomePageState extends State<HomePage> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   void _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('token');
+    if (!mounted) return;
     Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
   }
 
   @override
   Widget build(BuildContext context) {
-    final themeProvider = Provider.of<ThemeProvider>(context);
-    final isDarkMode = themeProvider.isDarkMode;
     final theme = Theme.of(context);
+    final isDarkMode = context.watch<ThemeProvider>().isDarkMode;
+    final themeProvider = context.read<ThemeProvider>();
 
     final List<Widget> pages = [
-      _buildHomeContent(theme, isDarkMode),
+      _buildHomeContent(theme),
       const ProfilePage(),
     ];
 
@@ -34,12 +40,8 @@ class _HomePageState extends State<HomePage> {
       key: _scaffoldKey,
       drawer: _buildDrawer(theme),
       appBar: AppBar(
-        title: Text(_selectedIndex == 0 ? "Home" : "Profile"),
+        title: Text(_selectedIndex == 0 ? 'Home' : 'Profile'),
         centerTitle: true,
-        backgroundColor: isDarkMode ? Colors.black : Colors.white,
-        foregroundColor: theme.colorScheme.primary,
-        elevation: 1,
-        iconTheme: IconThemeData(color: theme.colorScheme.primary),
         actions: [
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 400),
@@ -50,28 +52,27 @@ class _HomePageState extends State<HomePage> {
               );
             },
             child: IconButton(
-              key: ValueKey(isDarkMode ? "dark" : "light"),
+              key: ValueKey(isDarkMode),
               icon: Icon(isDarkMode ? Icons.dark_mode : Icons.light_mode),
               onPressed: themeProvider.toggleTheme,
             ),
           ),
         ],
       ),
-      body: pages[_selectedIndex],
+      body: AppleBackground(child: pages[_selectedIndex]),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _selectedIndex,
         type: BottomNavigationBarType.fixed,
-        backgroundColor: isDarkMode ? Colors.black : Colors.white,
         selectedItemColor: theme.colorScheme.primary,
-        unselectedItemColor: isDarkMode ? Colors.grey[400] : Colors.grey[600],
+        unselectedItemColor: theme.colorScheme.onSurface.withOpacity(0.6),
         onTap: (index) => setState(() => _selectedIndex = index),
         items: [
           BottomNavigationBarItem(
-            icon: _navIcon(Icons.home_outlined, 0, theme, isDarkMode),
+            icon: _navIcon(Icons.home_outlined, 0, theme),
             label: 'Home',
           ),
           BottomNavigationBarItem(
-            icon: _navIcon(Icons.person_outline_rounded, 1, theme, isDarkMode),
+            icon: _navIcon(Icons.person_outline_rounded, 1, theme),
             label: 'Profile',
           ),
         ],
@@ -79,8 +80,12 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _navIcon(IconData icon, int index, ThemeData theme, bool isDarkMode) {
-    final bool isSelected = _selectedIndex == index;
+  Widget _navIcon(
+    IconData icon,
+    int index,
+    ThemeData theme,
+  ) {
+    final isSelected = _selectedIndex == index;
     return Container(
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
@@ -93,7 +98,7 @@ class _HomePageState extends State<HomePage> {
         icon,
         color: isSelected
             ? theme.colorScheme.primary
-            : (isDarkMode ? Colors.grey[400] : Colors.grey[600]),
+            : theme.colorScheme.onSurface.withOpacity(0.6),
       ),
     );
   }
@@ -159,6 +164,8 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
           ),
+
+          // Lessons
           ListTile(
             leading: Icon(Icons.menu_book, color: theme.colorScheme.primary),
             title: const Text("All Lessons"),
@@ -167,14 +174,28 @@ class _HomePageState extends State<HomePage> {
               Navigator.pushNamed(context, '/lessons');
             },
           ),
+
+          // Market
           ListTile(
-            leading: Icon(Icons.draw, color: theme.colorScheme.primary),
-            title: const Text("Whiteboard Demo"),
+            leading: Icon(Icons.storefront_outlined, color: theme.colorScheme.primary),
+            title: const Text('Market'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.pushNamed(context, '/market');
+            },
+          ),
+
+          // Whiteboard
+          ListTile(
+            leading: Icon(Icons.draw_outlined, color: theme.colorScheme.primary),
+            title: const Text('Whiteboard'),
             onTap: () {
               Navigator.pop(context);
               Navigator.pushNamed(context, '/whiteboard');
             },
           ),
+
+          // Settings
           ListTile(
             leading: Icon(Icons.settings, color: theme.colorScheme.primary),
             title: const Text("Settings"),
@@ -183,6 +204,8 @@ class _HomePageState extends State<HomePage> {
               Navigator.pushNamed(context, '/settings');
             },
           ),
+
+          // Developer mode controls
           if (devMode.isEnabled)
             ListTile(
               leading: const Icon(Icons.developer_mode, color: Colors.orange),
@@ -192,7 +215,10 @@ class _HomePageState extends State<HomePage> {
                 Navigator.pop(context);
               },
             ),
+
           const Divider(),
+
+          // Logout
           ListTile(
             leading: Icon(Icons.logout, color: theme.colorScheme.primary),
             title: const Text("Logout"),
@@ -203,113 +229,174 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildHomeContent(ThemeData theme, bool isDarkMode) {
+  Widget _buildHomeContent(ThemeData theme) {
+    final size = MediaQuery.of(context).size;
+    final isWide = size.width >= 720;
+
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: isDarkMode ? Colors.teal.shade700 : Colors.blue.shade100,
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 900),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const AppleHeader(
+                title: 'Welcome',
+                subtitle:
+                    'Learn, interact, and practice with your AI tutor. Start with a quick lesson or jump into the whiteboard.',
+              ),
+              const SizedBox(height: 16),
+              isWide
+                  ? Row(
+                      children: [
+                        Expanded(
+                          child: _QuickActionCard(
+                            icon: Icons.menu_book,
+                            title: 'Lessons',
+                            subtitle: 'Browse all lessons',
+                            onTap: () => Navigator.pushNamed(context, '/lessons'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _QuickActionCard(
+                            icon: Icons.storefront_outlined,
+                            title: 'Market',
+                            subtitle: 'Explore the marketplace',
+                            onTap: () => Navigator.pushNamed(context, '/market'),
+                          ),
+                        ),
+                      ],
+                    )
+                  : Column(
+                      children: [
+                        _QuickActionCard(
+                          icon: Icons.menu_book,
+                          title: 'Lessons',
+                          subtitle: 'Browse all lessons',
+                          onTap: () => Navigator.pushNamed(context, '/lessons'),
+                        ),
+                        const SizedBox(height: 12),
+                        _QuickActionCard(
+                          icon: Icons.storefront_outlined,
+                          title: 'Market',
+                          subtitle: 'Explore the marketplace',
+                          onTap: () => Navigator.pushNamed(context, '/market'),
+                        ),
+                      ],
+                    ),
+              const SizedBox(height: 12),
+              _QuickActionCard(
+                icon: Icons.draw_outlined,
+                title: 'Whiteboard',
+                subtitle: 'Practice and explore',
+                onTap: () => Navigator.pushNamed(context, '/whiteboard'),
+              ),
+              const SizedBox(height: 20),
+              const AppleSectionTitle(title: 'Available lesson'),
+              const SizedBox(height: 10),
+              AppleCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(Icons.school,
-                        size: 28,
-                        color: isDarkMode
-                            ? Colors.tealAccent.shade100
-                            : Colors.blueGrey),
-                    const SizedBox(width: 8),
-                    const Text(
-                      'Welcome to DrawnOut',
-                      style:
-                          TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
+                    Text(
+                      'Pythagoras Theorem',
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -0.2,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Explore the relationship between the sides of a right-angled triangle and understand one of the most fundamental theorems in mathematics.',
+                      style: theme.textTheme.bodyMedium?.copyWith(height: 1.25),
+                    ),
+                    const SizedBox(height: 14),
+                    ApplePrimaryButton(
+                      label: 'Start lesson',
+                      onPressed: () =>
+                          Navigator.pushNamed(context, '/whiteboard'),
                     ),
                   ],
                 ),
-                const SizedBox(height: 10),
-                const Text(
-                  'Learn, interact, and practice with your AI tutor.\nStart with the demo lesson below!',
-                  style: TextStyle(fontSize: 16),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _QuickActionCard extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _QuickActionCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return AppleCard(
+      padding: EdgeInsets.zero,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(18),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primary.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(icon, color: theme.colorScheme.primary),
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            'Available Lesson',
-            style: TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
-              color: isDarkMode ? Colors.tealAccent.shade100 : Colors.grey[800],
-            ),
-          ),
-          const SizedBox(height: 12),
-          Card(
-            color: isDarkMode ? Colors.grey[900] : Colors.white,
-            elevation: 5,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-            margin: const EdgeInsets.symmetric(vertical: 10),
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Pythagoras Theorem',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Explore the relationship between the sides of a right-angled triangle and understand one of the most fundamental theorems in mathematics.',
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: isDarkMode ? Colors.grey[300] : Colors.grey[700],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      TextButton.icon(
-                        onPressed: () {
-                          Navigator.pushNamed(context, '/lessons');
-                        },
-                        icon: const Icon(Icons.menu_book, size: 18),
-                        label: const Text("Browse All"),
-                      ),
-                      ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 20, vertical: 12),
+                      Text(
+                        title,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -0.2,
                         ),
-                        onPressed: () {
-                          Navigator.pushNamed(context, '/whiteboard');
-                        },
-                        icon: const Icon(Icons.play_arrow),
-                        label: const Text(
-                          "Start Lesson",
-                          style: TextStyle(fontSize: 16),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color:
+                              theme.colorScheme.onSurface.withOpacity(0.70),
                         ),
                       ),
                     ],
                   ),
-                ],
-              ),
+                ),
+                Icon(
+                  Icons.chevron_right,
+                  color: theme.colorScheme.onSurface.withOpacity(0.45),
+                ),
+              ],
             ),
           ),
-        ],
+        ),
       ),
     );
   }
