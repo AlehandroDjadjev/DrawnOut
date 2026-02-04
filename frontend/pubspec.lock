@@ -351,6 +351,7 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.17.0"
+<<<<<<< HEAD
   native_toolchain_c:
     dependency: transitive
     description:
@@ -359,6 +360,8 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.17.4"
+=======
+>>>>>>> fe63ec465c2069cd49c1daa8972bd6943d5ce8d1
   nested:
     dependency: transitive
     description:

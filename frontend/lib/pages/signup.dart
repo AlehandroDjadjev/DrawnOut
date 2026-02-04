@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme_provider/theme_provider.dart';
+import '../ui/apple_ui.dart';
 import '../services/app_config_service.dart';
 
 class SignupPage extends StatefulWidget {
@@ -147,6 +148,7 @@ class _SignupPageState extends State<SignupPage> {
           } catch (_) {
             tokenErr = {'detail': tokenResp.body};
           }
+          if (!mounted) return;
           setState(() {
             _errorMessage = _formatApiError(
               tokenErr,
@@ -157,6 +159,7 @@ class _SignupPageState extends State<SignupPage> {
           Navigator.pushReplacementNamed(context, '/login');
         }
       } else {
+        if (!mounted) return;
         setState(() {
           final formatted = _formatApiError(
             data,
@@ -172,6 +175,7 @@ class _SignupPageState extends State<SignupPage> {
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage =
             'Signup request failed. Check that the backend is running at $_apiUrl.\n\nDetails: ${e.toString()}';
@@ -188,23 +192,49 @@ class _SignupPageState extends State<SignupPage> {
     final theme = Theme.of(context);
     final isDarkMode = context.watch<ThemeProvider>().isDarkMode;
     final themeProvider = context.read<ThemeProvider>();
-    final bool isSmallScreen = MediaQuery.of(context).size.width < 600;
+    final isSmallScreen = MediaQuery.of(context).size.width < 600;
 
     return Scaffold(
       backgroundColor: theme.colorScheme.surface,
       body: SafeArea(
-        child: Stack(
-          children: [
-            Center(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(16),
-                child: isSmallScreen
-                    ? Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const _Logo(),
-                          const SizedBox(height: 24),
-                          _FormContent(
+        child: AppleBackground(
+          child: Stack(
+            children: [
+              Align(
+                alignment: Alignment.topRight,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 8, right: 8),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 400),
+                    transitionBuilder: (child, animation) {
+                      return RotationTransition(
+                        turns:
+                            Tween(begin: 0.75, end: 1.0).animate(animation),
+                        child: FadeTransition(opacity: animation, child: child),
+                      );
+                    },
+                    child: IconButton(
+                      key: ValueKey(isDarkMode),
+                      icon: Icon(
+                        isDarkMode ? Icons.dark_mode : Icons.light_mode,
+                        size: 26,
+                        color: theme.colorScheme.primary,
+                      ),
+                      onPressed: themeProvider.toggleTheme,
+                    ),
+                  ),
+                ),
+              ),
+
+              Center(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: isSmallScreen ? 560 : 820,
+                    ),
+                    child: isSmallScreen
+                        ? _AppleSignupCard(
                             formKey: _formKey,
                             isLoading: _isLoading,
                             errorMessage: _errorMessage,
@@ -214,94 +244,60 @@ class _SignupPageState extends State<SignupPage> {
                             onEmailChange: (v) => _email = v,
                             onFirstChange: (v) => _firstName = v,
                             onLastChange: (v) => _lastName = v,
-                          ),
-                        ],
-                      )
-                    : Container(
-                        constraints: const BoxConstraints(maxWidth: 900),
-                        padding: const EdgeInsets.all(32),
-                        child: Row(
-                          children: [
-                            const Expanded(child: _Logo()),
-                            Expanded(
-                              child: _FormContent(
-                                formKey: _formKey,
-                                isLoading: _isLoading,
-                                errorMessage: _errorMessage,
-                                onSignup: _signup,
-                                onUserChange: (v) => _username = v,
-                                onPassChange: (v) => _password = v,
-                                onEmailChange: (v) => _email = v,
-                                onFirstChange: (v) => _firstName = v,
-                                onLastChange: (v) => _lastName = v,
+                          )
+                        : Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Padding(
+                                  padding:
+                                      const EdgeInsets.only(right: 24, top: 8),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Icon(
+                                        Icons.school,
+                                        size: 56,
+                                        color: theme.colorScheme.primary,
+                                      ),
+                                      const SizedBox(height: 14),
+                                      const AppleHeader(
+                                        title: 'Create your account',
+                                        subtitle:
+                                            'Join DrawnOut to access lessons, the market, and the whiteboard.',
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               ),
-                            ),
-                          ],
-                        ),
-                      ),
-              ),
-            ),
-
-            /// Theme toggle
-            Positioned(
-              top: 16,
-              right: 16,
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 400),
-                transitionBuilder: (child, animation) {
-                  return RotationTransition(
-                    turns: Tween(begin: 0.75, end: 1.0).animate(animation),
-                    child: FadeTransition(opacity: animation, child: child),
-                  );
-                },
-                child: IconButton(
-                  key: ValueKey(isDarkMode),
-                  icon: Icon(
-                    isDarkMode ? Icons.dark_mode : Icons.light_mode,
-                    size: 28,
-                    color: theme.colorScheme.primary,
+                              Expanded(
+                                child: _AppleSignupCard(
+                                  formKey: _formKey,
+                                  isLoading: _isLoading,
+                                  errorMessage: _errorMessage,
+                                  onSignup: _signup,
+                                  onUserChange: (v) => _username = v,
+                                  onPassChange: (v) => _password = v,
+                                  onEmailChange: (v) => _email = v,
+                                  onFirstChange: (v) => _firstName = v,
+                                  onLastChange: (v) => _lastName = v,
+                                ),
+                              ),
+                            ],
+                          ),
                   ),
-                  onPressed: themeProvider.toggleTheme,
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-class _Logo extends StatelessWidget {
-  const _Logo();
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isSmallScreen = MediaQuery.of(context).size.width < 600;
-
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(
-          Icons.school,
-          size: isSmallScreen ? 100 : 180,
-          color: theme.colorScheme.primary,
-        ),
-        const SizedBox(height: 16),
-        Text(
-          'Join DrawnOut!',
-          textAlign: TextAlign.center,
-          style: theme.textTheme.headlineMedium?.copyWith(
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _FormContent extends StatelessWidget {
+class _AppleSignupCard extends StatelessWidget {
   final GlobalKey<FormState> formKey;
   final bool isLoading;
   final String? errorMessage;
@@ -313,7 +309,7 @@ class _FormContent extends StatelessWidget {
   final void Function(String) onFirstChange;
   final void Function(String) onLastChange;
 
-  const _FormContent({
+  const _AppleSignupCard({
     required this.formKey,
     required this.isLoading,
     required this.errorMessage,
@@ -331,90 +327,115 @@ class _FormContent extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Form(
-      key: formKey,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextFormField(
-            decoration: const InputDecoration(
-              labelText: 'Username',
-              prefixIcon: Icon(Icons.person_outline),
-              border: OutlineInputBorder(),
+    return AppleCard(
+      padding: const EdgeInsets.all(18),
+      child: Form(
+        key: formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const AppleHeader(
+              title: 'Sign up',
+              subtitle: 'Create an account in under a minute.',
             ),
-            onChanged: onUserChange,
-            validator: (v) => v!.isEmpty ? 'Enter a username' : null,
-          ),
-          _gap(),
-          TextFormField(
-            decoration: const InputDecoration(
-              labelText: 'Email',
-              prefixIcon: Icon(Icons.email_outlined),
-              border: OutlineInputBorder(),
-            ),
-            keyboardType: TextInputType.emailAddress,
-            onChanged: onEmailChange,
-            validator: (v) => v!.isEmpty ? 'Enter an email' : null,
-          ),
-          _gap(),
-          TextFormField(
-            decoration: const InputDecoration(
-              labelText: 'First Name',
-              prefixIcon: Icon(Icons.badge_outlined),
-              border: OutlineInputBorder(),
-            ),
-            onChanged: onFirstChange,
-          ),
-          _gap(),
-          TextFormField(
-            decoration: const InputDecoration(
-              labelText: 'Last Name',
-              prefixIcon: Icon(Icons.badge_outlined),
-              border: OutlineInputBorder(),
-            ),
-            onChanged: onLastChange,
-          ),
-          _gap(),
-          TextFormField(
-            decoration: const InputDecoration(
-              labelText: 'Password',
-              prefixIcon: Icon(Icons.lock_outline),
-              border: OutlineInputBorder(),
-            ),
-            obscureText: true,
-            onChanged: onPassChange,
-            validator: (v) => v!.isEmpty ? 'Enter a password' : null,
-          ),
-          if (errorMessage != null) ...[
             _gap(),
-            Text(
-              errorMessage!,
-              style: TextStyle(color: theme.colorScheme.error),
+            TextFormField(
+              decoration: appleFieldDecoration(
+                context,
+                hintText: 'Username',
+                icon: Icons.person_outline,
+              ),
+              textInputAction: TextInputAction.next,
+              onChanged: onUserChange,
+              validator: (v) => (v == null || v.trim().isEmpty)
+                  ? 'Enter a username'
+                  : null,
             ),
-          ],
-          _gap(),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: isLoading ? null : onSignup,
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: isLoading
-                    ? const CircularProgressIndicator(color: Colors.white)
-                    : const Text(
-                        'Sign Up',
-                        style: TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.bold),
-                      ),
+            _gap(),
+            TextFormField(
+              decoration: appleFieldDecoration(
+                context,
+                hintText: 'Email',
+                icon: Icons.email_outlined,
+              ),
+              keyboardType: TextInputType.emailAddress,
+              textInputAction: TextInputAction.next,
+              onChanged: onEmailChange,
+              validator: (v) => (v == null || v.trim().isEmpty)
+                  ? 'Enter an email'
+                  : null,
+            ),
+            _gap(),
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    decoration: appleFieldDecoration(
+                      context,
+                      hintText: 'First name',
+                      icon: Icons.badge_outlined,
+                    ),
+                    textInputAction: TextInputAction.next,
+                    onChanged: onFirstChange,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextFormField(
+                    decoration: appleFieldDecoration(
+                      context,
+                      hintText: 'Last name',
+                      icon: Icons.badge_outlined,
+                    ),
+                    textInputAction: TextInputAction.next,
+                    onChanged: onLastChange,
+                  ),
+                ),
+              ],
+            ),
+            _gap(),
+            TextFormField(
+              decoration: appleFieldDecoration(
+                context,
+                hintText: 'Password',
+                icon: Icons.lock_outline,
+              ),
+              obscureText: true,
+              textInputAction: TextInputAction.done,
+              onChanged: onPassChange,
+              validator: (v) => (v == null || v.isEmpty)
+                  ? 'Enter a password'
+                  : null,
+              onFieldSubmitted: (_) {
+                if (!isLoading) onSignup();
+              },
+            ),
+            if (errorMessage != null) ...[
+              _gap(),
+              AppleErrorBanner(message: errorMessage!),
+            ],
+            _gap(),
+            ApplePrimaryButton(
+              label: 'Create account',
+              onPressed: onSignup,
+              loading: isLoading,
+            ),
+            const SizedBox(height: 12),
+            Center(
+              child: TextButton(
+                onPressed: () =>
+                    Navigator.pushReplacementNamed(context, '/login'),
+                child: Text(
+                  'Already have an account? Sign in',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
             ),
-          ),
-          _gap(),
-          TextButton(
-            onPressed: () => Navigator.pushReplacementNamed(context, '/login'),
-            child: const Text('Already have an account? Login'),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

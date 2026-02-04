@@ -9,7 +9,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:provider/provider.dart';
+import './providers/developer_mode_provider.dart';
 import 'package:http/http.dart' as http;
 
 // Local imports
@@ -476,8 +476,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         worldScale: _worldScale,
         edgeMode: _edgeMode,
         blurK: _blurK.toInt().isOdd ? _blurK.toInt() : _blurK.toInt() + 1,
-        cannyLo: _cannyLo,
-        cannyHi: _cannyHi,
+        cannyLo: _cannyLo.toDouble(),
+        cannyHi: _cannyHi.toDouble(),
         dogSigma: _dogSigma,
         dogK: _dogK,
         dogThresh: _dogThresh,
@@ -487,7 +487,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         retrExternalOnly: _externalOnly,
 
         // Stroke shaping
-        angleThresholdDeg: _angleThreshold,
+        angleThresholdDeg: _angleThreshold.toDouble(),
         angleWindow: _angleWindow.round(),
         smoothPasses: _smoothPasses.round(),
         mergeParallel: _mergeParallel,
@@ -613,8 +613,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         worldScale: _worldScale,
         edgeMode: 'Canny', // consistent edges for glyphs
         blurK: 3, // light blur
-        cannyLo: 30,
-        cannyHi: 120,
+        cannyLo: 30.0,
+        cannyHi: 120.0,
         dogSigma: _dogSigma,
         dogK: _dogK,
         dogThresh: _dogThresh,
@@ -624,7 +624,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         retrExternalOnly: false,
 
         // Keep contours intact; avoid splitting curves aggressively
-        angleThresholdDeg: 85,
+        angleThresholdDeg: 85.0,
         angleWindow: 3,
         smoothPasses: centerlineMode ? _clSmoothPasses.round() : 1,
         mergeParallel: true,
@@ -1359,13 +1359,13 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       worldScale: _worldScale,
       edgeMode: 'Canny',
       blurK: 3,
-      cannyLo: 35,
-      cannyHi: 140,
+      cannyLo: 35.0,
+      cannyHi: 140.0,
       epsilon: 0.9,
       resampleSpacing: 1.1,
       minPerimeter: math.max(20.0, _minPerim),
       retrExternalOnly: false,
-      angleThresholdDeg: 85,
+      angleThresholdDeg: 85.0,
       angleWindow: 3,
       smoothPasses: 2,
       mergeParallel: true,
@@ -1582,13 +1582,13 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         worldScale: _worldScale,
         edgeMode: 'Canny',
         blurK: 3,
-        cannyLo: 35,
-        cannyHi: 140,
+        cannyLo: 35.0,
+        cannyHi: 140.0,
         epsilon: 0.9,
         resampleSpacing: 1.1,
         minPerimeter: math.max(20.0, _minPerim),
         retrExternalOnly: false,
-        angleThresholdDeg: 85,
+        angleThresholdDeg: 85.0,
         angleWindow: 3,
         smoothPasses: 2,
         mergeParallel: true,

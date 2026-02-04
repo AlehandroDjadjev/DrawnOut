@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../theme_provider.dart';
 import '../services/app_config_service.dart';
+import '../ui/apple_ui.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -21,19 +22,58 @@ class _LoginPageState extends State<LoginPage> {
   String? _errorMessage;
   bool _isLoading = false;
 
-  String get baseUrl {
-    // Try AppConfigService first, then dotenv, then default
+  String? get _apiUrl {
+    // Try AppConfigService first, then dotenv
     try {
       final config = Provider.of<AppConfigService>(context, listen: false);
-      return '${config.backendUrl}/api/auth/';
-    } catch (_) {
-      final envUrl = dotenv.env['API_URL'];
-      return '${envUrl ?? 'http://127.0.0.1:8000'}/api/auth/';
-    }
+      final url = config.backendUrl.trim();
+      if (url.isNotEmpty) return url;
+    } catch (_) {}
+
+    final v = dotenv.env['API_URL']?.trim();
+    return (v == null || v.isEmpty) ? null : v;
   }
 
-  void _login() async {
+  String get _baseUrl => "${_apiUrl ?? ''}/api/auth/";
+
+  String _formatApiError(dynamic data, {String fallback = 'Login failed'}) {
+    if (data == null) return fallback;
+
+    if (data is Map) {
+      if (data['detail'] != null) return data['detail'].toString();
+      if (data['error'] != null) return data['error'].toString();
+
+      final parts = <String>[];
+      for (final entry in data.entries) {
+        final key = entry.key.toString();
+        final value = entry.value;
+        if (value is List) {
+          parts.add('$key: ${value.join(' ')}');
+        } else {
+          parts.add('$key: $value');
+        }
+      }
+      if (parts.isNotEmpty) return parts.join('\n');
+    }
+
+    if (data is List) {
+      return data.map((e) => e.toString()).join('\n');
+    }
+
+    return data.toString();
+  }
+
+  Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
+
+    final apiUrl = _apiUrl;
+    if (apiUrl == null) {
+      setState(() {
+        _errorMessage =
+            'Missing API_URL. Check whiteboard_demo/assets/.env and restart the app.';
+      });
+      return;
+    }
 
     setState(() {
       _isLoading = true;
@@ -42,9 +82,12 @@ class _LoginPageState extends State<LoginPage> {
 
     try {
       final response = await http.post(
-        Uri.parse('${baseUrl}token/'),
+        Uri.parse('${_baseUrl}token/'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'username': _username, 'password': _password}),
+        body: jsonEncode({
+          'username': _username.trim(),
+          'password': _password,
+        }),
       );
 
       if (response.statusCode == 200) {
@@ -54,104 +97,130 @@ class _LoginPageState extends State<LoginPage> {
         if (!mounted) return;
         Navigator.pushReplacementNamed(context, '/home');
       } else {
-        // Try to decode error message, but fallback safely
         String message = 'Login failed';
         try {
-          final data = jsonDecode(response.body);
-          message = data['detail'] ?? message;
-        } catch (_) {}
+          final data =
+              response.body.isNotEmpty ? jsonDecode(response.body) : null;
+          message = _formatApiError(data, fallback: message);
+        } catch (_) {
+          // Keep fallback
+        }
+
+        final lower = message.toLowerCase();
+        if (lower.contains('no active account') ||
+            lower.contains('given credentials')) {
+          message = 'Incorrect username or password.';
+        }
         setState(() {
           _errorMessage = message;
         });
       }
-    } catch (e) {
+    } catch (_) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = 'Could not connect to server';
       });
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final themeProvider = Provider.of<ThemeProvider>(context);
-    final isDarkMode = themeProvider.isDarkMode;
     final theme = Theme.of(context);
-    final bool isSmallScreen = MediaQuery.of(context).size.width < 600;
+    final isDarkMode = context.watch<ThemeProvider>().isDarkMode;
+    final themeProvider = context.read<ThemeProvider>();
+    final isSmallScreen = MediaQuery.of(context).size.width < 600;
 
-    return AnimatedTheme(
-      data: theme,
-      duration: const Duration(milliseconds: 400),
-      child: Scaffold(
-        backgroundColor: theme.colorScheme.surface,
-        body: SafeArea(
+    return Scaffold(
+      backgroundColor: theme.colorScheme.surface,
+      body: SafeArea(
+        child: AppleBackground(
           child: Stack(
             children: [
+              Align(
+                alignment: Alignment.topRight,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 8, right: 8),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 400),
+                    transitionBuilder: (child, animation) {
+                      return RotationTransition(
+                        turns:
+                            Tween(begin: 0.75, end: 1.0).animate(animation),
+                        child: FadeTransition(opacity: animation, child: child),
+                      );
+                    },
+                    child: IconButton(
+                      key: ValueKey(isDarkMode),
+                      icon: Icon(
+                        isDarkMode ? Icons.dark_mode : Icons.light_mode,
+                        size: 26,
+                        color: theme.colorScheme.primary,
+                      ),
+                      onPressed: themeProvider.toggleTheme,
+                    ),
+                  ),
+                ),
+              ),
               Center(
-                child: isSmallScreen
-                    ? Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          _Logo(isDarkMode: isDarkMode),
-                          _FormContent(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: isSmallScreen ? 520 : 720,
+                    ),
+                    child: isSmallScreen
+                        ? _AppleLoginCard(
                             formKey: _formKey,
                             isLoading: _isLoading,
+                            errorMessage: _errorMessage,
                             onLogin: _login,
                             onUserChange: (v) => _username = v,
                             onPassChange: (v) => _password = v,
-                            errorMessage: _errorMessage,
-                          ),
-                        ],
-                      )
-                    : Container(
-                        padding: const EdgeInsets.all(32.0),
-                        constraints: const BoxConstraints(maxWidth: 800),
-                        child: Row(
-                          children: [
-                            Expanded(child: _Logo(isDarkMode: isDarkMode)),
-                            Expanded(
-                              child: Center(
-                                child: _FormContent(
+                          )
+                        : Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Padding(
+                                  padding:
+                                      const EdgeInsets.only(right: 24, top: 8),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Icon(
+                                        Icons.school,
+                                        size: 56,
+                                        color: theme.colorScheme.primary,
+                                      ),
+                                      const SizedBox(height: 14),
+                                      const AppleHeader(
+                                        title: 'Welcome back',
+                                        subtitle:
+                                            'Sign in to continue your lessons and whiteboard practice.',
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: _AppleLoginCard(
                                   formKey: _formKey,
                                   isLoading: _isLoading,
+                                  errorMessage: _errorMessage,
                                   onLogin: _login,
                                   onUserChange: (v) => _username = v,
                                   onPassChange: (v) => _password = v,
-                                  errorMessage: _errorMessage,
                                 ),
                               ),
-                            ),
-                          ],
-                        ),
-                      ),
-              ),
-              // Theme Toggle Button
-              Positioned(
-                top: 16,
-                right: 16,
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 400),
-                  transitionBuilder:
-                      (Widget child, Animation<double> animation) {
-                    return RotationTransition(
-                      turns: Tween(begin: 0.75, end: 1.0).animate(animation),
-                      child: FadeTransition(opacity: animation, child: child),
-                    );
-                  },
-                  child: IconButton(
-                    key: ValueKey(isDarkMode ? "dark" : "light"),
-                    icon: Icon(
-                      isDarkMode ? Icons.dark_mode : Icons.light_mode,
-                      color: theme.colorScheme.primary,
-                      size: 28,
-                    ),
-                    tooltip: isDarkMode
-                        ? "Switch to Light Mode"
-                        : "Switch to Dark Mode",
-                    onPressed: themeProvider.toggleTheme,
+                            ],
+                          ),
                   ),
                 ),
               ),
@@ -162,37 +231,7 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 }
-
-class _Logo extends StatelessWidget {
-  final bool isDarkMode;
-  const _Logo({required this.isDarkMode});
-
-  @override
-  Widget build(BuildContext context) {
-    final bool isSmallScreen = MediaQuery.of(context).size.width < 600;
-
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(Icons.school,
-            size: isSmallScreen ? 100 : 200,
-            color: isDarkMode ? Colors.tealAccent.shade200 : Colors.blue),
-        const SizedBox(height: 16),
-        Text(
-          "Welcome to Drawn Out!",
-          style: TextStyle(
-            fontSize: isSmallScreen ? 22 : 28,
-            fontWeight: FontWeight.bold,
-            color:
-                isDarkMode ? Colors.tealAccent.shade100 : Colors.blueGrey[800],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _FormContent extends StatelessWidget {
+class _AppleLoginCard extends StatelessWidget {
   final GlobalKey<FormState> formKey;
   final bool isLoading;
   final String? errorMessage;
@@ -200,7 +239,7 @@ class _FormContent extends StatelessWidget {
   final void Function(String) onUserChange;
   final void Function(String) onPassChange;
 
-  const _FormContent({
+  const _AppleLoginCard({
     required this.formKey,
     required this.onLogin,
     required this.onUserChange,
@@ -214,67 +253,72 @@ class _FormContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return SingleChildScrollView(
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 300),
-        child: Form(
-          key: formKey,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextFormField(
-                decoration: const InputDecoration(
-                  labelText: 'Username',
-                  prefixIcon: Icon(Icons.person_outline),
-                  border: OutlineInputBorder(),
-                ),
-                onChanged: onUserChange,
-                validator: (val) => val!.isEmpty ? 'Enter a username' : null,
+    return AppleCard(
+      padding: const EdgeInsets.all(18),
+      child: Form(
+        key: formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const AppleHeader(
+              title: 'Sign in',
+              subtitle: 'Use your account to continue.',
+            ),
+            _gap(),
+            TextFormField(
+              decoration: appleFieldDecoration(
+                context,
+                hintText: 'Username',
+                icon: Icons.person_outline,
               ),
-              _gap(),
-              TextFormField(
-                decoration: const InputDecoration(
-                  labelText: 'Password',
-                  prefixIcon: Icon(Icons.lock_outline_rounded),
-                  border: OutlineInputBorder(),
-                ),
-                obscureText: true,
-                onChanged: onPassChange,
-                validator: (val) => val!.isEmpty ? 'Enter a password' : null,
+              textInputAction: TextInputAction.next,
+              onChanged: onUserChange,
+              validator: (v) => (v == null || v.trim().isEmpty)
+                  ? 'Enter a username'
+                  : null,
+            ),
+            _gap(),
+            TextFormField(
+              decoration: appleFieldDecoration(
+                context,
+                hintText: 'Password',
+                icon: Icons.lock_outline,
               ),
-              if (errorMessage != null) ...[
-                _gap(),
-                Text(
-                  errorMessage!,
-                  style: TextStyle(color: theme.colorScheme.error),
-                ),
-              ],
+              obscureText: true,
+              textInputAction: TextInputAction.done,
+              onChanged: onPassChange,
+              validator: (v) => (v == null || v.isEmpty)
+                  ? 'Enter a password'
+                  : null,
+              onFieldSubmitted: (_) {
+                if (!isLoading) onLogin();
+              },
+            ),
+            if (errorMessage != null) ...[
               _gap(),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: isLoading ? null : onLogin,
-                  child: Padding(
-                    padding: const EdgeInsets.all(10.0),
-                    child: isLoading
-                        ? const CircularProgressIndicator(color: Colors.white)
-                        : const Text(
-                            'Login',
-                            style: TextStyle(
-                                fontSize: 16, fontWeight: FontWeight.bold),
-                          ),
+              AppleErrorBanner(message: errorMessage!),
+            ],
+            _gap(),
+            ApplePrimaryButton(
+              label: 'Continue',
+              onPressed: onLogin,
+              loading: isLoading,
+            ),
+            const SizedBox(height: 12),
+            Center(
+              child: TextButton(
+                onPressed: () =>
+                    Navigator.pushReplacementNamed(context, '/signup'),
+                child: Text(
+                  "Don't have an account? Create one",
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
-              _gap(),
-              TextButton(
-                onPressed: () {
-                  Navigator.pushReplacementNamed(context, '/signup');
-                },
-                child: const Text("Don't have an account? Sign Up"),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );

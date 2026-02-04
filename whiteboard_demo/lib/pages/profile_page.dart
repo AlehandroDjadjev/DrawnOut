@@ -6,6 +6,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 import '../theme_provider.dart';
 import '../services/app_config_service.dart';
+import '../ui/apple_ui.dart';
 import 'edit_username_page.dart';
 
 class ProfilePage extends StatefulWidget {
@@ -21,15 +22,22 @@ class _ProfilePageState extends State<ProfilePage> {
   bool _isLoading = true;
   String? _errorMessage;
 
-  String get baseUrl {
+  String? get _apiUrl {
     try {
       final config = Provider.of<AppConfigService>(context, listen: false);
-      return '${config.backendUrl}/api/';
-    } catch (_) {
-      final envUrl = dotenv.env['API_URL'];
-      return '${envUrl ?? 'http://127.0.0.1:8000'}/api/';
-    }
+      final url = config.backendUrl.trim();
+      if (url.isNotEmpty) {
+        return url.endsWith('/') ? url.substring(0, url.length - 1) : url;
+      }
+    } catch (_) {}
+
+    final v = dotenv.env['API_URL']?.trim();
+    return (v == null || v.isEmpty)
+        ? null
+        : (v.endsWith('/') ? v.substring(0, v.length - 1) : v);
   }
+
+  String get _baseUrl => "${_apiUrl ?? ''}/api/";
 
   @override
   void initState() {
@@ -42,6 +50,16 @@ class _ProfilePageState extends State<ProfilePage> {
       _isLoading = true;
       _errorMessage = null;
     });
+
+    final apiUrl = _apiUrl;
+    if (apiUrl == null) {
+      setState(() {
+        _errorMessage =
+            'Missing API_URL. Check whiteboard_demo/assets/.env and restart the app.';
+        _isLoading = false;
+      });
+      return;
+    }
 
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -56,7 +74,7 @@ class _ProfilePageState extends State<ProfilePage> {
       }
 
       final userResponse = await http.get(
-        Uri.parse('${baseUrl}auth/profile/'),
+        Uri.parse('${_baseUrl}auth/profile/'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
@@ -64,13 +82,14 @@ class _ProfilePageState extends State<ProfilePage> {
       );
 
       final lessonsResponse = await http.get(
-        Uri.parse('${baseUrl}lessons/list/'),
+        Uri.parse('${_baseUrl}lessons/list/'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
         },
       );
 
+      if (!mounted) return;
       if (userResponse.statusCode == 200 && lessonsResponse.statusCode == 200) {
         setState(() {
           _userData = jsonDecode(userResponse.body);
@@ -79,21 +98,25 @@ class _ProfilePageState extends State<ProfilePage> {
       } else {
         setState(() {
           _errorMessage =
-              'Failed to fetch profile or lessons: ${userResponse.statusCode}, ${lessonsResponse.statusCode}';
+              'Failed to load profile data. Backend at $apiUrl\n'
+              'profile: HTTP ${userResponse.statusCode}, lessons: HTTP ${lessonsResponse.statusCode}';
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = 'Could not connect to server';
       });
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
-  void _navigateToEditUsername() async {
+  Future<void> _navigateToEditUsername() async {
     if (_userData == null) return;
     final updated = await Navigator.push(
       context,
@@ -103,6 +126,8 @@ class _ProfilePageState extends State<ProfilePage> {
       ),
     );
 
+    if (!mounted) return;
+
     if (updated == true) {
       _fetchProfile();
     }
@@ -110,170 +135,183 @@ class _ProfilePageState extends State<ProfilePage> {
 
   @override
   Widget build(BuildContext context) {
-    final themeProvider = Provider.of<ThemeProvider>(context);
-    final isDarkMode = themeProvider.isDarkMode;
     final theme = Theme.of(context);
 
-    return _isLoading
-        ? const Center(child: CircularProgressIndicator())
-        : _errorMessage != null
-            ? Center(
-                child: Text(
-                  _errorMessage!,
-                  style: const TextStyle(color: Colors.red, fontSize: 16),
+    // Keep Profile reactive to theme changes.
+    context.watch<ThemeProvider>().isDarkMode;
+
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_errorMessage != null) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                AppleErrorBanner(message: _errorMessage!),
+                const SizedBox(height: 12),
+                ApplePrimaryButton(
+                  label: 'Retry',
+                  onPressed: _fetchProfile,
                 ),
-              )
-            : SingleChildScrollView(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                child: Column(
-                  children: [
-                    Stack(
-                      clipBehavior: Clip.none,
-                      children: [
-                        Container(
-                          height: 220,
-                          width: double.infinity,
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: isDarkMode
-                                  ? const [
-                                      Color(0xFF0F2027),
-                                      Color(0xFF203A43),
-                                      Color(0xFF2C5364),
-                                    ]
-                                  : const [
-                                      Color(0xFF6DD5FA),
-                                      Color(0xFF2980B9),
-                                    ],
-                            ),
-                            borderRadius: const BorderRadius.only(
-                              bottomLeft: Radius.circular(60),
-                              bottomRight: Radius.circular(60),
-                            ),
-                          ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final username = (_userData?['username'] ?? '').toString();
+    final firstName = (_userData?['first_name'] ?? '').toString();
+    final lastName = (_userData?['last_name'] ?? '').toString();
+    final fullName = ('$firstName $lastName').trim();
+    final email = (_userData?['email'] ?? '').toString();
+    final pfpUrl = (_userData?['pfp'] ?? '').toString();
+    final hasPfp = pfpUrl.trim().isNotEmpty;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AppleCard(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                CircleAvatar(
+                  radius: 28,
+                  backgroundColor: theme.colorScheme.primary.withOpacity(0.12),
+                  backgroundImage: hasPfp ? NetworkImage(pfpUrl) : null,
+                  child: !hasPfp
+                      ? Icon(Icons.person, color: theme.colorScheme.primary)
+                      : null,
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        username,
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -0.2,
                         ),
-                        Positioned(
-                          bottom: -60,
-                          left: 0,
-                          right: 0,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: Colors.white.withOpacity(0.9),
-                                width: 4,
-                              ),
-                            ),
-                            child: CircleAvatar(
-                              radius: 60,
-                              backgroundImage: _userData?['pfp'] != null
-                                  ? NetworkImage(_userData!['pfp'])
-                                  : null,
-                              backgroundColor: theme.colorScheme.primary.withOpacity(0.2),
-                              child: _userData?['pfp'] == null
-                                  ? Icon(
-                                      Icons.person,
-                                      size: 60,
-                                      color: theme.colorScheme.primary,
-                                    )
-                                  : null,
-                            ),
+                      ),
+                      if (fullName.isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          fullName,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color:
+                                theme.colorScheme.onSurface.withOpacity(0.75),
                           ),
                         ),
                       ],
-                    ),
-                    const SizedBox(height: 70),
-                    // Centered username + name with edit icon moved up
-                    Stack(
-                      clipBehavior: Clip.none,
-                      children: [
-                        Column(
+                      if (email.isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          email,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color:
+                                theme.colorScheme.onSurface.withOpacity(0.65),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                IconButton(
+                  onPressed: _navigateToEditUsername,
+                  tooltip: 'Edit username',
+                  icon: Icon(
+                    Icons.edit,
+                    size: 20,
+                    color: theme.colorScheme.onSurface.withOpacity(0.75),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 18),
+          const AppleSectionTitle(title: 'Your lessons'),
+          const SizedBox(height: 10),
+          if (_lessons.isEmpty)
+            AppleCard(
+              child: Text(
+                'You are not enrolled in any lessons yet.',
+                style: theme.textTheme.bodyMedium?.copyWith(height: 1.25),
+              ),
+            )
+          else
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _lessons.length,
+              itemBuilder: (context, index) {
+                final lesson = _lessons[index];
+                final title = (lesson['title'] ?? '').toString();
+                final desc = (lesson['description'] ?? '').toString();
+
+                return AppleCard(
+                  margin: const EdgeInsets.symmetric(vertical: 6),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.primary.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child:
+                            Icon(Icons.book, color: theme.colorScheme.primary),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _userData?['username'] ?? 'Username',
-                              style: theme.textTheme.headlineSmall
-                                  ?.copyWith(fontWeight: FontWeight.bold),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              "${_userData?['first_name'] ?? ''} ${_userData?['last_name'] ?? ''}",
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w500,
+                              title,
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: -0.2,
                               ),
                             ),
-                            const SizedBox(height: 4),
-                            Text(
-                              _userData?['email'] ?? 'Email',
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: Colors.grey,
+                            if (desc.isNotEmpty) ...[
+                              const SizedBox(height: 2),
+                              Text(
+                                desc,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: theme.colorScheme.onSurface
+                                      .withOpacity(0.70),
+                                ),
                               ),
-                            ),
+                            ],
                           ],
                         ),
-                        Positioned(
-                          right: -8,
-                          top: -8,
-                          child: IconButton(
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
-                            onPressed: _navigateToEditUsername,
-                            icon: const Icon(Icons.edit, size: 20),
-                            tooltip: 'Edit Username',
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 20),
-                    const Divider(),
-                    const SizedBox(height: 8),
-                    Text(
-                      "Your Lessons",
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.bold,
                       ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 12),
-                    if (_lessons.isEmpty)
-                      const Text(
-                        "You are not enrolled in any lessons yet.",
-                        style: TextStyle(fontSize: 16),
-                      )
-                    else
-                      ListView.builder(
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        itemCount: _lessons.length,
-                        itemBuilder: (context, index) {
-                          final lesson = _lessons[index];
-                          return Card(
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                            margin: const EdgeInsets.symmetric(vertical: 6),
-                            elevation: 3,
-                            shadowColor: Colors.black.withOpacity(0.1),
-                            child: ListTile(
-                              leading: CircleAvatar(
-                                backgroundColor:
-                                    theme.colorScheme.primary.withOpacity(0.1),
-                                child: Icon(Icons.book,
-                                    color: theme.colorScheme.primary),
-                              ),
-                              title: Text(lesson['title']),
-                              subtitle: Text(lesson['description'] ?? ''),
-                              trailing:
-                                  const Icon(Icons.arrow_forward_ios, size: 16),
-                            ),
-                          );
-                        },
+                      Icon(
+                        Icons.chevron_right,
+                        color: theme.colorScheme.onSurface.withOpacity(0.45),
                       ),
-                  ],
-                ),
-              );
+                    ],
+                  ),
+                );
+              },
+            ),
+        ],
+      ),
+    );
   }
 }
