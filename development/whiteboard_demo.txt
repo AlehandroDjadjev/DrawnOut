@@ -1,0 +1,31 @@
+Implementation Plan
+Phase 1: Code Modularization (Foundation)
+Extract core/ classes (StrokePlan, VectorObject, PlacedImage)
+Extract painters/ (SketchPainter, CommittedPainter, RasterPainter)
+Extract layout/ (LayoutState, LayoutConfig, LayoutService)
+Extract text/ (TextRenderer, TextLayout, TextConfig)
+Extract image/ (ImageService, DiagramService)
+Create barrel exports
+Update main.dart imports
+Phase 2: Service Layer
+Create StrokeService with filtering/stitching
+Create TextSketchService with text rendering
+Create ImageSketchService with image handling
+Wire services with dependency injection
+Phase 3: User-Facing Whiteboard Page
+Create whiteboard_page.dart (clean UI)
+Full-screen canvas with minimal controls
+Play/pause/progress bar
+Mobile-responsive layout
+Touch gesture support
+Phase 4: Device-Responsive Parameters
+Create DeviceScaleConfig service
+Scale stroke widths by screen density
+Scale fonts by viewport size
+Responsive margins/padding
+Touch-friendly control sizing
+Phase 5: Navigation Polish
+Rename current WhiteboardPage → DevWhiteboardPage
+Route /whiteboard to user-facing page
+Route /dev-whiteboard to developer page (requires dev mode)
+Clean lesson → playback flow

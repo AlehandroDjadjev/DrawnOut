@@ -15,6 +15,7 @@ from typing import List, Tuple
 from pathlib import Path
 from urllib.parse import urlparse
 
+import requests
 from PIL import Image
 
 from lesson_pipeline.config import config
@@ -172,6 +173,8 @@ class SigLIPEmbeddingService:
     def embed_image_batch(self, image_urls: List[str]) -> Tuple[List[List[float]], List[int]]:
         """
         Generate embeddings for multiple images via vision app.
+        Automatically converts SVG/GIF to PNG before embedding.
+        SVGs that can't be converted are skipped gracefully.
         
         Args:
             image_urls: List of image URLs or local paths
@@ -183,20 +186,39 @@ class SigLIPEmbeddingService:
         """
         embeddings: List[List[float]] = []
         success_indices: List[int] = []
+        converted_count = 0
+        skipped_svg_count = 0
         
         for i, url in enumerate(image_urls):
+            url_lower = (url or "").lower()
+            is_svg = '.svg' in url_lower
+            is_gif = '.gif' in url_lower
+            
             try:
                 embedding = self.embed_image(url)
                 embeddings.append(embedding)
                 success_indices.append(i)
+                if is_svg or is_gif:
+                    converted_count += 1
+            except ValueError as e:
+                # SVG conversion failed - skip gracefully
+                if is_svg and "SVG conversion failed" in str(e):
+                    logger.info(f"Skipping SVG (no converter available): {url[:60]}...")
+                    skipped_svg_count += 1
+                else:
+                    logger.warning(f"Failed to embed image {url}: {e}")
             except Exception as e:
                 logger.warning(f"Failed to embed image {url}: {e}")
                 # Skip failed images - don't add zero vectors
         
-        logger.info(
-            f"Generated {len(embeddings)} image embeddings "
-            f"({len(embeddings)}/{len(image_urls)} succeeded)"
-        )
+        msg = f"Generated {len(embeddings)} image embeddings ({len(embeddings)}/{len(image_urls)} succeeded"
+        if converted_count > 0:
+            msg += f", {converted_count} converted from SVG/GIF"
+        if skipped_svg_count > 0:
+            msg += f", {skipped_svg_count} SVGs skipped (install Cairo or ImageMagick to convert)"
+        msg += ")"
+        logger.info(msg)
+        
         return embeddings, success_indices
     
     def embed_images_from_pil_batch(
@@ -293,9 +315,172 @@ class SigLIPEmbeddingService:
                     # Add zeros as placeholder (optional behavior)
             return embeddings
 
+    def _convert_wikimedia_svg_to_png_url(self, svg_url: str, width: int = 512) -> str:
+        """
+        Convert a Wikimedia SVG URL to a PNG thumbnail URL.
+        
+        Wikimedia Commons provides automatic PNG rendering of SVGs via their thumbnail API.
+        Example:
+            Input:  https://upload.wikimedia.org/wikipedia/commons/f/f6/Example.svg
+            Output: https://upload.wikimedia.org/wikipedia/commons/thumb/f/f6/Example.svg/512px-Example.svg.png
+        
+        Args:
+            svg_url: Original Wikimedia SVG URL
+            width: Desired width in pixels (default 512)
+            
+        Returns:
+            PNG thumbnail URL, or original URL if conversion not possible
+        """
+        import re
+        
+        # Pattern: https://upload.wikimedia.org/wikipedia/commons/X/XX/Filename.svg
+        # Becomes: https://upload.wikimedia.org/wikipedia/commons/thumb/X/XX/Filename.svg/WIDTHpx-Filename.svg.png
+        pattern = r'(https://upload\.wikimedia\.org/wikipedia/commons/)([a-f0-9]/[a-f0-9]{2}/)([^/]+\.svg)$'
+        match = re.match(pattern, svg_url, re.IGNORECASE)
+        
+        if match:
+            base = match.group(1)
+            path = match.group(2)
+            filename = match.group(3)
+            png_url = f"{base}thumb/{path}{filename}/{width}px-{filename}.png"
+            logger.info(f"Converted Wikimedia SVG to PNG thumbnail URL")
+            return png_url
+        
+        # If not a standard Wikimedia URL, return original
+        return svg_url
+    
+    def _convert_svg_to_png(self, svg_data: bytes) -> bytes:
+        """
+        Convert SVG data to PNG. Tries multiple backends in order:
+        1. cairosvg (if Cairo library is installed) - best quality
+        2. Wand/ImageMagick (if ImageMagick is installed)
+        3. svglib + reportlab (needs Cairo for renderPM)
+        
+        Args:
+            svg_data: Raw SVG file bytes
+            
+        Returns:
+            PNG image bytes
+            
+        Raises:
+            ValueError: If conversion is not possible with any backend
+        """
+        from io import BytesIO
+        
+        errors = []
+        
+        # Try cairosvg first (best quality)
+        try:
+            import cairosvg
+            png_data = cairosvg.svg2png(bytestring=svg_data, output_width=512)
+            logger.debug("Converted SVG to PNG using cairosvg")
+            return png_data
+        except ImportError:
+            errors.append("cairosvg not installed")
+        except OSError as e:
+            errors.append(f"Cairo library not found")
+        except Exception as e:
+            errors.append(f"cairosvg error: {e}")
+        
+        # Try Wand/ImageMagick
+        try:
+            from wand.image import Image as WandImage
+            with WandImage(blob=svg_data, format='svg') as img:
+                img.format = 'png'
+                img.resize(512, int(512 * img.height / img.width) if img.width > 0 else 512)
+                png_data = img.make_blob()
+            logger.debug("Converted SVG to PNG using Wand/ImageMagick")
+            return png_data
+        except ImportError:
+            errors.append("Wand not installed")
+        except Exception as e:
+            errors.append(f"Wand/ImageMagick error: {e}")
+        
+        # Try svglib + reportlab (also needs Cairo for renderPM)
+        try:
+            from svglib.svglib import svg2rlg
+            from reportlab.graphics import renderPM
+            
+            svg_io = BytesIO(svg_data)
+            drawing = svg2rlg(svg_io)
+            
+            if drawing is None:
+                raise ValueError("svglib could not parse SVG")
+            
+            scale = 512.0 / drawing.width if drawing.width > 0 else 1.0
+            drawing.width = 512
+            drawing.height = drawing.height * scale
+            drawing.scale(scale, scale)
+            
+            png_io = BytesIO()
+            renderPM.drawToFile(drawing, png_io, fmt='PNG')
+            png_io.seek(0)
+            logger.debug("Converted SVG to PNG using svglib")
+            return png_io.read()
+        except ImportError:
+            errors.append("svglib/reportlab not installed")
+        except Exception as e:
+            errors.append(f"svglib error: {e}")
+        
+        # No conversion method available
+        raise ValueError(
+            f"SVG conversion failed. Errors: {'; '.join(errors)}. "
+            "Install Cairo library (Windows: https://github.com/nickveld/win-gtk3) "
+            "or ImageMagick (https://imagemagick.org/script/download.php)"
+        )
+    
+    def _fetch_with_retry(self, url: str, headers: dict, max_retries: int = 3) -> requests.Response:
+        """
+        Fetch URL with retry logic and exponential backoff for rate limiting.
+        
+        Args:
+            url: URL to fetch
+            headers: Request headers
+            max_retries: Maximum number of retries
+            
+        Returns:
+            Response object
+            
+        Raises:
+            requests.HTTPError: If all retries fail
+        """
+        import time
+        
+        for attempt in range(max_retries):
+            # Exponential backoff: 0.5s, 1s, 2s
+            if attempt > 0:
+                delay = 0.5 * (2 ** attempt)
+                logger.debug(f"Retry {attempt + 1}/{max_retries} after {delay}s delay")
+                time.sleep(delay)
+            else:
+                time.sleep(0.2)  # Initial courtesy delay
+            
+            response = requests.get(url, headers=headers, timeout=config.embedding_timeout)
+            
+            if response.status_code == 429:  # Rate limited
+                logger.warning(f"Rate limited (429), retrying...")
+                continue
+            elif response.status_code == 403:  # Forbidden - might be temporary
+                logger.warning(f"Forbidden (403) for {url[:60]}...")
+                # Check if it's a robot block vs actual forbidden
+                if 'robot' in response.text.lower():
+                    continue  # Might be temporary, retry
+                response.raise_for_status()
+            else:
+                response.raise_for_status()
+                return response
+        
+        # All retries exhausted
+        response.raise_for_status()
+        return response
+    
     def _load_image_from_source(self, image_url: str) -> Image.Image:
         """
         Load a PIL image either from a remote URL or a local file path.
+        Automatically converts SVG files to PNG for embedding:
+        - Wikimedia SVGs: Uses Wikimedia's thumbnail API (no dependencies needed)
+        - Other SVGs: Uses cairosvg if available
+        Standardizes all images to PNG-compatible RGB format.
         
         Args:
             image_url: HTTP(S) URL or local file path
@@ -304,36 +489,61 @@ class SigLIPEmbeddingService:
             PIL Image in RGB mode
         """
         from io import BytesIO
-        import requests
-        import time
 
         normalized = (image_url or "").strip()
         parsed = urlparse(normalized)
-        
-        # Skip SVG files - they can't be embedded as raster images
-        if normalized.lower().endswith('.svg'):
-            raise ValueError(f"SVG files cannot be embedded: {normalized}")
+        is_svg = normalized.lower().endswith('.svg') or 'image/svg' in normalized.lower()
+        is_wikimedia = 'upload.wikimedia.org' in normalized.lower()
+        is_wikimedia_svg = is_svg and is_wikimedia
 
         if parsed.scheme in ("http", "https"):
             # Wikimedia requires a proper User-Agent with contact info per their policy
             # https://meta.wikimedia.org/wiki/User-Agent_policy
             headers = {
-                'User-Agent': 'DrawnOut/1.0 (https://drawnout.app; contact@drawnout.app) Python/3.x requests',
-                'Accept': 'image/png,image/jpeg,image/gif,image/webp,*/*;q=0.8',
+                'User-Agent': 'DrawnOutBot/1.0 (https://drawnout.app; mailto:api@drawnout.app) python-requests/2.32',
+                'Accept': 'image/png,image/jpeg,image/gif,image/webp,image/svg+xml,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate',
             }
             
-            # Add small delay to avoid rate limiting
-            time.sleep(0.1)
+            # For Wikimedia SVGs, convert URL to PNG thumbnail URL
+            if is_wikimedia_svg:
+                png_url = self._convert_wikimedia_svg_to_png_url(normalized)
+                if png_url != normalized:
+                    # Successfully converted - fetch the PNG thumbnail instead
+                    try:
+                        response = self._fetch_with_retry(png_url, headers)
+                        return Image.open(BytesIO(response.content)).convert('RGB')
+                    except requests.HTTPError as e:
+                        logger.warning(f"Wikimedia PNG thumbnail failed: {e}, trying original SVG")
+                        # Fall through to try original SVG with cairosvg
             
-            response = requests.get(
-                normalized, 
-                headers=headers, 
-                timeout=config.embedding_timeout
-            )
-            response.raise_for_status()
-            return Image.open(BytesIO(response.content)).convert('RGB')
+            response = self._fetch_with_retry(normalized, headers)
+            
+            content = response.content
+            content_type = response.headers.get('Content-Type', '').lower()
+            
+            # Check if response is SVG (by URL extension or content type)
+            if is_svg or 'svg' in content_type:
+                logger.info(f"Converting SVG to PNG: {normalized[:60]}...")
+                try:
+                    png_data = self._convert_svg_to_png(content)
+                    return Image.open(BytesIO(png_data)).convert('RGB')
+                except ValueError as e:
+                    # cairosvg not available
+                    logger.warning(f"Cannot convert SVG: {e}")
+                    raise
+            
+            # For GIF, take first frame and convert to RGB
+            if normalized.lower().endswith('.gif') or 'gif' in content_type:
+                img = Image.open(BytesIO(content))
+                # Get first frame of GIF
+                img.seek(0)
+                return img.convert('RGB')
+            
+            return Image.open(BytesIO(content)).convert('RGB')
 
+        # Local file handling
         if parsed.scheme == "file":
             path = Path(parsed.path)
         else:
@@ -341,6 +551,20 @@ class SigLIPEmbeddingService:
 
         if not path.exists():
             raise FileNotFoundError(f"Image not found at path: {path}")
+
+        # Handle local SVG files
+        if str(path).lower().endswith('.svg'):
+            logger.info(f"Converting local SVG to PNG: {path}")
+            with open(path, 'rb') as f:
+                svg_data = f.read()
+            png_data = self._convert_svg_to_png(svg_data)
+            return Image.open(BytesIO(png_data)).convert('RGB')
+        
+        # Handle local GIF files
+        if str(path).lower().endswith('.gif'):
+            img = Image.open(path)
+            img.seek(0)
+            return img.convert('RGB')
 
         return Image.open(path).convert('RGB')
 

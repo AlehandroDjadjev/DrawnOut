@@ -1,0 +1,316 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../theme_provider.dart';
+import '../providers/developer_mode_provider.dart';
+import 'profile_page.dart';
+
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
+
+  @override
+  _HomePageState createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  int _selectedIndex = 0;
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  void _logout() async {
+    Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final isDarkMode = themeProvider.isDarkMode;
+    final theme = Theme.of(context);
+
+    final List<Widget> pages = [
+      _buildHomeContent(theme, isDarkMode),
+      const ProfilePage(),
+    ];
+
+    return Scaffold(
+      key: _scaffoldKey,
+      drawer: _buildDrawer(theme),
+      appBar: AppBar(
+        title: Text(_selectedIndex == 0 ? "Home" : "Profile"),
+        centerTitle: true,
+        backgroundColor: isDarkMode ? Colors.black : Colors.white,
+        foregroundColor: theme.colorScheme.primary,
+        elevation: 1,
+        iconTheme: IconThemeData(color: theme.colorScheme.primary),
+        actions: [
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 400),
+            transitionBuilder: (child, animation) {
+              return RotationTransition(
+                turns: Tween(begin: 0.75, end: 1.0).animate(animation),
+                child: FadeTransition(opacity: animation, child: child),
+              );
+            },
+            child: IconButton(
+              key: ValueKey(isDarkMode ? "dark" : "light"),
+              icon: Icon(isDarkMode ? Icons.dark_mode : Icons.light_mode),
+              onPressed: themeProvider.toggleTheme,
+            ),
+          ),
+        ],
+      ),
+      body: pages[_selectedIndex],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _selectedIndex,
+        type: BottomNavigationBarType.fixed,
+        backgroundColor: isDarkMode ? Colors.black : Colors.white,
+        selectedItemColor: theme.colorScheme.primary,
+        unselectedItemColor: isDarkMode ? Colors.grey[400] : Colors.grey[600],
+        onTap: (index) => setState(() => _selectedIndex = index),
+        items: [
+          BottomNavigationBarItem(
+            icon: _navIcon(Icons.home_outlined, 0, theme, isDarkMode),
+            label: 'Home',
+          ),
+          BottomNavigationBarItem(
+            icon: _navIcon(Icons.person_outline_rounded, 1, theme, isDarkMode),
+            label: 'Profile',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _navIcon(IconData icon, int index, ThemeData theme, bool isDarkMode) {
+    final bool isSelected = _selectedIndex == index;
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: isSelected
+            ? theme.colorScheme.primary.withOpacity(0.2)
+            : Colors.transparent,
+      ),
+      child: Icon(
+        icon,
+        color: isSelected
+            ? theme.colorScheme.primary
+            : (isDarkMode ? Colors.grey[400] : Colors.grey[600]),
+      ),
+    );
+  }
+
+  Widget _buildDrawer(ThemeData theme) {
+    final devMode = Provider.of<DeveloperModeProvider>(context);
+    
+    return Drawer(
+      child: ListView(
+        padding: EdgeInsets.zero,
+        children: [
+          DrawerHeader(
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary.withOpacity(0.1),
+            ),
+            child: Center(
+              // Secret tap area to enable developer mode
+              child: GestureDetector(
+                onTap: () {
+                  final toggled = devMode.handleSecretTap();
+                  if (toggled) {
+                    Navigator.pop(context); // Close drawer
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          devMode.isEnabled 
+                            ? 'Developer mode enabled' 
+                            : 'Developer mode disabled',
+                        ),
+                        behavior: SnackBarBehavior.floating,
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  }
+                },
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.school,
+                        size: 32, color: theme.colorScheme.primary),
+                    const SizedBox(width: 10),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "DrawnOut",
+                          style: TextStyle(
+                              fontSize: 24, color: theme.colorScheme.primary),
+                        ),
+                        if (devMode.isEnabled)
+                          Text(
+                            "Developer Mode",
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: theme.colorScheme.primary.withOpacity(0.7),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          ListTile(
+            leading: Icon(Icons.menu_book, color: theme.colorScheme.primary),
+            title: const Text("All Lessons"),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.pushNamed(context, '/lessons');
+            },
+          ),
+          ListTile(
+            leading: Icon(Icons.draw, color: theme.colorScheme.primary),
+            title: const Text("Whiteboard Demo"),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.pushNamed(context, '/whiteboard');
+            },
+          ),
+          ListTile(
+            leading: Icon(Icons.settings, color: theme.colorScheme.primary),
+            title: const Text("Settings"),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.pushNamed(context, '/settings');
+            },
+          ),
+          if (devMode.isEnabled)
+            ListTile(
+              leading: const Icon(Icons.developer_mode, color: Colors.orange),
+              title: const Text("Disable Dev Mode"),
+              onTap: () {
+                devMode.disable();
+                Navigator.pop(context);
+              },
+            ),
+          const Divider(),
+          ListTile(
+            leading: Icon(Icons.logout, color: theme.colorScheme.primary),
+            title: const Text("Logout"),
+            onTap: _logout,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHomeContent(ThemeData theme, bool isDarkMode) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: isDarkMode ? Colors.teal.shade700 : Colors.blue.shade100,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.school,
+                        size: 28,
+                        color: isDarkMode
+                            ? Colors.tealAccent.shade100
+                            : Colors.blueGrey),
+                    const SizedBox(width: 8),
+                    const Text(
+                      'Welcome to DrawnOut',
+                      style:
+                          TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Learn, interact, and practice with your AI tutor.\nStart with the demo lesson below!',
+                  style: TextStyle(fontSize: 16),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            'Available Lesson',
+            style: TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+              color: isDarkMode ? Colors.tealAccent.shade100 : Colors.grey[800],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            color: isDarkMode ? Colors.grey[900] : Colors.white,
+            elevation: 5,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            margin: const EdgeInsets.symmetric(vertical: 10),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Pythagoras Theorem',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Explore the relationship between the sides of a right-angled triangle and understand one of the most fundamental theorems in mathematics.',
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: isDarkMode ? Colors.grey[300] : Colors.grey[700],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      TextButton.icon(
+                        onPressed: () {
+                          Navigator.pushNamed(context, '/lessons');
+                        },
+                        icon: const Icon(Icons.menu_book, size: 18),
+                        label: const Text("Browse All"),
+                      ),
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 20, vertical: 12),
+                        ),
+                        onPressed: () {
+                          Navigator.pushNamed(context, '/whiteboard');
+                        },
+                        icon: const Icon(Icons.play_arrow),
+                        label: const Text(
+                          "Start Lesson",
+                          style: TextStyle(fontSize: 16),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

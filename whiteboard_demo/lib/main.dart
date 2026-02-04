@@ -8,406 +8,213 @@ import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:provider/provider.dart';
+import 'package:http/http.dart' as http;
+
+// Local imports
 import 'vectorizer.dart';
 import 'assistant_api.dart';
 import 'assistant_audio.dart';
 import 'sdk_live_bridge.dart';
 import 'planner.dart';
-import 'package:http/http.dart' as http;
 import 'models/timeline.dart';
 import 'services/timeline_api.dart';
 import 'controllers/timeline_playback_controller.dart';
 import 'services/lesson_pipeline_api.dart';
+import 'services/app_config_service.dart';
+import 'theme_provider.dart';
+import 'providers/developer_mode_provider.dart';
+import 'pages/login.dart';
+import 'pages/signup.dart';
+import 'pages/home.dart';
+import 'pages/lessons_page.dart';
+import 'pages/settings_page.dart';
 
-void main() => runApp(const App());
+// Whiteboard module
+import 'whiteboard/whiteboard.dart';
 
-class App extends StatelessWidget {
-  const App({super.key});
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await dotenv.load(fileName: 'assets/.env');
+  runApp(
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => ThemeProvider()),
+        ChangeNotifierProvider(create: (_) => DeveloperModeProvider()),
+        ChangeNotifierProvider(create: (_) => AppConfigService()),
+      ],
+      child: const DrawnOutApp(),
+    ),
+  );
+}
+
+class DrawnOutApp extends StatelessWidget {
+  const DrawnOutApp({super.key});
+
+  ThemeData _buildTheme(bool dark) {
+    final base = dark ? ThemeData.dark() : ThemeData.light();
+    return base.copyWith(
+      useMaterial3: true,
+      colorScheme: base.colorScheme.copyWith(
+        primary: dark ? Colors.tealAccent.shade200 : Colors.blue,
+        secondary: dark ? Colors.tealAccent : Colors.blueAccent,
+      ),
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: ElevatedButton.styleFrom(
+          backgroundColor:
+              dark ? Colors.tealAccent.shade200 : Colors.blueAccent,
+          foregroundColor: dark ? Colors.black : Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+          ),
+          elevation: 3,
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          foregroundColor: dark ? Colors.tealAccent.shade200 : Colors.blue,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+
     return MaterialApp(
-      title: 'Vector Sketch Whiteboard',
-      theme: ThemeData.light(useMaterial3: true),
       debugShowCheckedModeBanner: false,
-      home: const WhiteboardPage(),
+      title: 'DrawnOut',
+      theme: _buildTheme(themeProvider.isDarkMode),
+      routes: {
+        '/login': (context) => const LoginPage(),
+        '/signup': (context) => const SignupPage(),
+        '/home': (context) => const HomePage(),
+        '/lessons': (context) => const LessonsPage(),
+        '/settings': (context) => const SettingsPage(),
+        '/whiteboard': (context) => const WhiteboardPageWrapper(),
+        '/whiteboard/user': (context) => const WhiteboardPageWrapper(startInDeveloperMode: false),
+        '/whiteboard/dev': (context) => const WhiteboardPageWrapper(startInDeveloperMode: true),
+      },
+      initialRoute: '/login',
     );
   }
 }
 
-class PlacedImage {
-  final ui.Image image;
-  Offset worldCenter;
-  Size worldSize;
-  PlacedImage(
-      {required this.image,
-      required this.worldCenter,
-      required this.worldSize});
-}
+// Core classes (PlacedImage, StrokePlan, VectorObject), painters (SketchPainter, 
+// CommittedPainter), and SketchPlayer widget are now imported from whiteboard/whiteboard.dart
 
-class StrokePlan {
-  final List<List<Offset>> strokes;
-  StrokePlan(this.strokes);
-  bool get isEmpty => strokes.isEmpty;
+/// Smart whiteboard wrapper that switches between user and developer modes.
+class WhiteboardPageWrapper extends StatefulWidget {
+  /// Start in developer mode if true.
+  final bool startInDeveloperMode;
 
-  double totalLength() {
-    double L = 0.0;
-    for (final s in strokes) {
-      for (int i = 1; i < s.length; i++) {
-        L += (s[i] - s[i - 1]).distance;
-      }
-    }
-    return L;
-  }
-
-  // Remove strokes that are too short or have tiny extent; defined on state since it is used by diagram placement
-  List<List<Offset>> _filterDiagramStrokes(List<List<Offset>> strokes,
-      {double minLength = 24.0, double minExtent = 8.0}) {
-    final filtered = <List<Offset>>[];
-    for (final s in strokes) {
-      if (s.length < 2) continue;
-      double len = 0.0;
-      double minX = s.first.dx,
-          maxX = s.first.dx,
-          minY = s.first.dy,
-          maxY = s.first.dy;
-      for (int i = 1; i < s.length; i++) {
-        len += (s[i] - s[i - 1]).distance;
-        final px = s[i].dx, py = s[i].dy;
-        if (px < minX) minX = px;
-        if (px > maxX) maxX = px;
-        if (py < minY) minY = py;
-        if (py > maxY) maxY = py;
-      }
-      final extent = math.max(maxX - minX, maxY - minY);
-      if (len >= minLength && extent >= minExtent) filtered.add(s);
-    }
-    return filtered;
-  }
-
-  Path toPath() {
-    final p = Path();
-    for (final s in strokes) {
-      if (s.isEmpty) continue;
-      p.moveTo(s.first.dx, s.first.dy);
-      for (int i = 1; i < s.length; i++) {
-        p.lineTo(s[i].dx, s[i].dy);
-      }
-    }
-    return p;
-  }
-}
-
-/// A committed, persistent vector on the board (no raster).
-class VectorObject {
-  final StrokePlan plan;
-
-  // Style frozen at commit-time
-  final double baseWidth;
-  final double passOpacity;
-  final int passes;
-  final double jitterAmp;
-  final double jitterFreq;
-
-  VectorObject({
-    required this.plan,
-    required this.baseWidth,
-    required this.passOpacity,
-    required this.passes,
-    required this.jitterAmp,
-    required this.jitterFreq,
-  });
-}
-
-class SketchPlayer extends StatefulWidget {
-  final StrokePlan plan;
-  final double totalSeconds;
-  final double baseWidth;
-  final double passOpacity;
-  final int passes;
-  final double jitterAmp;
-  final double jitterFreq;
-  final bool showRasterUnderlay;
-  final PlacedImage? raster;
-
-  const SketchPlayer({
+  const WhiteboardPageWrapper({
     super.key,
-    required this.plan,
-    required this.totalSeconds,
-    this.baseWidth = 2.5,
-    this.passOpacity = 0.8,
-    this.passes = 2,
-    this.jitterAmp = 0.9,
-    this.jitterFreq = 0.02,
-    this.showRasterUnderlay = true,
-    this.raster,
+    this.startInDeveloperMode = false,
   });
 
   @override
-  State<SketchPlayer> createState() => _SketchPlayerState();
+  State<WhiteboardPageWrapper> createState() => _WhiteboardPageWrapperState();
 }
 
-class _SketchPlayerState extends State<SketchPlayer>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _anim;
-  late Path _fullPath;
-  late double _totalLen;
+class _WhiteboardPageWrapperState extends State<WhiteboardPageWrapper> {
+  late bool _isDeveloperMode;
+
+  // Shared state between modes
+  StrokePlan? _sharedPlan;
+  List<VectorObject> _sharedBoard = [];
+  PlacedImage? _sharedRaster;
+  double _sharedSeconds = 10.0;
+  double _sharedWidth = 2.5;
+  double _sharedOpacity = 0.8;
+  int _sharedPasses = 2;
+  double _sharedJitterAmp = 0.9;
+  double _sharedJitterFreq = 0.02;
+  bool _sharedShowRaster = false;
 
   @override
   void initState() {
     super.initState();
-    _fullPath = widget.plan.toPath();
-    _totalLen = _computeTotalLen(_fullPath);
-    _anim = AnimationController(
-      vsync: this,
-      duration: Duration(milliseconds: (widget.totalSeconds * 1000).round()),
-    )
-      ..addListener(() => setState(() {}))
-      ..forward();
+    _isDeveloperMode = widget.startInDeveloperMode;
   }
 
-  @override
-  void didUpdateWidget(covariant SketchPlayer oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.plan != widget.plan ||
-        oldWidget.totalSeconds != widget.totalSeconds) {
-      _fullPath = widget.plan.toPath();
-      _totalLen = _computeTotalLen(_fullPath);
-      _anim.duration =
-          Duration(milliseconds: (widget.totalSeconds * 1000).round());
-      _anim
-        ..reset()
-        ..forward();
-    }
+  void _switchToUserMode({
+    StrokePlan? plan,
+    List<VectorObject>? board,
+    PlacedImage? raster,
+    double? seconds,
+    double? width,
+    double? opacity,
+    int? passes,
+    double? jitterAmp,
+    double? jitterFreq,
+    bool? showRaster,
+  }) {
+    setState(() {
+      _isDeveloperMode = false;
+      if (plan != null) _sharedPlan = plan;
+      if (board != null) _sharedBoard = board;
+      if (raster != null) _sharedRaster = raster;
+      if (seconds != null) _sharedSeconds = seconds;
+      if (width != null) _sharedWidth = width;
+      if (opacity != null) _sharedOpacity = opacity;
+      if (passes != null) _sharedPasses = passes;
+      if (jitterAmp != null) _sharedJitterAmp = jitterAmp;
+      if (jitterFreq != null) _sharedJitterFreq = jitterFreq;
+      if (showRaster != null) _sharedShowRaster = showRaster;
+    });
   }
 
-  @override
-  void dispose() {
-    _anim.dispose();
-    super.dispose();
+  void _switchToDeveloperMode() {
+    setState(() {
+      _isDeveloperMode = true;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final progressLen = (_totalLen * _anim.value).clamp(0.0, _totalLen);
-    final partial = _extractPartialPath(_fullPath, progressLen);
-
-    return CustomPaint(
-      painter: _SketchPainter(
-        partialWorldPath: partial,
-        raster: widget.showRasterUnderlay ? widget.raster : null,
-        passes: widget.passes,
-        passOpacity: widget.passOpacity,
-        baseWidth: widget.baseWidth,
-        jitterAmp: widget.jitterAmp,
-        jitterFreq: widget.jitterFreq,
-      ),
-      isComplex: true,
-    );
-  }
-
-  double _computeTotalLen(Path p) {
-    double L = 0.0;
-    for (final m in p.computeMetrics()) {
-      L += m.length;
-    }
-    return L;
-  }
-
-  Path _extractPartialPath(Path p, double targetLen) {
-    final out = Path();
-    double acc = 0.0;
-    for (final m in p.computeMetrics()) {
-      if (acc >= targetLen) break;
-      final remain = targetLen - acc;
-      final take = remain >= m.length ? m.length : remain;
-      if (take > 0) {
-        out.addPath(m.extractPath(0, take), Offset.zero);
-        acc += take;
-      }
-    }
-    return out;
-  }
-}
-
-class _SketchPainter extends CustomPainter {
-  final Path partialWorldPath;
-  final PlacedImage? raster;
-  final int passes;
-  final double passOpacity;
-  final double baseWidth;
-  final double jitterAmp;
-  final double jitterFreq;
-
-  const _SketchPainter({
-    required this.partialWorldPath,
-    required this.raster,
-    required this.passes,
-    required this.passOpacity,
-    required this.baseWidth,
-    required this.jitterAmp,
-    required this.jitterFreq,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final bg = Paint()..color = Colors.white;
-    canvas.drawRect(Offset.zero & size, bg);
-
-    final center = Offset(size.width / 2, size.height / 2);
-
-    if (raster != null) {
-      final p = raster!;
-      final topLeft = center +
-          p.worldCenter -
-          Offset(p.worldSize.width / 2, p.worldSize.height / 2);
-      final dest = topLeft & p.worldSize;
-      final src = Rect.fromLTWH(
-          0, 0, p.image.width.toDouble(), p.image.height.toDouble());
-      final imgPaint = Paint()
-        ..filterQuality = FilterQuality.high
-        ..color = Colors.white.withOpacity(1.0);
-      canvas.drawImageRect(p.image, src, dest, imgPaint);
-      final veil = Paint()..color = Colors.white.withOpacity(0.35);
-      canvas.drawRect(dest, veil);
-    }
-
-    canvas.translate(center.dx, center.dy);
-
-    for (int k = 0; k < passes; k++) {
-      final seed = 1337 + k * 97;
-      final noisy = _jitterPath(partialWorldPath,
-          amp: jitterAmp, freq: jitterFreq, seed: seed);
-
-      final paint = Paint()
-        ..color = Colors.black.withOpacity((passOpacity).clamp(0.0, 1.0))
-        ..style = PaintingStyle.stroke
-        ..strokeWidth =
-            (baseWidth * (1.0 + (k == 0 ? 0.0 : -0.15 * k))).clamp(0.5, 100.0)
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..isAntiAlias = true;
-
-      canvas.drawPath(noisy, paint);
-    }
-  }
-
-  Path _jitterPath(Path p,
-      {required double amp, required double freq, required int seed}) {
-    if (amp <= 0 || freq <= 0) return p;
-    final rnd = math.Random(seed);
-    final out = Path();
-    for (final m in p.computeMetrics()) {
-      final nSamples = (m.length * freq).clamp(8, 20000).toInt();
-      for (int i = 0; i <= nSamples; i++) {
-        final d = m.length * (i / nSamples);
-        final pos = m.getTangentForOffset(d)!.position;
-        final dx = (rnd.nextDouble() - 0.5) * 2.0 * amp;
-        final dy = (rnd.nextDouble() - 0.5) * 2.0 * amp;
-        final q = pos + Offset(dx, dy);
-        if (i == 0) {
-          out.moveTo(q.dx, q.dy);
-        } else {
-          out.lineTo(q.dx, q.dy);
-        }
-      }
-    }
-    return out;
-  }
-
-  @override
-  bool shouldRepaint(covariant _SketchPainter old) {
-    return old.partialWorldPath != partialWorldPath ||
-        old.raster != raster ||
-        old.passes != passes ||
-        old.passOpacity != passOpacity ||
-        old.baseWidth != baseWidth ||
-        old.jitterAmp != jitterAmp ||
-        old.jitterFreq != jitterFreq;
-  }
-}
-
-/// Paints all committed vector objects (transparent background),
-/// so we can layer it **on top** of the existing renderer without changing it.
-class _CommittedPainter extends CustomPainter {
-  final List<VectorObject> objects;
-  const _CommittedPainter(this.objects);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    canvas.save();
-    canvas.translate(center.dx, center.dy);
-
-    for (int i = 0; i < objects.length; i++) {
-      final o = objects[i];
-      _drawStyledPath(
-        canvas,
-        o.plan.toPath(),
-        passes: o.passes,
-        passOpacity: o.passOpacity,
-        baseWidth: o.baseWidth,
-        jitterAmp: o.jitterAmp,
-        jitterFreq: o.jitterFreq,
-        seedBase: 9001 + i * 67,
+    if (_isDeveloperMode) {
+      return WhiteboardPage(
+        onSwitchToUserMode: _switchToUserMode,
       );
     }
-    canvas.restore();
-  }
 
-  void _drawStyledPath(
-    Canvas canvas,
-    Path path, {
-    required int passes,
-    required double passOpacity,
-    required double baseWidth,
-    required double jitterAmp,
-    required double jitterFreq,
-    required int seedBase,
-  }) {
-    for (int k = 0; k < passes; k++) {
-      final noisy = _jitterPath(path,
-          amp: jitterAmp, freq: jitterFreq, seed: seedBase + k * 97);
-      final paint = Paint()
-        ..color = Colors.black.withOpacity(passOpacity.clamp(0.0, 1.0))
-        ..style = PaintingStyle.stroke
-        ..strokeWidth =
-            (baseWidth * (1.0 + (k == 0 ? 0.0 : -0.15 * k))).clamp(0.5, 100.0)
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..isAntiAlias = true;
-      canvas.drawPath(noisy, paint);
-    }
+    return UserWhiteboardPage(
+      plan: _sharedPlan,
+      totalSeconds: _sharedSeconds,
+      committedObjects: _sharedBoard,
+      raster: _sharedRaster,
+      showRasterUnderlay: _sharedShowRaster,
+      baseWidth: _sharedWidth,
+      passOpacity: _sharedOpacity,
+      passes: _sharedPasses,
+      jitterAmp: _sharedJitterAmp,
+      jitterFreq: _sharedJitterFreq,
+      onSwitchToDeveloperMode: _switchToDeveloperMode,
+    );
   }
-
-  Path _jitterPath(Path p,
-      {required double amp, required double freq, required int seed}) {
-    if (amp <= 0 || freq <= 0) return p;
-    final rnd = math.Random(seed);
-    final out = Path();
-    for (final m in p.computeMetrics()) {
-      final nSamples = (m.length * freq).clamp(8, 20000).toInt();
-      for (int i = 0; i <= nSamples; i++) {
-        final d = m.length * (i / nSamples);
-        final pos = m.getTangentForOffset(d)!.position;
-        final dx = (rnd.nextDouble() - 0.5) * 2.0 * amp;
-        final dy = (rnd.nextDouble() - 0.5) * 2.0 * amp;
-        final q = pos + Offset(dx, dy);
-        if (i == 0) {
-          out.moveTo(q.dx, q.dy);
-        } else {
-          out.lineTo(q.dx, q.dy);
-        }
-      }
-    }
-    return out;
-  }
-
-  @override
-  bool shouldRepaint(covariant _CommittedPainter old) => old.objects != objects;
 }
 
+/// Developer whiteboard page with full controls.
 class WhiteboardPage extends StatefulWidget {
-  const WhiteboardPage({super.key});
+  /// Callback when user wants to switch to user/presentation mode.
+  final void Function({
+    StrokePlan? plan,
+    List<VectorObject>? board,
+    PlacedImage? raster,
+    double? seconds,
+    double? width,
+    double? opacity,
+    int? passes,
+    double? jitterAmp,
+    double? jitterFreq,
+    bool? showRaster,
+  })? onSwitchToUserMode;
+
+  const WhiteboardPage({super.key, this.onSwitchToUserMode});
+
   @override
   State<WhiteboardPage> createState() => _WhiteboardPageState();
 }
@@ -416,6 +223,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   static const double canvasW = 1600; // fallback/default
   static const double canvasH = 1000; // fallback/default
   Size? _canvasSize; // live size from LayoutBuilder
+
+  // Services
+  final _strokeService = const StrokeService();
+  final _textSketchService = const TextSketchService();
+  late ImageSketchService _imageSketchService;
 
   // NEW: persistent board of committed vectors
   final List<VectorObject> _board = [];
@@ -490,7 +302,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           '{\n  "whiteboard_actions": [\n    { "type": "heading", "text": "Sample Topic" },\n    { "type": "bullet", "level": 1, "text": "Key idea one" },\n    { "type": "bullet", "level": 1, "text": "Key idea two" }\n  ]\n}');
 
   // Layout state for orchestrator
-  _LayoutState? _layout;
+  LayoutState? _layout;
   // Adjustable layout config (defaults match code below)
   double _cfgMarginTop = 60,
       _cfgMarginRight = 64,
@@ -532,6 +344,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   @override
   void initState() {
     super.initState();
+
+    // Initialize image sketch service with default base URL
+    _imageSketchService = ImageSketchService(
+      baseUrl: 'http://localhost:8000',
+    );
 
     // Initialize timeline controller
     _timelineController = TimelinePlaybackController();
@@ -820,7 +637,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       });
 
       // Stitch nearby endpoints to close small gaps, scaled by font size
-      final stitched = _stitchStrokes(normalized,
+      final stitched = _strokeService.stitchStrokes(normalized,
           maxGap: (usedFont * 0.08).clamp(3.0, 18.0));
 
       final offset = _raster?.worldCenter ?? Offset.zero;
@@ -860,24 +677,24 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     _layout ??= _makeLayout();
   }
 
-  _LayoutState _makeLayout() {
+  LayoutState _makeLayout() {
     final cfg = _buildLayoutConfigForSize(
         _canvasSize?.width ?? canvasW, _canvasSize?.height ?? canvasH);
-    return _LayoutState(
+    return LayoutState(
         config: cfg,
         cursorY: cfg.page.top,
         columnIndex: 0,
-        blocks: <_DrawnBlock>[],
+        blocks: <DrawnBlock>[],
         sectionCount: 0);
   }
 
-  _LayoutConfig _buildLayoutConfigForSize(double w, double h) {
+  LayoutConfig _buildLayoutConfigForSize(double w, double h) {
     final columns = (_cfgColumnsCount <= 1)
         ? null
-        : _Columns(
+        : Columns(
             count: _cfgColumnsCount.clamp(1, 4), gutter: _cfgColumnsGutter);
-    return _LayoutConfig(
-      page: _Page(
+    return LayoutConfig(
+      page: PageConfig(
         width: w,
         height: h,
         top: _cfgMarginTop,
@@ -887,10 +704,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       ),
       lineHeight: _cfgLineHeight,
       gutterY: _cfgGutterY,
-      indent: _Indent(
+      indent: Indent(
           level1: _cfgIndent1, level2: _cfgIndent2, level3: _cfgIndent3),
       columns: columns,
-      fonts: _Fonts(heading: _cfgHeading, body: _cfgBody, tiny: _cfgTiny),
+      fonts: Fonts(heading: _cfgHeading, body: _cfgBody, tiny: _cfgTiny),
     );
   }
 
@@ -1494,8 +1311,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     final img = await _decodeUiImage(Uint8List.fromList(bytes));
     final st = _layout!;
     final cfg = st.config;
-    double contentX0 = cfg.page.left + st._columnOffsetX();
-    double cw = st._columnWidth();
+    double contentX0 = cfg.page.left + st.columnOffsetX();
+    double cw = st.columnWidth();
     // Keep diagrams compact
     double maxW = cw * 0.5;
     double x = contentX0 + (cw - maxW) / 2.0; // centered in column
@@ -1506,8 +1323,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         cfg.columns != null &&
         st.columnIndex < (cfg.columns!.count - 1)) {
       st.columnIndex += 1;
-      contentX0 = cfg.page.left + st._columnOffsetX();
-      cw = st._columnWidth();
+      contentX0 = cfg.page.left + st.columnOffsetX();
+      cw = st.columnWidth();
       maxW = cw * 0.5;
       x = contentX0 + (cw - maxW) / 2.0;
       y = cfg.page.top;
@@ -1546,7 +1363,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
     // Drop tiny decorative strokes (dots/specks) to keep result simple
     final filtered =
-        _filterDiagramStrokes(strokes, minLength: 24.0, minExtent: 8.0);
+        _strokeService.filterStrokes(strokes, minLength: 24.0, minExtent: 8.0);
 
     // Scale to fit targetW while preserving aspect; vectorizer uses image px→world, so scale proportionally
     // Convert top-left content-space → world center, then add center offset
@@ -1559,8 +1376,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         .toList();
 
     // Update layout blocks to prevent future overlaps and advance cursor
-    final bbox = _BBox(x: x, y: y, w: targetW, h: targetH);
-    st.blocks.add(_DrawnBlock(
+    final bbox = BBox(x: x, y: y, w: targetW, h: targetH);
+    st.blocks.add(DrawnBlock(
         id: 'img${st.blocks.length + 1}',
         type: 'diagram',
         bbox: bbox,
@@ -1685,8 +1502,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     final p = placement ?? {};
     final hasExplicitPlacement = p.containsKey('x') && p.containsKey('y');
     
-    double contentX0 = cfg.page.left + st._columnOffsetX();
-    double cw = st._columnWidth();
+    double contentX0 = cfg.page.left + st.columnOffsetX();
+    double cw = st.columnWidth();
     
     // Target dimensions
     double targetW, targetH;
@@ -1720,8 +1537,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           cfg.columns != null &&
           st.columnIndex < (cfg.columns!.count - 1)) {
         st.columnIndex += 1;
-        contentX0 = cfg.page.left + st._columnOffsetX();
-        cw = st._columnWidth();
+        contentX0 = cfg.page.left + st.columnOffsetX();
+        cw = st.columnWidth();
         maxW = cw * 0.4;
         x = contentX0 + (cw - maxW) / 2.0;
         y = cfg.page.top;
@@ -1777,7 +1594,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     debugPrint('   ✏️ Vectorized: ${strokes.length} strokes');
 
     // ── Step 6: Filter and transform strokes ───────────────────────────────
-    final filtered = _filterDiagramStrokes(strokes, minLength: 24.0, minExtent: 8.0);
+    final filtered = _strokeService.filterStrokes(strokes, minLength: 24.0, minExtent: 8.0);
     
     // Calculate scale factor for strokes (image px → target size)
     final effScale = targetW / math.max(1, img.width);
@@ -1795,8 +1612,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         .toList();
 
     // ── Step 7: Update layout state ────────────────────────────────────────
-    final bbox = _BBox(x: x, y: y, w: targetW, h: targetH);
-    st.blocks.add(_DrawnBlock(
+    final bbox = BBox(x: x, y: y, w: targetW, h: targetH);
+    st.blocks.add(DrawnBlock(
       id: 'sketch_img_${st.blocks.length + 1}',
       type: 'sketch_image',
       bbox: bbox,
@@ -1956,7 +1773,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   }
 
   Future<void> _placeBlock(
-    _LayoutState st, {
+    LayoutState st, {
     required String type,
     required String text,
     int level = 1,
@@ -1965,8 +1782,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     double fontScale = 1.0,
   }) async {
     final cfg = st.config;
-    final contentX0 = cfg.page.left + st._columnOffsetX();
-    final contentW = st._columnWidth();
+    final contentX0 = cfg.page.left + st.columnOffsetX();
+    final contentW = st.columnWidth();
 
     double font = _chooseFont(type, cfg.fonts, style) * fontScale;
     if (_tutorUseFixedFont) font = _tutorFixedFont;
@@ -2017,8 +1834,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         preferOutline: preferOutline);
     accum.addAll(strokes);
 
-    final bbox = _BBox(x: x, y: y, w: maxWidth, h: height);
-    st.blocks.add(_DrawnBlock(
+    final bbox = BBox(x: x, y: y, w: maxWidth, h: height);
+    st.blocks.add(DrawnBlock(
         id: 'b${st.blocks.length + 1}',
         type: type,
         bbox: bbox,
@@ -2077,7 +1894,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   }
 
   // Render a single line to PNG and return bytes with pixel size (used to convert top-left → center coords)
-  Future<_RenderedLine> _renderTextLine(String text, double fontSize) async {
+  Future<RenderedLine> _renderTextLine(String text, double fontSize) async {
     final style = const TextStyle(color: Colors.black);
     final tp = TextPainter(
       text: TextSpan(text: text, style: style.copyWith(fontSize: fontSize)),
@@ -2095,11 +1912,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     final pic = recorder.endRecording();
     final img = await pic.toImage(w, h);
     final data = await img.toByteData(format: ui.ImageByteFormat.png);
-    return _RenderedLine(
+    return RenderedLine(
         bytes: data!.buffer.asUint8List(), w: w.toDouble(), h: h.toDouble());
   }
 
-  double _chooseFont(String type, _Fonts fonts, Map<String, dynamic>? style) {
+  double _chooseFont(String type, Fonts fonts, Map<String, dynamic>? style) {
     if (style != null && style['fontSize'] is num)
       return (style['fontSize'] as num).toDouble();
     if (type == 'heading') return fonts.heading;
@@ -2107,7 +1924,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     return fonts.body;
   }
 
-  double _indentFor(String type, int level, _Indent indent) {
+  double _indentFor(String type, int level, Indent indent) {
     if (type == 'bullet') {
       if (level <= 1) return indent.level1;
       if (level == 2) return indent.level2;
@@ -2145,13 +1962,13 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   }
 
   double _nextNonCollidingY(
-      _LayoutState st, double x, double h, double startY) {
+      LayoutState st, double x, double h, double startY) {
     double y = startY;
     while (true) {
       bool hit = false;
       double maxBottom = y;
       for (final b in st.blocks) {
-        if (b.bbox.intersects(_BBox(x: x, y: y, w: st._columnWidth(), h: h))) {
+        if (b.bbox.intersects(BBox(x: x, y: y, w: st.columnWidth(), h: h))) {
           maxBottom = math.max(maxBottom, b.bbox.bottom);
           hit = true;
         }
@@ -2162,71 +1979,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     }
   }
 
-  // Remove strokes that are too short overall or have tiny spatial extent.
-  // This keeps generated diagrams minimal by dropping specks/dots.
-  List<List<Offset>> _filterDiagramStrokes(List<List<Offset>> strokes,
-      {double minLength = 24.0, double minExtent = 8.0}) {
-    final out = <List<Offset>>[];
-    for (final s in strokes) {
-      if (s.length < 2) continue;
-      double len = 0.0;
-      double minX = s.first.dx,
-          maxX = s.first.dx,
-          minY = s.first.dy,
-          maxY = s.first.dy;
-      for (int i = 1; i < s.length; i++) {
-        len += (s[i] - s[i - 1]).distance;
-        final px = s[i].dx, py = s[i].dy;
-        if (px < minX) minX = px;
-        if (px > maxX) maxX = px;
-        if (py < minY) minY = py;
-        if (py > maxY) maxY = py;
-      }
-      final extent = math.max(maxX - minX, maxY - minY);
-      if (len >= minLength && extent >= minExtent) out.add(s);
-    }
-    return out;
-  }
-
-  // Simple post-process to connect stroke endpoints that are very close,
-  // reducing visual gaps in contours.
-  List<List<Offset>> _stitchStrokes(List<List<Offset>> strokes,
-      {double maxGap = 3.0}) {
-    if (strokes.isEmpty) return strokes;
-    final remaining = List<List<Offset>>.from(strokes);
-    final out = <List<Offset>>[];
-    var current = remaining.removeAt(0);
-    while (remaining.isNotEmpty) {
-      int bestIdx = -1;
-      bool reverse = false;
-      double best = maxGap;
-      for (int i = 0; i < remaining.length; i++) {
-        final s = remaining[i];
-        final dStart = (s.first - current.last).distance;
-        final dEnd = (s.last - current.last).distance;
-        if (dStart < best) {
-          best = dStart;
-          bestIdx = i;
-          reverse = false;
-        }
-        if (dEnd < best) {
-          best = dEnd;
-          bestIdx = i;
-          reverse = true;
-        }
-      }
-      if (bestIdx == -1) {
-        out.add(current);
-        current = remaining.removeAt(0);
-      } else {
-        var s = remaining.removeAt(bestIdx);
-        if (reverse) s = s.reversed.toList();
-        current = [...current, ...s];
-      }
-    }
-    out.add(current);
-    return out;
-  }
+  // Stroke filtering and stitching are now handled by _strokeService
+  // See whiteboard/services/stroke_service.dart
 
   void _clearBoard() {
     setState(() => _board.clear());
@@ -2255,7 +2009,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       final baseCanvas = _busy
           ? const Center(child: CircularProgressIndicator())
           : (_plan == null
-              ? CustomPaint(painter: _RasterOnlyPainter(raster: _raster))
+              ? CustomPaint(painter: RasterOnlyPainter(raster: _raster))
               : SketchPlayer(
                   plan: _plan!,
                   totalSeconds: _seconds,
@@ -2272,7 +2026,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         Positioned.fill(child: baseCanvas),
         if (_board.isNotEmpty)
           Positioned.fill(
-              child: CustomPaint(painter: _CommittedPainter(_board))),
+              child: CustomPaint(painter: CommittedPainter(_board))),
       ]);
     }
 
@@ -2283,6 +2037,24 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
         actions: [
+          // User/Presentation Mode button
+          if (widget.onSwitchToUserMode != null)
+            IconButton(
+              tooltip: 'Switch to Presentation Mode',
+              onPressed: () => widget.onSwitchToUserMode!(
+                plan: _plan,
+                board: List.from(_board),
+                raster: _raster,
+                seconds: _seconds,
+                width: _width,
+                opacity: _opacity,
+                passes: _passes,
+                jitterAmp: _jitterAmp,
+                jitterFreq: _jitterFreq,
+                showRaster: _showRasterUnder,
+              ),
+              icon: const Icon(Icons.slideshow),
+            ),
           IconButton(
             tooltip: 'Undo last',
             onPressed: _board.isEmpty ? null : _undoLast,
@@ -2324,7 +2096,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     if (_layout == null) return;
     final newCfg = _buildLayoutConfigForSize(size.width, size.height);
     setState(() {
-      _layout = _LayoutState(
+      _layout = LayoutState(
         config: newCfg,
         cursorY: _layout!.cursorY
             .clamp(newCfg.page.top, newCfg.page.height - newCfg.page.bottom),
@@ -3158,166 +2930,5 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   }
 }
 
-class _RasterOnlyPainter extends CustomPainter {
-  final PlacedImage? raster;
-  const _RasterOnlyPainter({this.raster});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final bg = Paint()..color = Colors.white;
-    canvas.drawRect(Offset.zero & size, bg);
-
-    if (raster == null) return;
-    final center = Offset(size.width / 2, size.height / 2);
-    final p = raster!;
-    final topLeft = center +
-        p.worldCenter -
-        Offset(p.worldSize.width / 2, p.worldSize.height / 2);
-    final dest = topLeft & p.worldSize;
-    final src = Rect.fromLTWH(
-        0, 0, p.image.width.toDouble(), p.image.height.toDouble());
-    final imgPaint = Paint()..filterQuality = FilterQuality.high;
-    canvas.drawImageRect(p.image, src, dest, imgPaint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _RasterOnlyPainter oldDelegate) =>
-      oldDelegate.raster != raster;
-}
-
-// ===== Orchestrator layout types =====
-class _RenderedLine {
-  final Uint8List bytes;
-  final double w, h;
-  _RenderedLine({required this.bytes, required this.w, required this.h});
-}
-
-class _LayoutConfig {
-  final _Page page;
-  final double lineHeight;
-  final double gutterY;
-  final _Indent indent;
-  final _Columns? columns;
-  final _Fonts fonts;
-  const _LayoutConfig({
-    required this.page,
-    required this.lineHeight,
-    required this.gutterY,
-    required this.indent,
-    required this.columns,
-    required this.fonts,
-  });
-}
-
-class _Page {
-  final double width, height, top, right, bottom, left;
-  const _Page(
-      {required this.width,
-      required this.height,
-      required this.top,
-      required this.right,
-      required this.bottom,
-      required this.left});
-}
-
-class _Indent {
-  final double level1, level2, level3;
-  const _Indent(
-      {required this.level1, required this.level2, required this.level3});
-}
-
-class _Columns {
-  final int count;
-  final double gutter;
-  const _Columns({required this.count, required this.gutter});
-}
-
-class _Fonts {
-  final double heading, body, tiny;
-  const _Fonts({required this.heading, required this.body, required this.tiny});
-}
-
-class _BBox {
-  final double x, y, w, h;
-  const _BBox(
-      {required this.x, required this.y, required this.w, required this.h});
-  double get right => x + w;
-  double get bottom => y + h;
-  bool intersects(_BBox other) {
-    return !(other.x >= right ||
-        other.right <= x ||
-        other.y >= bottom ||
-        other.bottom <= y);
-  }
-}
-
-class _DrawnBlock {
-  final String id;
-  final String type;
-  final _BBox bbox;
-  final Map<String, dynamic>? meta;
-  _DrawnBlock(
-      {required this.id, required this.type, required this.bbox, this.meta});
-}
-
-class _LayoutState {
-  final _LayoutConfig config;
-  double cursorY;
-  int columnIndex;
-  final List<_DrawnBlock> blocks;
-  int sectionCount;
-  _LayoutState(
-      {required this.config,
-      required this.cursorY,
-      required this.columnIndex,
-      required this.blocks,
-      required this.sectionCount});
-
-  double _columnOffsetX() {
-    if (config.columns == null) return 0.0;
-    final cw = _columnWidth();
-    return columnIndex * cw + columnIndex * config.columns!.gutter;
-  }
-
-  double _columnResidual() {
-    if (config.columns == null) return 0.0;
-    final total = (config.columns!.count - 1) * config.columns!.gutter +
-        (config.columns!.count - 1) * _columnWidth();
-    final used =
-        columnIndex * config.columns!.gutter + columnIndex * _columnWidth();
-    return total - used;
-  }
-
-  double _columnWidth() {
-    if (config.columns == null)
-      return config.page.width - config.page.left - config.page.right;
-    final usable = config.page.width -
-        config.page.left -
-        config.page.right -
-        (config.columns!.count - 1) * config.columns!.gutter;
-    return usable / config.columns!.count;
-  }
-
-  static _LayoutState defaultConfig(double pageW, double pageH) {
-    final cfg = _LayoutConfig(
-      page: _Page(
-          width: pageW,
-          height: pageH,
-          top: 60,
-          right: 64,
-          bottom: 60,
-          left: 64),
-      lineHeight: 1.25,
-      gutterY: 14,
-      indent: const _Indent(level1: 32, level2: 64, level3: 96),
-      columns: null,
-      fonts: const _Fonts(heading: 30, body: 22, tiny: 18),
-    );
-    return _LayoutState(
-        config: cfg,
-        cursorY: cfg.page.top,
-        columnIndex: 0,
-        blocks: <_DrawnBlock>[],
-        sectionCount: 0);
-  }
-}
+// RasterOnlyPainter and layout classes (LayoutConfig, LayoutState, BBox, DrawnBlock, etc.)
+// are now imported from whiteboard/whiteboard.dart

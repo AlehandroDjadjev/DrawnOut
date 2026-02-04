@@ -30,7 +30,7 @@ class BuyAvatarView(APIView):
             return Response({'error': 'Not enough credits'}, status=status.HTTP_400_BAD_REQUEST)
 
         user.credits -= picture.price
-        user.owned_pictures.add(picture)
+        user.owned_avatars.add(picture)
         user.save()
 
         return Response({'message': 'Picture purchased successfully'})
