@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'pages/login.dart';
 import 'pages/signup.dart';
 import 'pages/home.dart';
+import 'pages/test_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();

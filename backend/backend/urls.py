@@ -35,4 +35,5 @@ urlpatterns = [
     path('api/market/', include('market.urls')),
     path('', TemplateView.as_view(template_name='canvasapp/index.html'), name='index'),
     path('tts-demo/', TemplateView.as_view(template_name='canvasapp/tts-demo.html'), name='tts_demo'),
+    path('api/tests/', include('test_gen.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
