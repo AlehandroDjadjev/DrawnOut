@@ -140,7 +140,5 @@ Need whiteboard functionality?
 | `FEATURE_PARITY_CHECKLIST.md` | Migration status checklist |
 | `whiteboard_demo/DEPRECATED.md` | Deprecation details |
 
----
-
-*Last updated: 2026-01-29*  
+---*Last updated: 2026-01-29*  
 *Architecture: Unified whiteboard engine in frontend/*

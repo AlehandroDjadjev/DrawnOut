@@ -1,7 +1,7 @@
 /// Whiteboard engine module.
 ///
 /// Provides core data structures, painters, layout system, widgets,
-/// and services for the animated whiteboard rendering system.
+/// services, and text utilities for the animated whiteboard rendering system.
 ///
 /// ## Usage
 ///
@@ -37,3 +37,7 @@ export 'widgets/widgets.dart';
 
 // Services
 export 'services/services.dart';
+
+// Text rendering utilities (hide CenterlineConfig which is already in text_sketch_service)
+export 'text/text_config.dart' hide CenterlineConfig;
+export 'text/text_layout.dart';

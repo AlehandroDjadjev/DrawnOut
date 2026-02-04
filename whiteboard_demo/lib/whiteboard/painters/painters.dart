@@ -4,3 +4,4 @@ library;
 export 'sketch_painter.dart';
 export 'committed_painter.dart';
 export 'raster_painter.dart';
+export 'whiteboard_painter.dart';

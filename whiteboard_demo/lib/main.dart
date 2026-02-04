@@ -30,6 +30,9 @@ import 'pages/signup.dart';
 import 'pages/home.dart';
 import 'pages/lessons_page.dart';
 import 'pages/settings_page.dart';
+import 'pages/auth_gate.dart';
+import 'pages/market_page.dart';
+import 'pages/whiteboard_page.dart';
 
 // Whiteboard module
 import 'whiteboard/whiteboard.dart';
@@ -87,17 +90,19 @@ class DrawnOutApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'DrawnOut',
       theme: _buildTheme(themeProvider.isDarkMode),
+      home: const AuthGate(),
       routes: {
         '/login': (context) => const LoginPage(),
         '/signup': (context) => const SignupPage(),
         '/home': (context) => const HomePage(),
         '/lessons': (context) => const LessonsPage(),
         '/settings': (context) => const SettingsPage(),
+        '/market': (context) => const MarketPage(),
         '/whiteboard': (context) => const WhiteboardPageWrapper(),
         '/whiteboard/user': (context) => const WhiteboardPageWrapper(startInDeveloperMode: false),
         '/whiteboard/dev': (context) => const WhiteboardPageWrapper(startInDeveloperMode: true),
+        '/whiteboard/mobile': (context) => const WhiteboardPageMobile(),
       },
-      initialRoute: '/login',
     );
   }
 }
