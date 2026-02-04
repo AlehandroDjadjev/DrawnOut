@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/developer_mode_provider.dart';
 import '../services/app_config_service.dart';
-import '../theme_provider.dart';
+import '../theme_provider/theme_provider.dart';
 
 /// Settings page for app configuration
 class SettingsPage extends StatefulWidget {
@@ -86,7 +86,8 @@ class _SettingsPageState extends State<SettingsPage> {
                         border: const OutlineInputBorder(),
                         suffixIcon: _urlModified
                             ? IconButton(
-                                icon: const Icon(Icons.check, color: Colors.green),
+                                icon: const Icon(Icons.check,
+                                    color: Colors.green),
                                 onPressed: _saveBackendUrl,
                               )
                             : null,
@@ -106,7 +107,8 @@ class _SettingsPageState extends State<SettingsPage> {
                         TextButton.icon(
                           onPressed: () {
                             config.resetToDefault();
-                            _backendUrlController.text = AppConfigService.defaultUrl;
+                            _backendUrlController.text =
+                                AppConfigService.defaultUrl;
                             setState(() => _urlModified = false);
                           },
                           icon: const Icon(Icons.restore, size: 18),
@@ -121,7 +123,8 @@ class _SettingsPageState extends State<SettingsPage> {
             const SizedBox(height: 16),
             Card(
               child: ListTile(
-                leading: const Icon(Icons.developer_mode_outlined, color: Colors.orange),
+                leading: const Icon(Icons.developer_mode_outlined,
+                    color: Colors.orange),
                 title: const Text('Developer Mode'),
                 subtitle: const Text('Enabled'),
                 trailing: TextButton(

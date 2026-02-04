@@ -9,7 +9,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:provider/provider.dart';
+import './providers/developer_mode_provider.dart';
 import 'package:http/http.dart' as http;
 
 // Local imports
