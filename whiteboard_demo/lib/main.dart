@@ -58,7 +58,6 @@ class DrawnOutApp extends StatelessWidget {
   ThemeData _buildTheme(bool dark) {
     final base = dark ? ThemeData.dark() : ThemeData.light();
     return base.copyWith(
-      useMaterial3: true,
       colorScheme: base.colorScheme.copyWith(
         primary: dark ? Colors.tealAccent.shade200 : Colors.blue,
         secondary: dark ? Colors.tealAccent : Colors.blueAccent,
@@ -99,15 +98,17 @@ class DrawnOutApp extends StatelessWidget {
         '/settings': (context) => const SettingsPage(),
         '/market': (context) => const MarketPage(),
         '/whiteboard': (context) => const WhiteboardPageWrapper(),
-        '/whiteboard/user': (context) => const WhiteboardPageWrapper(startInDeveloperMode: false),
-        '/whiteboard/dev': (context) => const WhiteboardPageWrapper(startInDeveloperMode: true),
+        '/whiteboard/user': (context) =>
+            const WhiteboardPageWrapper(startInDeveloperMode: false),
+        '/whiteboard/dev': (context) =>
+            const WhiteboardPageWrapper(startInDeveloperMode: true),
         '/whiteboard/mobile': (context) => const WhiteboardPageMobile(),
       },
     );
   }
 }
 
-// Core classes (PlacedImage, StrokePlan, VectorObject), painters (SketchPainter, 
+// Core classes (PlacedImage, StrokePlan, VectorObject), painters (SketchPainter,
 // CommittedPainter), and SketchPlayer widget are now imported from whiteboard/whiteboard.dart
 
 /// Smart whiteboard wrapper that switches between user and developer modes.
@@ -506,10 +507,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       debugPrint('Vectorize error: $e\n$st');
       _showError(e.toString());
     } finally {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _busy = false;
         });
+      }
     }
   }
 
@@ -557,10 +559,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     } catch (e) {
       _showError(e.toString());
     } finally {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _busy = false;
         });
+      }
     }
   }
 
@@ -653,10 +656,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       debugPrint('SketchText error: $e\n$st');
       _showError(e.toString());
     } finally {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _busy = false;
         });
+      }
     }
   }
 
@@ -709,8 +713,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       ),
       lineHeight: _cfgLineHeight,
       gutterY: _cfgGutterY,
-      indent: Indent(
-          level1: _cfgIndent1, level2: _cfgIndent2, level3: _cfgIndent3),
+      indent:
+          Indent(level1: _cfgIndent1, level2: _cfgIndent2, level3: _cfgIndent3),
       columns: columns,
       fonts: Fonts(heading: _cfgHeading, body: _cfgBody, tiny: _cfgTiny),
     );
@@ -748,19 +752,19 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       debugPrint('🖼️ Contains $sketchImageCount sketch_image action(s)');
     }
     // ── END DEBUG ──────────────────────────────────────────────────────────
-    
+
     final accum = <List<Offset>>[];
     for (final a in actions) {
       if (a is! Map) continue;
       final type = (a['type'] ?? '').toString();
-      
+
       // ── Handle sketch_image actions ──────────────────────────────────────
       if (type == 'sketch_image') {
         final imageUrl = a['image_url'] as String?;
         final imageBase64 = a['image_base64'] as String?;
         final placement = a['placement'] as Map<String, dynamic>?;
         final metadata = a['metadata'] as Map<String, dynamic>?;
-        
+
         debugPrint('🖼️ Processing sketch_image action');
         await _sketchImageFromUrl(
           imageUrl: imageUrl,
@@ -771,7 +775,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         );
         continue; // Skip to next action
       }
-      
+
       // ── Handle text-based actions (heading, bullet, formula, etc.) ───────
       final text = (a['text'] ?? '').toString();
       final level = (a['level'] is num) ? (a['level'] as num).toInt() : 1;
@@ -922,9 +926,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                         style: TextStyle(fontWeight: FontWeight.bold)),
                     const SizedBox(height: 4),
                     Text(
-                      lesson.content.substring(
-                              0, math.min(300, lesson.content.length)) +
-                          '...',
+                      '${lesson.content.substring(0, math.min(300, lesson.content.length))}...',
                       style: const TextStyle(fontSize: 12),
                     ),
                     const SizedBox(height: 16),
@@ -1110,26 +1112,31 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       for (final entry in actionTypes.entries) {
         debugPrint('   - ${entry.key}: ${entry.value}');
       }
-      
+
       // Separate sketch_image actions from text actions for duration calculation
       final textActions = actions.where((a) => !a.isSketchImage).toList();
       final imageActions = actions.where((a) => a.isSketchImage).toList();
-      
+
       // Log sketch_image details if any
       if (imageActions.isNotEmpty) {
         debugPrint('🖼️ Found ${imageActions.length} sketch_image action(s):');
         for (final img in imageActions) {
           final url = img.resolvedImageUrl ?? 'no URL';
           final hasPlacement = img.placement != null;
-          final hasBase64 = img.imageBase64 != null && img.imageBase64!.isNotEmpty;
-          debugPrint('   - ID: ${img.text.isEmpty ? "(no alt text)" : img.text.substring(0, img.text.length.clamp(0, 30))}');
-          debugPrint('     URL: ${url.length > 60 ? "${url.substring(0, 60)}..." : url}');
-          debugPrint('     Placement: ${hasPlacement ? "yes" : "auto"}, Base64 fallback: ${hasBase64 ? "yes" : "no"}');
+          final hasBase64 =
+              img.imageBase64 != null && img.imageBase64!.isNotEmpty;
+          debugPrint(
+              '   - ID: ${img.text.isEmpty ? "(no alt text)" : img.text.substring(0, img.text.length.clamp(0, 30))}');
+          debugPrint(
+              '     URL: ${url.length > 60 ? "${url.substring(0, 60)}..." : url}');
+          debugPrint(
+              '     Placement: ${hasPlacement ? "yes" : "auto"}, Base64 fallback: ${hasBase64 ? "yes" : "no"}');
         }
       }
 
       // Calculate total chars only from text actions
-      final totalChars = textActions.fold<int>(0, (sum, a) => sum + a.text.length);
+      final totalChars =
+          textActions.fold<int>(0, (sum, a) => sum + a.text.length);
 
       // Drawing duration: MUCH SLOWER - match dictation pace for formulas
       final segment = _timelineController?.currentSegment;
@@ -1143,7 +1150,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       final imageTime = imageActions.length * 3.0;
 
       final drawDuration = isDictationSegment
-          ? (segment!.actualAudioDuration * 0.85)
+          ? (segment.actualAudioDuration * 0.85)
               .clamp(6.0, 25.0) // SLOW: match dictation pace
           : totalChars < 10
               ? 5.0 + imageTime // Even short words take 5s
@@ -1209,7 +1216,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         _commitCurrentSketch();
         debugPrint('✅ Committed to board (total: ${_board.length})');
       }
-    } catch (e, st) {
+    } catch (e) {
       debugPrint('❌ Drawing error: $e');
     }
   }
@@ -1224,8 +1231,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       for (final a in actions) {
         if (a is Map && (a['type'] ?? '') == 'heading') {
           final t = (a['text'] ?? '').toString();
-          if (t.isNotEmpty)
+          if (t.isNotEmpty) {
             return _buildDiagramPrompt(t, sessionData, planHint);
+          }
         }
       }
     } catch (_) {}
@@ -1436,11 +1444,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
     // ── Step 1: Resolve the image URL ──────────────────────────────────────
     String? resolvedUrl = imageUrl;
-    
+
     // Try metadata fallbacks if direct URL is empty
     if (resolvedUrl == null || resolvedUrl.isEmpty) {
-      resolvedUrl = metadata?['image_url'] as String? ?? 
-                    metadata?['url'] as String?;
+      resolvedUrl =
+          metadata?['image_url'] as String? ?? metadata?['url'] as String?;
     }
 
     // ── Step 2: Get image bytes ────────────────────────────────────────────
@@ -1455,7 +1463,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
             : _apiUrlCtrl.text.trim();
         final api = LessonPipelineApi(baseUrl: baseUrl);
         final proxiedUrl = api.buildProxiedImageUrl(resolvedUrl);
-        
+
         debugPrint('🖼️ Fetching image: $resolvedUrl');
         debugPrint('   Proxied URL: $proxiedUrl');
 
@@ -1470,7 +1478,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           imageBytes = response.bodyBytes;
           debugPrint('   ✅ Fetched ${imageBytes.length} bytes');
         } else {
-          debugPrint('   ❌ HTTP ${response.statusCode}: ${response.reasonPhrase}');
+          debugPrint(
+              '   ❌ HTTP ${response.statusCode}: ${response.reasonPhrase}');
         }
       } catch (e) {
         debugPrint('   ❌ Image fetch failed: $e');
@@ -1506,22 +1515,22 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     // ── Step 4: Calculate placement ────────────────────────────────────────
     final p = placement ?? {};
     final hasExplicitPlacement = p.containsKey('x') && p.containsKey('y');
-    
+
     double contentX0 = cfg.page.left + st.columnOffsetX();
     double cw = st.columnWidth();
-    
+
     // Target dimensions
     double targetW, targetH;
     double x, y;
-    
+
     if (hasExplicitPlacement) {
       // Use explicit placement from action
       x = (p['x'] as num?)?.toDouble() ?? contentX0;
       y = (p['y'] as num?)?.toDouble() ?? st.cursorY;
       targetW = (p['width'] as num?)?.toDouble() ?? (cw * 0.4);
-      targetH = (p['height'] as num?)?.toDouble() ?? 
-                (targetW * (img.height / math.max(1, img.width)));
-      
+      targetH = (p['height'] as num?)?.toDouble() ??
+          (targetW * (img.height / math.max(1, img.width)));
+
       // Apply scale if specified
       final scale = (p['scale'] as num?)?.toDouble();
       if (scale != null && scale > 0) {
@@ -1531,11 +1540,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     } else {
       // Auto-place: similar to _sketchDiagramAuto logic
       double maxW = cw * 0.4; // 40% of column width for images
-      
+
       // Center horizontally in column
       x = contentX0 + (cw - maxW) / 2.0;
       y = st.cursorY;
-      
+
       // Check for column overflow
       final pageBottom = cfg.page.height - cfg.page.bottom;
       if ((pageBottom - y) < 100 &&
@@ -1548,16 +1557,17 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         x = contentX0 + (cw - maxW) / 2.0;
         y = cfg.page.top;
       }
-      
+
       // Scale to fit available space
       final remainH = (cfg.page.height - cfg.page.bottom) - y - cfg.gutterY;
       final scaleW = (img.width == 0) ? 1.0 : (maxW / img.width);
-      final scaleH = (img.height == 0) ? scaleW : math.max(0.1, remainH / img.height);
+      final scaleH =
+          (img.height == 0) ? scaleW : math.max(0.1, remainH / img.height);
       final effScale = math.min(scaleW, scaleH);
-      
+
       targetW = img.width * effScale;
       targetH = img.height * effScale;
-      
+
       // Avoid overlaps with previous blocks
       y = _nextNonCollidingY(st, x, targetH, y);
     }
@@ -1599,11 +1609,12 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     debugPrint('   ✏️ Vectorized: ${strokes.length} strokes');
 
     // ── Step 6: Filter and transform strokes ───────────────────────────────
-    final filtered = _strokeService.filterStrokes(strokes, minLength: 24.0, minExtent: 8.0);
-    
+    final filtered =
+        _strokeService.filterStrokes(strokes, minLength: 24.0, minExtent: 8.0);
+
     // Calculate scale factor for strokes (image px → target size)
     final effScale = targetW / math.max(1, img.width);
-    
+
     // Convert content-space to world-space and apply scaling
     final worldTopLeft = Offset(
       x - (cfg.page.width / 2),
@@ -1611,7 +1622,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     );
     final centerOffset = Offset(targetW / 2.0, targetH / 2.0);
     final centerWorld = worldTopLeft + centerOffset;
-    
+
     final placedStrokes = filtered
         .map((s) => s.map((p) => (p * effScale) + centerWorld).toList())
         .toList();
@@ -1629,13 +1640,13 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         if (metadata != null) ...metadata,
       },
     ));
-    
+
     // Advance cursor for next content
     st.cursorY = y + targetH + cfg.gutterY * 1.25;
 
     // ── Step 8: Add strokes to accumulator ─────────────────────────────────
     accum.addAll(placedStrokes);
-    
+
     debugPrint('   ✅ Added ${placedStrokes.length} strokes to accum');
     return true;
   }
@@ -1710,7 +1721,6 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       );
 
       debugPrint('🧪 DEBUG: Test actions processed successfully!');
-
     } catch (e, st) {
       debugPrint('❌ DEBUG: Error injecting sketch_image: $e');
       debugPrint('Stack: $st');
@@ -1736,7 +1746,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
     try {
       await _ensureLayout();
-      
+
       final cfg = _layout!.config;
 
       // Create a positioned image action
@@ -1764,7 +1774,6 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       );
 
       debugPrint('🧪 DEBUG: Positioned image processed!');
-
     } catch (e) {
       debugPrint('❌ DEBUG: Error: $e');
       _showError('Debug error: $e');
@@ -1873,6 +1882,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         blurK: 3,
         cannyLo: 30,
         cannyHi: 120,
+        dogSigma: _dogSigma,
+        dogK: _dogK,
+        dogThresh: _dogThresh,
         epsilon: centerlineMode ? _clEpsilon : 0.8,
         resampleSpacing: centerlineMode ? _clResample : 1.0,
         minPerimeter: (_minPerim * 0.6).clamp(6.0, 1e9),
@@ -1922,8 +1934,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   }
 
   double _chooseFont(String type, Fonts fonts, Map<String, dynamic>? style) {
-    if (style != null && style['fontSize'] is num)
+    if (style != null && style['fontSize'] is num) {
       return (style['fontSize'] as num).toDouble();
+    }
     if (type == 'heading') return fonts.heading;
     if (type == 'formula') return fonts.heading;
     return fonts.body;
@@ -1966,8 +1979,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     return lines;
   }
 
-  double _nextNonCollidingY(
-      LayoutState st, double x, double h, double startY) {
+  double _nextNonCollidingY(LayoutState st, double x, double h, double startY) {
     double y = startY;
     while (true) {
       bool hit = false;
@@ -2095,7 +2107,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     final prev = _canvasSize;
     if (prev != null &&
         (prev.width - size.width).abs() < 1 &&
-        (prev.height - size.height).abs() < 1) return;
+        (prev.height - size.height).abs() < 1) {
+      return;
+    }
     _canvasSize = size;
     // rebuild layout config for new page size while preserving cursor/blocks
     if (_layout == null) return;
@@ -2147,7 +2161,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                 children: [
                   Row(
                     children: [
-                      Icon(Icons.bug_report, color: Colors.orange.shade700, size: 18),
+                      Icon(Icons.bug_report,
+                          color: Colors.orange.shade700, size: 18),
                       const SizedBox(width: 4),
                       Text(
                         'DEBUG: sketch_image',
@@ -2166,24 +2181,30 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                         child: ElevatedButton.icon(
                           onPressed: _busy ? null : _debugInjectSketchImage,
                           icon: const Icon(Icons.image, size: 16),
-                          label: const Text('Auto-Place', style: TextStyle(fontSize: 12)),
+                          label: const Text('Auto-Place',
+                              style: TextStyle(fontSize: 12)),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.orange.shade100,
                             foregroundColor: Colors.orange.shade900,
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
                           ),
                         ),
                       ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: ElevatedButton.icon(
-                          onPressed: _busy ? null : _debugInjectSketchImageWithPlacement,
+                          onPressed: _busy
+                              ? null
+                              : _debugInjectSketchImageWithPlacement,
                           icon: const Icon(Icons.place, size: 16),
-                          label: const Text('Positioned', style: TextStyle(fontSize: 12)),
+                          label: const Text('Positioned',
+                              style: TextStyle(fontSize: 12)),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.orange.shade100,
                             foregroundColor: Colors.orange.shade900,
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
                           ),
                         ),
                       ),
@@ -2265,8 +2286,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                     ? null
                     : () {
                         setState(() {
-                          if (_layout != null)
+                          if (_layout != null) {
                             _layout!.cursorY = _layout!.config.page.top;
+                          }
                         });
                       },
                 icon: const Icon(Icons.vertical_align_top),
@@ -2401,10 +2423,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                         } catch (e) {
                           _showError(e.toString());
                         } finally {
-                          if (mounted)
+                          if (mounted) {
                             setState(() {
                               _busy = false;
                             });
+                          }
                         }
                       },
                 icon: const Icon(Icons.playlist_add_check),

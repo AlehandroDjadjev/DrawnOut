@@ -1,5 +1,22 @@
 from django.urls import path
-from .views import AvailableListingsView, CreateListingView, BuyListingView, PurchaseHistoryView, AcceptTradeProposalView, CreateTradeProposalView, DeclineTradeProposalView
+from .views import (
+    AvailableListingsView,
+    CreateListingView,
+    BuyListingView,
+    PurchaseHistoryView,
+    AcceptTradeProposalView,
+    CreateTradeProposalView,
+    DeclineTradeProposalView,
+    ListingProposalsView,
+    MyProposalsView,
+    NotificationsListView,
+    MarkNotificationReadView,
+    OwnedItemsView,
+    CreateListingFromItemView,
+    CreateCounterOfferView,
+    RespondCounterOfferView,
+    TopUpCreditsView,
+)
 
 urlpatterns = [
     path("listings/", AvailableListingsView.as_view()),
@@ -9,4 +26,13 @@ urlpatterns = [
     path("trade-proposals/create/", CreateTradeProposalView.as_view()),
     path("trade-proposals/accept/<int:proposal_id>/", AcceptTradeProposalView.as_view()),
     path("trade-proposals/decline/<int:proposal_id>/", DeclineTradeProposalView.as_view()),
+    path("listings/<int:listing_id>/proposals/", ListingProposalsView.as_view()),
+    path("items/owned/", OwnedItemsView.as_view()),
+    path("items/<int:item_id>/list/", CreateListingFromItemView.as_view()),
+    path("counter-offers/create/", CreateCounterOfferView.as_view()),
+    path("counter-offers/respond/<int:counter_id>/<str:action>/", RespondCounterOfferView.as_view()),
+    path("proposals/my/", MyProposalsView.as_view()),
+    path("notifications/", NotificationsListView.as_view()),
+    path("notifications/read/<int:notification_id>/", MarkNotificationReadView.as_view()),
+    path("admin/topup/", TopUpCreditsView.as_view()),
 ]

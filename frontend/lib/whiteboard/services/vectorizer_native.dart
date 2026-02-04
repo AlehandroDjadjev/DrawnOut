@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' show Offset, Rect;
 
 // Native implementation stub - uses opencv_dart if available

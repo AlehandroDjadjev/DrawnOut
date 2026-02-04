@@ -7,7 +7,7 @@ class Avatar(models.Model):
     price = models.IntegerField(default=0)
 
 class CustomUser(AbstractUser):
-    credits = models.IntegerField(default=0)
+    credits = models.IntegerField(default=100)
     owned_avatars = models.ManyToManyField(Avatar, blank=True)
     avatar = models.ForeignKey(Avatar, on_delete=models.SET_NULL, null=True, blank=True, related_name='current_for')
-    inventory = models.ManyToManyField(MarketItem, blank=True)
+    inventory = models.ManyToManyField(MarketItem, blank=True, related_name='owners')
