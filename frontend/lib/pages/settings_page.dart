@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/developer_mode_provider.dart';
 import '../services/app_config_service.dart';
-import '../theme_provider.dart';
+import '../theme_provider/theme_provider.dart';
 
 /// Settings page for app configuration
 class SettingsPage extends StatefulWidget {
