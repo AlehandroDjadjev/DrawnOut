@@ -304,6 +304,16 @@ class _HomePageState extends State<HomePage> {
             },
           ),
 
+          // History
+          ListTile(
+            leading: Icon(Icons.history, color: theme.colorScheme.primary),
+            title: const Text('Lesson History'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.pushNamed(context, '/history');
+            },
+          ),
+
           // Market
           ListTile(
             leading: Icon(Icons.storefront_outlined,

@@ -3,6 +3,29 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/auth_service.dart';
 
+/// Singleton debug configuration.
+///
+/// Provides a single source of truth for whether debug features should be
+/// visible. In release builds, debug features are always disabled regardless
+/// of the user's `is_developer` flag. In debug builds, they are gated behind
+/// the backend flag.
+class DebugConfig {
+  DebugConfig._();
+  static final DebugConfig instance = DebugConfig._();
+
+  /// True when the user is a backend-verified developer AND we are running in
+  /// a debug build. In release mode this always returns false.
+  bool get isDebugEnabled => kDebugMode && _backendDeveloper;
+
+  /// Raw backend flag — exposed for the provider.
+  bool _backendDeveloper = false;
+
+  /// Update the backend flag (called by [DeveloperModeProvider]).
+  void setBackendDeveloper(bool value) {
+    _backendDeveloper = value;
+  }
+}
+
 /// Provider to manage developer mode state globally
 /// 
 /// Developer mode is controlled by the `is_developer` flag on the user's
@@ -34,6 +57,7 @@ class DeveloperModeProvider extends ChangeNotifier {
   Future<void> _loadCachedState() async {
     final prefs = await SharedPreferences.getInstance();
     _isEnabled = prefs.getBool(_cachedDevFlagKey) ?? false;
+    DebugConfig.instance.setBackendDeveloper(_isEnabled);
     _isLoading = false;
     notifyListeners();
   }
@@ -67,6 +91,7 @@ class DeveloperModeProvider extends ChangeNotifier {
         final isDeveloper = data['is_developer'] == true;
         
         _isEnabled = isDeveloper;
+        DebugConfig.instance.setBackendDeveloper(isDeveloper);
         await _cacheState(isDeveloper);
         _isLoading = false;
         notifyListeners();
@@ -90,6 +115,7 @@ class DeveloperModeProvider extends ChangeNotifier {
   /// Clear developer status (call on logout)
   Future<void> clear() async {
     _isEnabled = false;
+    DebugConfig.instance.setBackendDeveloper(false);
     await _cacheState(false);
     notifyListeners();
   }

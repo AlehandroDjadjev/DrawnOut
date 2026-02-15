@@ -33,9 +33,14 @@ import 'pages/settings_page.dart';
 import 'pages/auth_gate.dart';
 import 'pages/market_page.dart';
 import 'pages/whiteboard_page.dart';
+import 'pages/lesson_history_page.dart';
 
 // Whiteboard module
 import 'whiteboard/whiteboard.dart';
+// UI widgets
+import 'widgets/lesson_playback_bar.dart';
+import 'widgets/lesson_completion_overlay.dart';
+import 'widgets/developer_dashboard.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -55,9 +60,9 @@ void main() async {
 class DrawnOutApp extends StatelessWidget {
   const DrawnOutApp({super.key});
 
-  ThemeData _buildTheme(bool dark) {
+  ThemeData _buildTheme(bool dark, {bool highContrast = false}) {
     final base = dark ? ThemeData.dark() : ThemeData.light();
-    return base.copyWith(
+    var theme = base.copyWith(
       colorScheme: base.colorScheme.copyWith(
         primary: dark ? Colors.tealAccent.shade200 : Colors.blue,
         secondary: dark ? Colors.tealAccent : Colors.blueAccent,
@@ -79,6 +84,20 @@ class DrawnOutApp extends StatelessWidget {
         ),
       ),
     );
+
+    if (highContrast) {
+      theme = theme.copyWith(
+        colorScheme: theme.colorScheme.copyWith(
+          outline: dark ? Colors.white : Colors.black,
+        ),
+        dividerTheme: DividerThemeData(
+          color: dark ? Colors.white54 : Colors.black54,
+          thickness: 2,
+        ),
+      );
+    }
+
+    return theme;
   }
 
   @override
@@ -88,7 +107,7 @@ class DrawnOutApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'DrawnOut',
-      theme: _buildTheme(themeProvider.isDarkMode),
+      theme: _buildTheme(themeProvider.isDarkMode, highContrast: themeProvider.isHighContrast),
       home: const AuthGate(),
       routes: {
         '/login': (context) => const LoginPage(),
@@ -97,6 +116,7 @@ class DrawnOutApp extends StatelessWidget {
         '/lessons': (context) => const LessonsPage(),
         '/settings': (context) => const SettingsPage(),
         '/market': (context) => const MarketPage(),
+        '/history': (context) => const LessonHistoryPage(),
         '/whiteboard': (context) => const WhiteboardPageWrapper(),
         '/whiteboard/user': (context) =>
             const WhiteboardPageWrapper(startInDeveloperMode: false),
@@ -128,11 +148,19 @@ class WhiteboardPageWrapper extends StatelessWidget {
     final args = ModalRoute.of(context)?.settings.arguments;
     String? topic;
     String? title;
+    int? sessionId;
+    bool rewatch = false;
     if (args is Map<String, dynamic>) {
       topic = args['topic'] as String?;
       title = args['title'] as String?;
+      sessionId = args['session_id'] as int?;
+      rewatch = (args['rewatch'] as bool?) ?? false;
     }
-    return WhiteboardPage(autoStartTopic: topic, lessonTitle: title);
+    return WhiteboardPage(
+      autoStartTopic: topic,
+      lessonTitle: title,
+      autoStartSessionId: rewatch ? sessionId : null,
+    );
   }
 }
 
@@ -142,8 +170,15 @@ class WhiteboardPage extends StatefulWidget {
   final String? autoStartTopic;
   /// Display title for the lesson (shown in loading UI).
   final String? lessonTitle;
+  /// If set, skips generation and replays a saved timeline for this session.
+  final int? autoStartSessionId;
 
-  const WhiteboardPage({super.key, this.autoStartTopic, this.lessonTitle});
+  const WhiteboardPage({
+    super.key,
+    this.autoStartTopic,
+    this.lessonTitle,
+    this.autoStartSessionId,
+  });
 
   @override
   State<WhiteboardPage> createState() => _WhiteboardPageState();
@@ -278,7 +313,24 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   bool _lessonLoading = false;
   String _lessonLoadingStage = '';
   double _lessonLoadingProgress = 0.0;
+  String? _lessonLoadingError;
   bool _lessonAutoStarted = false;
+  bool _lessonComplete = false;
+
+  /// True when the whiteboard was opened for a lesson (auto-start or rewatch),
+  /// false when the user is just using the free-draw whiteboard.
+  bool get _isInLessonSession =>
+      widget.autoStartTopic != null || widget.autoStartSessionId != null;
+
+  /// Tracks the last-known pause state so we only call setState on transitions.
+  bool _drawingPaused = false;
+
+  void _onTimelinePauseChanged() {
+    final paused = _timelineController?.isPaused ?? false;
+    if (paused != _drawingPaused && mounted) {
+      setState(() { _drawingPaused = paused; });
+    }
+  }
 
   void _showError(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -357,15 +409,21 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
     // Initialize timeline controller
     _timelineController = TimelinePlaybackController();
+    // Only rebuild when pause state actually changes (not on every progress tick)
+    _timelineController!.addListener(_onTimelinePauseChanged);
     _timelineController!.onDrawingActionsTriggered = (actions) async {
       await _handleSyncedDrawingActions(actions);
     };
     _timelineController!.onSegmentChanged = (index) {
       debugPrint('📍 Segment $index started');
+      // Clear the canvas so each segment starts fresh
+      _clearBoard();
     };
     _timelineController!.onTimelineCompleted = () {
       debugPrint('✅ Timeline completed!');
-      _showError('Lesson completed!');
+      if (mounted) setState(() => _lessonComplete = true);
+      // Persist completion status in the backend
+      _markSessionComplete();
     };
   }
   
@@ -376,8 +434,13 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       _devModeChecked = true;
       _checkDeveloperMode();
       
+      // Rewatch mode: load a saved timeline directly (no generation step)
+      if (!_lessonAutoStarted && widget.autoStartSessionId != null) {
+        _lessonAutoStarted = true;
+        Future.microtask(() => _rewatchLesson(widget.autoStartSessionId!));
+      }
       // Auto-start lesson if topic was provided via route arguments
-      if (!_lessonAutoStarted && widget.autoStartTopic != null) {
+      else if (!_lessonAutoStarted && widget.autoStartTopic != null) {
         _lessonAutoStarted = true;
         // Delay slightly so the widget tree is fully built
         Future.microtask(() => _autoStartLesson(widget.autoStartTopic!));
@@ -395,7 +458,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     final isDeveloper = await devProvider.refreshFromBackend();
     if (mounted) {
       setState(() {
-        _showDevPanel = isDeveloper;
+        // Only show dev panel in debug builds AND for backend-verified developers
+        _showDevPanel = kDebugMode && isDeveloper;
       });
     }
 
@@ -439,6 +503,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
   @override
   void dispose() {
+    _timelineController?.removeListener(_onTimelinePauseChanged);
     _xCtrl.dispose();
     _yCtrl.dispose();
     _wCtrl.dispose();
@@ -1087,12 +1152,92 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       debugPrint('❌ Auto-start lesson error: $e\n$st');
       if (mounted) {
         setState(() {
-          _lessonLoading = false;
-          _lessonLoadingStage = '';
-          _lessonLoadingProgress = 0.0;
+          _lessonLoadingStage = 'Failed to start lesson';
+          _lessonLoadingError = e.toString();
         });
-        _showError('Could not start lesson: $e');
       }
+    }
+  }
+
+  /// Rewatch a previously completed lesson by loading its saved timeline.
+  /// Skips session creation and timeline generation.
+  Future<void> _rewatchLesson(int sessionId) async {
+    setState(() {
+      _lessonLoading = true;
+      _lessonLoadingStage = 'Loading saved lesson...';
+      _lessonLoadingProgress = 0.0;
+      _lessonLoadingError = null;
+    });
+
+    try {
+      debugPrint('🔁 Rewatching lesson session $sessionId');
+
+      // Initialize APIs
+      final baseUrl = _apiUrlCtrl.text.trim().isEmpty
+          ? 'http://localhost:8000'
+          : _apiUrlCtrl.text.trim();
+      _api = AssistantApiClient(baseUrl);
+      _timelineApi = TimelineApiClient(baseUrl);
+      _timelineController!.setBaseUrl(baseUrl);
+      _sessionId = sessionId;
+
+      if (!mounted) return;
+
+      // Fetch saved timeline
+      setState(() {
+        _lessonLoadingStage = 'Fetching timeline data...';
+        _lessonLoadingProgress = 0.4;
+      });
+
+      final timeline = await _timelineApi!.getSessionTimeline(sessionId);
+      debugPrint('✅ Timeline loaded: ${timeline.segments.length} segments, ${timeline.totalDuration}s');
+
+      if (!mounted) return;
+
+      // Load into controller
+      setState(() {
+        _lessonLoadingStage = 'Preparing playback...';
+        _lessonLoadingProgress = 0.8;
+      });
+      await _timelineController!.loadTimeline(timeline);
+
+      if (!mounted) return;
+
+      // Clear loading, start playback
+      setState(() {
+        _lessonLoading = false;
+        _lessonLoadingStage = '';
+        _lessonLoadingProgress = 1.0;
+      });
+
+      debugPrint('▶️ Starting rewatch playback...');
+      await _timelineController!.play();
+    } catch (e, st) {
+      debugPrint('❌ Rewatch lesson error: $e\n$st');
+      if (mounted) {
+        setState(() {
+          _lessonLoadingStage = 'Failed to load lesson';
+          _lessonLoadingError = e.toString();
+        });
+      }
+    }
+  }
+
+  /// Persist lesson completion on the backend so it shows as "Completed"
+  /// in the history page.
+  Future<void> _markSessionComplete() async {
+    if (_sessionId == null) return;
+    try {
+      final baseUrl = _apiUrlCtrl.text.trim().isEmpty
+          ? 'http://localhost:8000'
+          : _apiUrlCtrl.text.trim();
+      final authService = AuthService(baseUrl: baseUrl);
+      await authService.authenticatedPost(
+        '$baseUrl/api/lessons/$_sessionId/complete/',
+      );
+      debugPrint('✅ Session $_sessionId marked as completed');
+    } catch (e) {
+      debugPrint('⚠️ Failed to mark session complete: $e');
     }
   }
 
@@ -1209,9 +1354,19 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
             .add(Duration(milliseconds: (drawDuration * 1000).round()));
       });
 
-      // Wait for animation
-      await Future.delayed(
-          Duration(milliseconds: (drawDuration * 1000 * 0.95).round()));
+      // Wait for animation — pause-aware: the timer only counts down while
+      // playback is active, so pausing freezes both the SketchPlayer and this
+      // countdown.
+      final totalWaitMs = (drawDuration * 1000 * 0.95).round();
+      var elapsedMs = 0;
+      const tickMs = 100;
+      while (elapsedMs < totalWaitMs) {
+        await Future.delayed(const Duration(milliseconds: tickMs));
+        // Only count time when not paused
+        if (!(_timelineController?.isPaused ?? false)) {
+          elapsedMs += tickMs;
+        }
+      }
 
       // Commit to board
       if (_plan != null) {
@@ -2034,57 +2189,83 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                   jitterFreq: _jitterFreq,
                   showRasterUnderlay: _planUnderlay ? _showRasterUnder : false,
                   raster: _raster,
+                  isPaused: _drawingPaused,
                 ));
 
       return Stack(children: [
-        Positioned.fill(child: baseCanvas),
+        // RepaintBoundary isolates the animating canvas from the committed
+        // board layer so each can repaint independently (GPU optimisation).
+        Positioned.fill(
+          child: RepaintBoundary(child: baseCanvas),
+        ),
         if (_board.isNotEmpty)
           Positioned.fill(
-              child: CustomPaint(painter: CommittedPainter(_board))),
+            child: RepaintBoundary(
+              child: CustomPaint(painter: CommittedPainter(_board)),
+            ),
+          ),
       ]);
     }
+
+    // Responsive breakpoint — use portrait-friendly layout on narrow screens
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isMobile = screenWidth < 600;
 
     return Scaffold(
       backgroundColor: Colors.white,
       body: SafeArea(
         child: Stack(
           children: [
-            // Main content row
-            Row(
-              children: [
-                Expanded(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final size =
-                          Size(constraints.maxWidth, constraints.maxHeight);
-                      return buildCanvas(size);
-                    },
-                  ),
+            // Main content — responsive: full canvas on mobile, Row with
+            // optional dev panel on desktop/tablet.
+            if (isMobile)
+              // ── Portrait-first mobile layout ────────────────────────────
+              Positioned.fill(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final size =
+                        Size(constraints.maxWidth, constraints.maxHeight);
+                    return buildCanvas(size);
+                  },
                 ),
-                // Toggle button for developer panel (only for developer users)
-                if (Provider.of<DeveloperModeProvider>(context).isEnabled)
-                  Container(
-                    width: 32,
-                    color: Colors.grey[100],
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        IconButton(
-                          icon: Icon(
-                            _showDevPanel ? Icons.chevron_right : Icons.developer_mode,
-                            color: Colors.grey[700],
-                          ),
-                          tooltip: _showDevPanel ? 'Hide Developer Panel' : 'Show Developer Panel',
-                          onPressed: () => setState(() => _showDevPanel = !_showDevPanel),
-                        ),
-                      ],
+              )
+            else
+              // ── Desktop / tablet layout ─────────────────────────────────
+              Row(
+                children: [
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final size =
+                            Size(constraints.maxWidth, constraints.maxHeight);
+                        return buildCanvas(size);
+                      },
                     ),
                   ),
+                  // Toggle button for developer panel (debug builds + developer users only)
+                  if (kDebugMode && Provider.of<DeveloperModeProvider>(context).isEnabled)
+                    Container(
+                      width: 32,
+                      color: Colors.grey[100],
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          IconButton(
+                            icon: Icon(
+                              _showDevPanel ? Icons.chevron_right : Icons.developer_mode,
+                              color: Colors.grey[700],
+                            ),
+                            tooltip: _showDevPanel ? 'Hide Developer Panel' : 'Show Developer Panel',
+                            onPressed: () => setState(() => _showDevPanel = !_showDevPanel),
+                          ),
+                        ],
+                      ),
+                    ),
                 // Collapsible developer panel (only for developer users)
-                if (_showDevPanel && Provider.of<DeveloperModeProvider>(context).isEnabled)
-                  SizedBox(width: 360, child: rightPanel),
-              ],
-            ),
+                if (kDebugMode && _showDevPanel && Provider.of<DeveloperModeProvider>(context).isEnabled)
+                  DeveloperDashboard(child: rightPanel),
+                ],
+              ),
             
             // ── Lesson loading overlay ──────────────────────────────────────
             if (_lessonLoading)
@@ -2097,24 +2278,26 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          // Animated icon
-                          TweenAnimationBuilder<double>(
-                            tween: Tween(begin: 0.0, end: 1.0),
-                            duration: const Duration(milliseconds: 1200),
-                            curve: Curves.easeInOut,
-                            builder: (context, value, child) {
-                              return Transform.scale(
-                                scale: 0.8 + (value * 0.2),
-                                child: Opacity(
-                                  opacity: 0.5 + (value * 0.5),
-                                  child: child,
-                                ),
-                              );
-                            },
-                            child: Icon(
-                              Icons.school,
-                              size: 64,
-                              color: Theme.of(context).colorScheme.primary,
+                          // Animated icon (decorative)
+                          ExcludeSemantics(
+                            child: TweenAnimationBuilder<double>(
+                              tween: Tween(begin: 0.0, end: 1.0),
+                              duration: const Duration(milliseconds: 1200),
+                              curve: Curves.easeInOut,
+                              builder: (context, value, child) {
+                                return Transform.scale(
+                                  scale: 0.8 + (value * 0.2),
+                                  child: Opacity(
+                                    opacity: 0.5 + (value * 0.5),
+                                    child: child,
+                                  ),
+                                );
+                              },
+                              child: Icon(
+                                Icons.school,
+                                size: 64,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
                             ),
                           ),
                           const SizedBox(height: 32),
@@ -2167,21 +2350,67 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                             ),
                           ),
                           const SizedBox(height: 24),
-                          // Cancel button
-                          TextButton.icon(
-                            onPressed: () {
-                              setState(() {
-                                _lessonLoading = false;
-                                _lessonLoadingStage = '';
-                                _lessonLoadingProgress = 0.0;
-                              });
-                              Navigator.of(context).pop();
-                            },
-                            icon: const Icon(Icons.close, size: 18),
-                            label: const Text('Cancel'),
-                            style: TextButton.styleFrom(
-                              foregroundColor: Colors.grey[600],
+                          // Error banner
+                          if (_lessonLoadingError != null) ...[
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.red.withOpacity(0.08),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.red.withOpacity(0.3)),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.error_outline, color: Colors.red, size: 20),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      _lessonLoadingError!,
+                                      style: const TextStyle(fontSize: 12, color: Colors.red),
+                                      maxLines: 3,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
+                            const SizedBox(height: 16),
+                          ],
+                          // Action buttons
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              TextButton.icon(
+                                onPressed: () {
+                                  setState(() {
+                                    _lessonLoading = false;
+                                    _lessonLoadingStage = '';
+                                    _lessonLoadingProgress = 0.0;
+                                    _lessonLoadingError = null;
+                                  });
+                                  Navigator.of(context).pop();
+                                },
+                                icon: const Icon(Icons.close, size: 18),
+                                label: const Text('Cancel'),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: Colors.grey[600],
+                                ),
+                              ),
+                              if (_lessonLoadingError != null) ...[
+                                const SizedBox(width: 12),
+                                FilledButton.icon(
+                                  onPressed: () {
+                                    setState(() {
+                                      _lessonLoadingError = null;
+                                      _lessonLoadingProgress = 0.0;
+                                    });
+                                    _autoStartLesson(widget.autoStartTopic ?? '');
+                                  },
+                                  icon: const Icon(Icons.refresh, size: 18),
+                                  label: const Text('Retry'),
+                                ),
+                              ],
+                            ],
                           ),
                         ],
                       ),
@@ -2225,9 +2454,64 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                     onPressed: _board.isEmpty ? null : _clearBoard,
                     child: const Icon(Icons.delete_sweep),
                   ),
+                  // Dev panel button on mobile (opens as bottom sheet, debug builds only)
+                  if (kDebugMode && isMobile && Provider.of<DeveloperModeProvider>(context).isEnabled) ...[
+                    const SizedBox(height: 8),
+                    FloatingActionButton.small(
+                      heroTag: 'devpanel',
+                      tooltip: 'Developer Panel',
+                      backgroundColor: Colors.orange[50],
+                      foregroundColor: Colors.orange[800],
+                      onPressed: () {
+                        showModalBottomSheet(
+                          context: context,
+                          isScrollControlled: true,
+                          builder: (_) => DraggableScrollableSheet(
+                            initialChildSize: 0.7,
+                            minChildSize: 0.3,
+                            maxChildSize: 0.95,
+                            expand: false,
+                            builder: (context, scrollController) =>
+                                SingleChildScrollView(
+                              controller: scrollController,
+                              child: rightPanel,
+                            ),
+                          ),
+                        );
+                      },
+                      child: const Icon(Icons.developer_mode, size: 20),
+                    ),
+                  ],
                 ],
               ),
             ),
+
+            // ── Playback bar (bottom) — only during lesson sessions ────────
+            if (_isInLessonSession && _timelineController?.timeline != null && !_lessonLoading && !_lessonComplete)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: LessonPlaybackBar(controller: _timelineController!),
+              ),
+
+            // ── Lesson completion overlay — only during lesson sessions ───
+            if (_isInLessonSession && _lessonComplete)
+              Positioned.fill(
+                child: LessonCompletionOverlay(
+                  lessonTitle: widget.lessonTitle,
+                  segmentsCompleted: _timelineController?.segmentCount ?? 0,
+                  totalDurationSeconds: _timelineController?.totalDuration ?? 0.0,
+                  onReplay: () {
+                    setState(() => _lessonComplete = false);
+                    _timelineController?.restart();
+                  },
+                  onExit: () {
+                    setState(() => _lessonComplete = false);
+                    Navigator.of(context).pop();
+                  },
+                ),
+              ),
           ],
         ),
       ),
