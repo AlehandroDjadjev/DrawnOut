@@ -14,7 +14,8 @@ class TimelineApiClient {
     _authService.onSessionExpired = callback;
   }
 
-  String _api(String path) => baseUrl.replaceFirst(RegExp(r'/+$'), '') + '/api' + path;
+  String _api(String path) =>
+      '${baseUrl.replaceFirst(RegExp(r'/+$'), '')}/api$path';
 
   /// Generate a new timeline for a session
   Future<SyncedTimeline> generateTimeline(
@@ -32,10 +33,12 @@ class TimelineApiClient {
     );
 
     if (response.statusCode ~/ 100 != 2) {
-      throw Exception('Failed to generate timeline: ${response.statusCode} ${response.body}');
+      throw Exception(
+          'Failed to generate timeline: ${response.statusCode} ${response.body}');
     }
 
-    final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+    final data =
+        jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
     return SyncedTimeline.fromJson(data);
   }
 
@@ -48,7 +51,8 @@ class TimelineApiClient {
       throw Exception('Failed to get timeline: ${response.statusCode}');
     }
 
-    final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+    final data =
+        jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
     return SyncedTimeline.fromJson(data);
   }
 
@@ -61,7 +65,8 @@ class TimelineApiClient {
       throw Exception('Failed to get session timeline: ${response.statusCode}');
     }
 
-    final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+    final data =
+        jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
     return SyncedTimeline.fromJson(data);
   }
 }

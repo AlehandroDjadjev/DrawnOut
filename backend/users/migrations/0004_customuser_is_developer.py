@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('users', '0002_rename_profilepicture_avatar_and_more'),
+        ('users', '0003_alter_customuser_credits_alter_customuser_inventory'),
     ]
 
     operations = [

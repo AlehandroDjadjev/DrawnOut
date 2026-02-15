@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
+import 'dart:convert';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../theme_provider.dart';
 import '../ui/apple_ui.dart';
 import '../providers/developer_mode_provider.dart';
+import '../services/auth_service.dart';
 import 'profile_page.dart';
+import 'owned_items.dart';
+import 'negotiations_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -17,6 +21,64 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   int _selectedIndex = 0;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  List<dynamic> _notifications = [];
+  int _unreadCount = 0;
+  Map<String, dynamic>? _profile;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchNotifications();
+    _fetchProfile();
+  }
+
+  Future<void> _fetchProfile() async {
+    try {
+      final base = (dotenv.env['API_URL'] ?? 'http://127.0.0.1:8000').trim();
+      final authService = AuthService(baseUrl: base);
+      final url = '$base/api/auth/profile/';
+      final resp = await authService.authenticatedGet(url);
+      if (resp.statusCode == 200) {
+        final map = jsonDecode(resp.body) as Map<String, dynamic>;
+        if (!mounted) return;
+        setState(() => _profile = map);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _fetchNotifications() async {
+    try {
+      final base = (dotenv.env['API_URL'] ?? 'http://127.0.0.1:8000').trim();
+      final authService = AuthService(baseUrl: base);
+      final url = '$base/api/market/notifications/';
+      final resp = await authService.authenticatedGet(url);
+      if (resp.statusCode == 200) {
+        final list = jsonDecode(resp.body) as List<dynamic>;
+        if (!mounted) return;
+        setState(() {
+          _notifications = list;
+          _unreadCount = list.where((n) => n['is_read'] == false).length;
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _markNotificationRead(int id) async {
+    try {
+      final base = (dotenv.env['API_URL'] ?? 'http://127.0.0.1:8000').trim();
+      final authService = AuthService(baseUrl: base);
+      final url = '$base/api/market/notifications/read/$id/';
+      final resp = await authService.authenticatedPost(url);
+      if (resp.statusCode == 200) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Marked as read')));
+        await _fetchNotifications();
+      }
+    } catch (_) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Network error')));
+    }
+  }
 
   void _logout() async {
     // Clear developer mode
@@ -48,6 +110,77 @@ class _HomePageState extends State<HomePage> {
         title: Text(_selectedIndex == 0 ? 'Home' : 'Profile'),
         centerTitle: true,
         actions: [
+          // Notification bell
+          Stack(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.notifications_none),
+                onPressed: () {
+                  // show notifications dialog
+                  showDialog(
+                    context: context,
+                    builder: (_) => AlertDialog(
+                      title: const Text('Notifications'),
+                      content: SizedBox(
+                        width: 400,
+                        child: _notifications.isEmpty
+                            ? const Text('No notifications')
+                            : ListView.builder(
+                                shrinkWrap: true,
+                                itemCount: _notifications.length,
+                                itemBuilder: (_, i) {
+                                  final n = _notifications[i];
+                                  return ListTile(
+                                    title: Text(n['verb'] ?? ''),
+                                    subtitle: Text(n['created_at'] ?? ''),
+                                    trailing: n['is_read'] == false
+                                        ? TextButton(
+                                            onPressed: () async {
+                                              Navigator.pop(context);
+                                              await _markNotificationRead(
+                                                  n['id']);
+                                            },
+                                            child: const Text('Mark read'),
+                                          )
+                                        : TextButton(
+                                            onPressed: () {
+                                              Navigator.pop(context);
+                                              Navigator.push(
+                                                context,
+                                                MaterialPageRoute(
+                                                    builder: (_) =>
+                                                        const NegotiationsPage()),
+                                              );
+                                            },
+                                            child: const Text('Open')),
+                                  );
+                                },
+                              ),
+                      ),
+                      actions: [
+                        TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('Close')),
+                      ],
+                    ),
+                  );
+                },
+              ),
+              if (_unreadCount > 0)
+                Positioned(
+                  right: 6,
+                  top: 6,
+                  child: CircleAvatar(
+                    radius: 8,
+                    backgroundColor: Colors.red,
+                    child: Text(
+                      '$_unreadCount',
+                      style: const TextStyle(fontSize: 10, color: Colors.white),
+                    ),
+                  ),
+                ),
+            ],
+          ),
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 400),
             transitionBuilder: (child, animation) {
@@ -110,7 +243,7 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildDrawer(ThemeData theme) {
     final devMode = Provider.of<DeveloperModeProvider>(context);
-    
+
     return Drawer(
       child: ListView(
         padding: EdgeInsets.zero,
@@ -131,10 +264,21 @@ class _HomePageState extends State<HomePage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        "DrawnOut",
-                        style: TextStyle(
-                            fontSize: 24, color: theme.colorScheme.primary),
-                      ),
+                            _profile != null
+                                ? (_profile!['username'] ?? 'DrawnOut')
+                                : 'DrawnOut',
+                            style: TextStyle(
+                                fontSize: 18,
+                                color: theme.colorScheme.primary)),
+                        const SizedBox(height: 6),
+                        Text(
+                            _profile != null
+                                ? 'Credits: ${_profile!['credits']}'
+                                : '',
+                            style: TextStyle(
+                                fontSize: 12,
+                                color: theme.colorScheme.onSurface
+                                    .withOpacity(0.7))),
                       if (devMode.isEnabled)
                         Text(
                           "Developer Mode",
@@ -162,7 +306,8 @@ class _HomePageState extends State<HomePage> {
 
           // Market
           ListTile(
-            leading: Icon(Icons.storefront_outlined, color: theme.colorScheme.primary),
+            leading: Icon(Icons.storefront_outlined,
+                color: theme.colorScheme.primary),
             title: const Text('Market'),
             onTap: () {
               Navigator.pop(context);
@@ -170,9 +315,36 @@ class _HomePageState extends State<HomePage> {
             },
           ),
 
+          // Negotiations
+          ListTile(
+            leading: Icon(Icons.handshake, color: theme.colorScheme.primary),
+            title: const Text('Negotiations'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const NegotiationsPage()),
+              );
+            },
+          ),
+
+          // My Items
+          ListTile(
+            leading: Icon(Icons.inventory, color: theme.colorScheme.primary),
+            title: const Text('My Items'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const OwnedItemsPage()),
+              );
+            },
+          ),
+
           // Whiteboard
           ListTile(
-            leading: Icon(Icons.draw_outlined, color: theme.colorScheme.primary),
+            leading:
+                Icon(Icons.draw_outlined, color: theme.colorScheme.primary),
             title: const Text('Whiteboard'),
             onTap: () {
               Navigator.pop(context);

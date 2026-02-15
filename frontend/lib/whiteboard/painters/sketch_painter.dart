@@ -1,5 +1,4 @@
 import 'dart:math' as math;
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../core/placed_image.dart';
 
@@ -82,10 +81,12 @@ class SketchPainter extends CustomPainter {
   }
 
   void _drawRasterUnderlay(Canvas canvas, Offset center, PlacedImage img) {
-    final topLeft = center + img.worldCenter - Offset(
-      img.worldSize.width / 2,
-      img.worldSize.height / 2,
-    );
+    final topLeft = center +
+        img.worldCenter -
+        Offset(
+          img.worldSize.width / 2,
+          img.worldSize.height / 2,
+        );
     final destRect = topLeft & img.worldSize;
     final srcRect = img.sourceRect;
 
@@ -97,7 +98,8 @@ class SketchPainter extends CustomPainter {
 
     // Draw a semi-transparent veil over the image
     if (rasterVeilOpacity > 0) {
-      final veilPaint = Paint()..color = Colors.white.withOpacity(rasterVeilOpacity);
+      final veilPaint = Paint()
+        ..color = Colors.white.withOpacity(rasterVeilOpacity);
       canvas.drawRect(destRect, veilPaint);
     }
   }
@@ -218,7 +220,8 @@ class SketchOverlayPainter extends CustomPainter {
 
     for (int k = 0; k < passes; k++) {
       final seed = 1337 + k * 97;
-      final noisyPath = _jitterPath(partialWorldPath, amp: jitterAmp, freq: jitterFreq, seed: seed);
+      final noisyPath = _jitterPath(partialWorldPath,
+          amp: jitterAmp, freq: jitterFreq, seed: seed);
 
       final widthMultiplier = 1.0 + (k == 0 ? 0.0 : -0.15 * k);
       final paint = Paint()
@@ -235,7 +238,8 @@ class SketchOverlayPainter extends CustomPainter {
     canvas.restore();
   }
 
-  Path _jitterPath(Path p, {required double amp, required double freq, required int seed}) {
+  Path _jitterPath(Path p,
+      {required double amp, required double freq, required int seed}) {
     if (amp <= 0 || freq <= 0) return p;
     final rnd = math.Random(seed);
     final out = Path();

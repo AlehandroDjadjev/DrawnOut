@@ -683,10 +683,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       debugPrint('Vectorize error: $e\n$st');
       _showError(e.toString());
     } finally {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _busy = false;
         });
+      }
     }
   }
 
@@ -734,10 +735,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     } catch (e) {
       _showError(e.toString());
     } finally {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _busy = false;
         });
+      }
     }
   }
 
@@ -830,10 +832,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       debugPrint('SketchText error: $e\n$st');
       _showError(e.toString());
     } finally {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _busy = false;
         });
+      }
     }
   }
 
@@ -1061,9 +1064,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                         style: TextStyle(fontWeight: FontWeight.bold)),
                     const SizedBox(height: 4),
                     Text(
-                      lesson.content.substring(
-                              0, math.min(300, lesson.content.length)) +
-                          '...',
+                      '${lesson.content.substring(0, math.min(300, lesson.content.length))}...',
                       style: const TextStyle(fontSize: 12),
                     ),
                     const SizedBox(height: 16),
@@ -1260,7 +1261,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           totalChars < 50;
 
       final drawDuration = isDictationSegment
-          ? (segment!.actualAudioDuration * 0.85)
+          ? (segment.actualAudioDuration * 0.85)
               .clamp(6.0, 25.0) // SLOW: match dictation pace
           : totalChars < 10
               ? 5.0 // Even short words take 5s
@@ -1312,7 +1313,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         _commitCurrentSketch();
         debugPrint('✅ Committed to board (total: ${_board.length})');
       }
-    } catch (e, st) {
+    } catch (e) {
       debugPrint('❌ Drawing error: $e');
     }
   }
@@ -1327,8 +1328,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       for (final a in actions) {
         if (a is Map && (a['type'] ?? '') == 'heading') {
           final t = (a['text'] ?? '').toString();
-          if (t.isNotEmpty)
+          if (t.isNotEmpty) {
             return _buildDiagramPrompt(t, sessionData, planHint);
+          }
         }
       }
     } catch (_) {}
@@ -1654,8 +1656,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   }
 
   double _chooseFont(String type, _Fonts fonts, Map<String, dynamic>? style) {
-    if (style != null && style['fontSize'] is num)
+    if (style != null && style['fontSize'] is num) {
       return (style['fontSize'] as num).toDouble();
+    }
     if (type == 'heading') return fonts.heading;
     if (type == 'formula') return fonts.heading;
     return fonts.body;
@@ -1872,7 +1875,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     final prev = _canvasSize;
     if (prev != null &&
         (prev.width - size.width).abs() < 1 &&
-        (prev.height - size.height).abs() < 1) return;
+        (prev.height - size.height).abs() < 1) {
+      return;
+    }
     _canvasSize = size;
     // rebuild layout config for new page size while preserving cursor/blocks
     if (_layout == null) return;
@@ -1980,8 +1985,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                     ? null
                     : () {
                         setState(() {
-                          if (_layout != null)
+                          if (_layout != null) {
                             _layout!.cursorY = _layout!.config.page.top;
+                          }
                         });
                       },
                 icon: const Icon(Icons.vertical_align_top),
@@ -2116,10 +2122,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                         } catch (e) {
                           _showError(e.toString());
                         } finally {
-                          if (mounted)
+                          if (mounted) {
                             setState(() {
                               _busy = false;
                             });
+                          }
                         }
                       },
                 icon: const Icon(Icons.playlist_add_check),
@@ -2781,8 +2788,9 @@ class _LayoutState {
   }
 
   double _columnWidth() {
-    if (config.columns == null)
+    if (config.columns == null) {
       return config.page.width - config.page.left - config.page.right;
+    }
     final usable = config.page.width -
         config.page.left -
         config.page.right -

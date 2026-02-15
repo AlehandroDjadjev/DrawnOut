@@ -1,5 +1,4 @@
 import 'dart:math' as math;
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../core/vector_object.dart';
 import '../core/placed_image.dart';
@@ -155,10 +154,11 @@ class RasterOnlyPainter extends CustomPainter {
     canvas.scale(zoom);
 
     for (final img in images) {
-      final topLeft = img.worldCenter - Offset(
-        img.worldSize.width / 2,
-        img.worldSize.height / 2,
-      );
+      final topLeft = img.worldCenter -
+          Offset(
+            img.worldSize.width / 2,
+            img.worldSize.height / 2,
+          );
       final destRect = topLeft & img.worldSize;
       final srcRect = img.sourceRect;
 
@@ -235,10 +235,11 @@ class CombinedWhiteboardPainter extends CustomPainter {
   }
 
   void _drawImage(Canvas canvas, PlacedImage img) {
-    final topLeft = img.worldCenter - Offset(
-      img.worldSize.width / 2,
-      img.worldSize.height / 2,
-    );
+    final topLeft = img.worldCenter -
+        Offset(
+          img.worldSize.width / 2,
+          img.worldSize.height / 2,
+        );
     final destRect = topLeft & img.worldSize;
 
     final paint = Paint()
@@ -248,7 +249,8 @@ class CombinedWhiteboardPainter extends CustomPainter {
 
     // Veil overlay
     if (rasterVeilOpacity > 0) {
-      canvas.drawRect(destRect, Paint()..color = Colors.white.withOpacity(rasterVeilOpacity));
+      canvas.drawRect(destRect,
+          Paint()..color = Colors.white.withOpacity(rasterVeilOpacity));
     }
   }
 
@@ -256,7 +258,8 @@ class CombinedWhiteboardPainter extends CustomPainter {
     final path = obj.plan.toPath();
 
     for (int k = 0; k < obj.passes; k++) {
-      final noisyPath = _jitterPath(path, obj.jitterAmp, obj.jitterFreq, seedBase + k * 97);
+      final noisyPath =
+          _jitterPath(path, obj.jitterAmp, obj.jitterFreq, seedBase + k * 97);
       final widthMult = 1.0 + (k == 0 ? 0.0 : -0.15 * k);
 
       canvas.drawPath(
@@ -309,10 +312,11 @@ class CombinedWhiteboardPainter extends CustomPainter {
         final tangent = m.getTangentForOffset(d);
         if (tangent == null) continue;
         final pos = tangent.position;
-        final q = pos + Offset(
-          (rnd.nextDouble() - 0.5) * 2.0 * amp,
-          (rnd.nextDouble() - 0.5) * 2.0 * amp,
-        );
+        final q = pos +
+            Offset(
+              (rnd.nextDouble() - 0.5) * 2.0 * amp,
+              (rnd.nextDouble() - 0.5) * 2.0 * amp,
+            );
         if (i == 0) {
           out.moveTo(q.dx, q.dy);
         } else {
