@@ -484,6 +484,14 @@ class WhiteboardController extends ChangeNotifier {
   }
 
 
+  // Layout tracking for auto-positioning
+  double _nextY = 100.0;
+  static const double _headingSize = 120.0;
+  static const double _bulletSize = 80.0;
+  static const double _lineSpacing = 1.4;
+  static const double _leftMargin = 100.0;
+  static const double _bulletIndent = 60.0;
+
   /// Handle drawing actions from timeline
   ///
   /// Processes all action types: heading, bullet, subbullet, label, formula, sketch_image
@@ -514,19 +522,83 @@ class WhiteboardController extends ChangeNotifier {
       try {
         switch (action.type) {
           case 'heading':
-          case 'bullet':
-          case 'subbullet':
-          case 'label':
-          case 'formula':
-            // All text-based actions
+            // Heading: large text, centered or left-aligned
             final placement = action.placementValues;
-            debugPrint('    -> Adding text at (${placement.x}, ${placement.y})');
+            final hasPlacement = action.placement != null && 
+                (placement.x != 0.0 || placement.y != 0.0);
+            
+            final x = hasPlacement ? placement.x : _leftMargin;
+            final y = hasPlacement ? placement.y : _nextY;
+            final fontSize = (action.style?['fontSize'] as num?)?.toDouble() ?? _headingSize;
+            
+            debugPrint('    -> Adding heading at ($x, $y) size=$fontSize');
             await addText(
               text: action.text,
-              origin: Offset(placement.x, placement.y),
-              letterSize: (action.style?['fontSize'] as num?)?.toDouble() ?? 180.0,
+              origin: Offset(x, y),
+              letterSize: fontSize,
             );
-            debugPrint('    Text added');
+            
+            // Update next Y position
+            if (!hasPlacement) {
+              _nextY = y + fontSize * _lineSpacing + 40;
+            }
+            debugPrint('    Heading added, nextY=$_nextY');
+            break;
+            
+          case 'bullet':
+          case 'subbullet':
+            // Bullet points with indentation
+            final placement = action.placementValues;
+            final hasPlacement = action.placement != null && 
+                (placement.x != 0.0 || placement.y != 0.0);
+            
+            final level = action.level ?? (action.type == 'subbullet' ? 1 : 0);
+            final indent = _leftMargin + (level * _bulletIndent);
+            final x = hasPlacement ? placement.x : indent;
+            final y = hasPlacement ? placement.y : _nextY;
+            final fontSize = (action.style?['fontSize'] as num?)?.toDouble() ?? _bulletSize;
+            
+            // Add bullet marker for non-subbullets
+            final bulletText = action.type == 'subbullet' 
+                ? '  - ${action.text}' 
+                : '• ${action.text}';
+            
+            debugPrint('    -> Adding ${action.type} at ($x, $y) level=$level');
+            await addText(
+              text: bulletText,
+              origin: Offset(x, y),
+              letterSize: fontSize,
+            );
+            
+            // Update next Y position
+            if (!hasPlacement) {
+              _nextY = y + fontSize * _lineSpacing;
+            }
+            debugPrint('    Bullet added, nextY=$_nextY');
+            break;
+            
+          case 'label':
+          case 'formula':
+            // Labels and formulas use placement if provided
+            final placement = action.placementValues;
+            final hasPlacement = action.placement != null && 
+                (placement.x != 0.0 || placement.y != 0.0);
+            
+            final x = hasPlacement ? placement.x : _leftMargin;
+            final y = hasPlacement ? placement.y : _nextY;
+            final fontSize = (action.style?['fontSize'] as num?)?.toDouble() ?? _bulletSize;
+            
+            debugPrint('    -> Adding ${action.type} at ($x, $y)');
+            await addText(
+              text: action.text,
+              origin: Offset(x, y),
+              letterSize: fontSize,
+            );
+            
+            if (!hasPlacement) {
+              _nextY = y + fontSize * _lineSpacing;
+            }
+            debugPrint('    ${action.type} added');
             break;
             
           case 'sketch_image':
@@ -551,6 +623,12 @@ class WhiteboardController extends ChangeNotifier {
     }
     
     debugPrint('handleDrawingActions completed');
+  }
+  
+  /// Reset layout state (call when starting a new lesson)
+  void resetLayout() {
+    _nextY = 100.0;
+    notifyListeners();
   }
   
   /// Handle drawing actions with explicit duration (from dictation detection)

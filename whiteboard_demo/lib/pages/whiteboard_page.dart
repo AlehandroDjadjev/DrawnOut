@@ -111,25 +111,32 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
     }
   }
   
-  Future<void> _initializeLesson(LessonContext context) async {
-    final configService = Provider.of<AppConfigService>(this.context, listen: false);
+  Future<void> _initializeLesson(LessonContext lessonCtx) async {
+    if (!mounted) return;
+    
+    final configService = Provider.of<AppConfigService>(context, listen: false);
     final baseUrl = configService.backendUrl;
     
-    int? sessionId = context.sessionId;
+    // Reset whiteboard layout for new lesson
+    _controller.resetLayout();
+    _controller.clear();
+    
+    int? sessionId = lessonCtx.sessionId;
     
     // If we have a topic but no sessionId, start a new lesson
-    if (sessionId == null && context.topic != null) {
+    if (sessionId == null && lessonCtx.topic != null) {
       try {
-        debugPrint('Starting new lesson for topic: ${context.topic}');
+        debugPrint('Starting new lesson for topic: ${lessonCtx.topic}');
         final lessonApi = LessonApiService(baseUrl: baseUrl);
-        final session = await lessonApi.startLesson(topic: context.topic!);
+        final session = await lessonApi.startLesson(topic: lessonCtx.topic!);
+        if (!mounted) return;
         sessionId = session.id;
         debugPrint('Lesson started with session ID: $sessionId');
       } catch (e) {
         debugPrint('Failed to start lesson: $e');
         // Show error to user
         if (mounted) {
-          ScaffoldMessenger.of(this.context).showSnackBar(
+          ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('Could not start lesson: $e'),
               backgroundColor: Colors.red,
@@ -141,7 +148,7 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
     }
     
     // Now load the timeline if we have a session
-    if (sessionId != null) {
+    if (sessionId != null && mounted) {
       await _loadTimeline(sessionId);
     }
   }

@@ -11,3 +11,7 @@ class CustomUser(AbstractUser):
     owned_avatars = models.ManyToManyField(Avatar, blank=True)
     avatar = models.ForeignKey(Avatar, on_delete=models.SET_NULL, null=True, blank=True, related_name='current_for')
     inventory = models.ManyToManyField(MarketItem, blank=True)
+    
+    # Developer flag - manually set via admin/database
+    # Enables debug panel and advanced features in the app
+    is_developer = models.BooleanField(default=False)

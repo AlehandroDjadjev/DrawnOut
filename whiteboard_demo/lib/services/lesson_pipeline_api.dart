@@ -1,12 +1,19 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
-import 'package:http/http.dart' as http;
+import 'auth_service.dart';
 
 /// Service for interacting with the lesson pipeline API
 class LessonPipelineApi {
   final String baseUrl;
+  final AuthService _authService;
 
-  LessonPipelineApi({this.baseUrl = 'http://localhost:8000'});
+  LessonPipelineApi({this.baseUrl = 'http://localhost:8000'})
+      : _authService = AuthService(baseUrl: baseUrl);
+
+  /// Set callback for when session expires (refresh failed).
+  set onSessionExpired(void Function()? callback) {
+    _authService.onSessionExpired = callback;
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Image Proxy Helper (CORS workaround for web)
@@ -69,19 +76,13 @@ class LessonPipelineApi {
     print('🎯 Generating lesson for: $prompt');
 
     try {
-      final response = await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
+      final response = await _authService.authenticatedPost(
+        url.toString(),
         body: jsonEncode({
           'prompt': prompt,
           'subject': subject,
           'duration_target': durationTarget,
         }),
-      ).timeout(
-        const Duration(minutes: 5), // Lesson generation can take a while
-        onTimeout: () {
-          throw Exception('Lesson generation timed out after 5 minutes');
-        },
       );
 
       if (response.statusCode == 200) {
@@ -106,9 +107,7 @@ class LessonPipelineApi {
     final url = Uri.parse('$baseUrl/api/lesson-pipeline/health/');
 
     try {
-      final response = await http.get(url).timeout(
-        const Duration(seconds: 10),
-      );
+      final response = await _authService.authenticatedGet(url.toString());
 
       if (response.statusCode == 200 || response.statusCode == 503) {
         return jsonDecode(response.body);

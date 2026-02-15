@@ -119,23 +119,12 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
             const SizedBox(height: 16),
-            Card(
+            const Card(
               child: ListTile(
-                leading: const Icon(Icons.developer_mode_outlined, color: Colors.orange),
-                title: const Text('Developer Mode'),
-                subtitle: const Text('Enabled'),
-                trailing: TextButton(
-                  onPressed: () {
-                    devMode.disable();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Developer mode disabled'),
-                        behavior: SnackBarBehavior.floating,
-                      ),
-                    );
-                  },
-                  child: const Text('Disable'),
-                ),
+                leading: Icon(Icons.developer_mode_outlined, color: Colors.orange),
+                title: Text('Developer Account'),
+                subtitle: Text('Debug features enabled (managed via database)'),
+                trailing: Icon(Icons.check_circle, color: Colors.green),
               ),
             ),
           ],

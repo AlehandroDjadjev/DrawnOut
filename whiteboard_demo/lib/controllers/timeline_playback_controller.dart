@@ -8,6 +8,7 @@ class TimelinePlaybackController extends ChangeNotifier {
   int _currentSegmentIndex = 0;
   bool _isPlaying = false;
   bool _isPaused = false;
+  bool _isDisposed = false;
   
   final AudioPlayer _audioPlayer = AudioPlayer();
   Timer? _progressTimer;
@@ -154,6 +155,10 @@ class TimelinePlaybackController extends ChangeNotifier {
   void _startProgressTimer() {
     _progressTimer?.cancel();
     _progressTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if (_isDisposed) {
+        _progressTimer?.cancel();
+        return;
+      }
       if (_audioPlayer.position != null) {
         final segmentStart = currentSegment?.startTime ?? 0.0;
         _currentTime = segmentStart + (_audioPlayer.position!.inMilliseconds / 1000.0);
@@ -222,8 +227,10 @@ class TimelinePlaybackController extends ChangeNotifier {
   
   @override
   void dispose() {
-    _audioPlayer.dispose();
+    _isDisposed = true;
     _progressTimer?.cancel();
+    _progressTimer = null;
+    _audioPlayer.dispose();
     super.dispose();
   }
 }

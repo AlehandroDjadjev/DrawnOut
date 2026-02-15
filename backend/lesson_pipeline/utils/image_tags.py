@@ -62,8 +62,6 @@ def parse_image_tags(content: str) -> Tuple[str, List[ImageTag]]:
             style=attrs.get('style'),
             aspect_ratio=attrs.get('aspect'),
             size=attrs.get('size'),
-            guidance_scale=_parse_float(attrs.get('guidance'), 7.5),
-            strength=_parse_float(attrs.get('strength'), 0.7),
         )
         
         tags.append(tag)
@@ -165,12 +163,6 @@ def validate_image_tag(tag: ImageTag) -> List[str]:
     
     if tag.aspect_ratio and not _is_valid_aspect_ratio(tag.aspect_ratio):
         errors.append(f"Invalid aspect ratio '{tag.aspect_ratio}' for tag '{tag.id}'")
-    
-    if tag.guidance_scale is not None and (tag.guidance_scale < 0 or tag.guidance_scale > 20):
-        errors.append(f"Guidance scale {tag.guidance_scale} out of range [0, 20] for tag '{tag.id}'")
-    
-    if tag.strength is not None and (tag.strength < 0 or tag.strength > 1):
-        errors.append(f"Strength {tag.strength} out of range [0, 1] for tag '{tag.id}'")
     
     return errors
 

@@ -5,7 +5,6 @@ Tests the full orchestration pipeline with mocked external services:
 - ScriptWriterService (no OpenAI calls)
 - ImageVectorSubprocess (no image research)
 - Pinecone queries (no real vector DB)
-- ComfyUI transformation (no real img2img)
 
 Run with: python -m pytest lesson_pipeline/tests/test_orchestrator.py -v
 """
@@ -127,7 +126,6 @@ class TestOrchestrationStats(unittest.TestCase):
 class TestGenerateLesson(unittest.TestCase):
     """Integration tests for generate_lesson with mocked services."""
     
-    @patch('lesson_pipeline.pipelines.orchestrator.transform_resolved_images')
     @patch('lesson_pipeline.pipelines.orchestrator.resolve_image_tags_for_topic')
     @patch('lesson_pipeline.pipelines.orchestrator.start_image_vector_subprocess')
     @patch('lesson_pipeline.pipelines.orchestrator.generate_script')
@@ -136,7 +134,6 @@ class TestGenerateLesson(unittest.TestCase):
         mock_generate_script,
         mock_start_subprocess,
         mock_resolve,
-        mock_transform,
     ):
         """Full pipeline should produce LessonDocument with images."""
         # Setup mocks
@@ -165,22 +162,6 @@ class TestGenerateLesson(unittest.TestCase):
             },
         ]
         
-        # Mock transformer
-        mock_transform.return_value = [
-            ResolvedImage(
-                tag=ImageTag(id="img_1", prompt="chloroplast diagram"),
-                base_image_url="https://example.com/matched.jpg",
-                final_image_url="https://example.com/transformed_1.jpg",
-                vector_id="vec_1",
-            ),
-            ResolvedImage(
-                tag=ImageTag(id="img_2", prompt="light reactions"),
-                base_image_url="https://example.com/matched2.jpg",
-                final_image_url="https://example.com/transformed_2.jpg",
-                vector_id="vec_2",
-            ),
-        ]
-        
         # Run pipeline
         lesson = generate_lesson(
             prompt_text="Photosynthesis in plants",
@@ -198,7 +179,6 @@ class TestGenerateLesson(unittest.TestCase):
         # Verify content has injected images (placeholders replaced)
         self.assertNotIn("[[IMAGE:", lesson.content)
     
-    @patch('lesson_pipeline.pipelines.orchestrator.transform_resolved_images')
     @patch('lesson_pipeline.pipelines.orchestrator.resolve_image_tags_for_topic')
     @patch('lesson_pipeline.pipelines.orchestrator.start_image_vector_subprocess')
     @patch('lesson_pipeline.pipelines.orchestrator.generate_script')
@@ -207,7 +187,6 @@ class TestGenerateLesson(unittest.TestCase):
         mock_generate_script,
         mock_start_subprocess,
         mock_resolve,
-        mock_transform,
     ):
         """Should return error document when script generation fails."""
         mock_generate_script.side_effect = Exception("OpenAI error")
@@ -222,7 +201,6 @@ class TestGenerateLesson(unittest.TestCase):
         self.assertIn("Failed", lesson.content)
         self.assertEqual(lesson.images, [])
     
-    @patch('lesson_pipeline.pipelines.orchestrator.transform_resolved_images')
     @patch('lesson_pipeline.pipelines.orchestrator.resolve_image_tags_for_topic')
     @patch('lesson_pipeline.pipelines.orchestrator.start_image_vector_subprocess')
     @patch('lesson_pipeline.pipelines.orchestrator.generate_script')
@@ -231,7 +209,6 @@ class TestGenerateLesson(unittest.TestCase):
         mock_generate_script,
         mock_start_subprocess,
         mock_resolve,
-        mock_transform,
     ):
         """Should continue with script even when image indexing fails."""
         mock_generate_script.return_value = make_mock_script_output()
@@ -252,15 +229,12 @@ class TestGenerateLesson(unittest.TestCase):
             },
         ]
         
-        mock_transform.return_value = []
-        
         lesson = generate_lesson("Test topic")
         
         # Should still have content
         self.assertIsInstance(lesson, LessonDocument)
         self.assertIn("learn", lesson.content.lower())
     
-    @patch('lesson_pipeline.pipelines.orchestrator.transform_resolved_images')
     @patch('lesson_pipeline.pipelines.orchestrator.resolve_image_tags_for_topic')
     @patch('lesson_pipeline.pipelines.orchestrator.start_image_vector_subprocess')
     @patch('lesson_pipeline.pipelines.orchestrator.generate_script')
@@ -269,7 +243,6 @@ class TestGenerateLesson(unittest.TestCase):
         mock_generate_script,
         mock_start_subprocess,
         mock_resolve,
-        mock_transform,
     ):
         """Should handle scripts with no IMAGE tags gracefully."""
         # Script without IMAGE tags
@@ -291,7 +264,6 @@ class TestGenerateLesson(unittest.TestCase):
         # Resolver should not be called
         mock_resolve.assert_not_called()
     
-    @patch('lesson_pipeline.pipelines.orchestrator.transform_resolved_images')
     @patch('lesson_pipeline.pipelines.orchestrator.resolve_image_tags_for_topic')
     @patch('lesson_pipeline.pipelines.orchestrator.start_image_vector_subprocess')
     @patch('lesson_pipeline.pipelines.orchestrator.generate_script')
@@ -300,7 +272,6 @@ class TestGenerateLesson(unittest.TestCase):
         mock_generate_script,
         mock_start_subprocess,
         mock_resolve,
-        mock_transform,
     ):
         """Should pass indexed candidates to resolver for keyword fallback."""
         mock_generate_script.return_value = make_mock_script_output()
@@ -311,7 +282,6 @@ class TestGenerateLesson(unittest.TestCase):
         mock_start_subprocess.return_value = mock_subprocess
         
         mock_resolve.return_value = []
-        mock_transform.return_value = []
         
         generate_lesson("Test")
         
@@ -412,7 +382,6 @@ class TestFallbackIndexInfo(unittest.TestCase):
 class TestAPIResponseContract(unittest.TestCase):
     """Tests to verify API response contract is consistent."""
     
-    @patch('lesson_pipeline.pipelines.orchestrator.transform_resolved_images')
     @patch('lesson_pipeline.pipelines.orchestrator.resolve_image_tags_for_topic')
     @patch('lesson_pipeline.pipelines.orchestrator.start_image_vector_subprocess')
     @patch('lesson_pipeline.pipelines.orchestrator.generate_script')
@@ -421,7 +390,6 @@ class TestAPIResponseContract(unittest.TestCase):
         mock_generate_script,
         mock_start_subprocess,
         mock_resolve,
-        mock_transform,
     ):
         """API response should have all required fields."""
         mock_generate_script.return_value = make_mock_script_output()
@@ -431,7 +399,6 @@ class TestAPIResponseContract(unittest.TestCase):
         mock_start_subprocess.return_value = mock_subprocess
         
         mock_resolve.return_value = []
-        mock_transform.return_value = []
         
         result = generate_lesson_json("Test")
         
@@ -449,7 +416,6 @@ class TestAPIResponseContract(unittest.TestCase):
         for field in required_fields:
             self.assertIn(field, result, f"Missing required field: {field}")
     
-    @patch('lesson_pipeline.pipelines.orchestrator.transform_resolved_images')
     @patch('lesson_pipeline.pipelines.orchestrator.resolve_image_tags_for_topic')
     @patch('lesson_pipeline.pipelines.orchestrator.start_image_vector_subprocess')
     @patch('lesson_pipeline.pipelines.orchestrator.generate_script')
@@ -458,7 +424,6 @@ class TestAPIResponseContract(unittest.TestCase):
         mock_generate_script,
         mock_start_subprocess,
         mock_resolve,
-        mock_transform,
     ):
         """image_slots should be present in response."""
         mock_generate_script.return_value = make_mock_script_output()
@@ -477,14 +442,6 @@ class TestAPIResponseContract(unittest.TestCase):
             },
         ]
         
-        mock_transform.return_value = [
-            ResolvedImage(
-                tag=ImageTag(id="img_1", prompt="test"),
-                base_image_url="https://example.com/test.jpg",
-                final_image_url="https://example.com/final.jpg",
-            ),
-        ]
-        
         result = generate_lesson_json("Test")
         
         self.assertIn("image_slots", result)
@@ -496,4 +453,3 @@ class TestAPIResponseContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

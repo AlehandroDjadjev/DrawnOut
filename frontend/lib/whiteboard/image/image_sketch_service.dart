@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../../services/auth_service.dart';
 import '../core/stroke_plan.dart';
 import '../layout/layout_state.dart';
 import '../services/vectorizer.dart';
@@ -85,12 +85,15 @@ class ImageSketchService {
   final String baseUrl;
   final ImageVectorConfig vectorConfig;
   final double worldScale;
+  late final AuthService _authService;
 
   ImageSketchService({
     this.baseUrl = 'http://localhost:8000',
     this.vectorConfig = const ImageVectorConfig(),
     this.worldScale = 1.0,
-  });
+  }) {
+    _authService = AuthService(baseUrl: baseUrl);
+  }
 
   /// Build a CORS-safe proxied URL for web platforms
   String buildProxiedImageUrl(String? rawUrl) {
@@ -114,12 +117,7 @@ class ImageSketchService {
         debugPrint('   Proxied URL: $fetchUrl');
       }
 
-      final response = await http.get(Uri.parse(fetchUrl)).timeout(
-        timeout,
-        onTimeout: () {
-          throw Exception('Image fetch timed out after ${timeout.inSeconds}s');
-        },
-      );
+      final response = await _authService.authenticatedGet(fetchUrl);
 
       if (response.statusCode == 200) {
         debugPrint('   ✅ Fetched ${response.bodyBytes.length} bytes');

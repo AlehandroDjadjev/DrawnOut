@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:http/http.dart' as http;
 import 'dart:convert';
 
 import '../theme_provider/theme_provider.dart';
+import '../services/auth_service.dart';
 import 'home.dart';
 import 'profile_page.dart';
 import 'whiteboard_page.dart';
@@ -37,21 +37,13 @@ class _MarketPageState extends State<MarketPage> {
     });
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString('token');
+      final apiBase = (dotenv.env['API_URL'] ?? 'http://127.0.0.1:8000').trim();
+      final authService = AuthService(baseUrl: apiBase);
+      authService.onSessionExpired = () {
+        if (mounted) Navigator.of(context).pushReplacementNamed('/login');
+      };
 
-      if (token == null) {
-        setState(() {
-          errorMessage = 'You are not logged in';
-          isLoading = false;
-        });
-        return;
-      }
-
-      final response = await http.get(
-        Uri.parse(baseUrl),
-        headers: {'Authorization': 'Bearer $token'},
-      );
+      final response = await authService.authenticatedGet(baseUrl);
 
       if (!mounted) return;
 
@@ -77,13 +69,11 @@ class _MarketPageState extends State<MarketPage> {
   }
 
   Future<void> _buyItem(int listingId) async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('token');
-    if (token == null) return;
+    final apiBase = (dotenv.env['API_URL'] ?? 'http://127.0.0.1:8000').trim();
+    final authService = AuthService(baseUrl: apiBase);
 
-    await http.post(
-      Uri.parse("${dotenv.env['API_URL']}/api/market/listings/buy/$listingId/"),
-      headers: {'Authorization': 'Bearer $token'},
+    await authService.authenticatedPost(
+      "${dotenv.env['API_URL']}/api/market/listings/buy/$listingId/",
     );
 
     _fetchListings();
@@ -112,17 +102,12 @@ class _MarketPageState extends State<MarketPage> {
           ElevatedButton(
             child: const Text("Send"),
             onPressed: () async {
-              final prefs = await SharedPreferences.getInstance();
-              final token = prefs.getString('token');
+              if (controller.text.trim().isNotEmpty) {
+                final apiBase = (dotenv.env['API_URL'] ?? 'http://127.0.0.1:8000').trim();
+                final authService = AuthService(baseUrl: apiBase);
 
-              if (token != null && controller.text.trim().isNotEmpty) {
-                await http.post(
-                  Uri.parse(
-                      "${dotenv.env['API_URL']}/api/market/proposals/create/"),
-                  headers: {
-                    'Authorization': 'Bearer $token',
-                    'Content-Type': 'application/json',
-                  },
+                await authService.authenticatedPost(
+                  "${dotenv.env['API_URL']}/api/market/proposals/create/",
                   body: jsonEncode({
                     "listing": listingId,
                     "proposed_price": int.parse(controller.text),
@@ -131,6 +116,7 @@ class _MarketPageState extends State<MarketPage> {
               }
 
               controller.dispose();
+              if (!context.mounted) return;
               Navigator.pop(context);
             },
           ),
@@ -139,7 +125,11 @@ class _MarketPageState extends State<MarketPage> {
     );
   }
 
-  void _logout() {
+  void _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('token');
+    await prefs.remove('refresh_token');
+    if (!mounted) return;
     Navigator.of(context).pushNamedAndRemoveUntil('/login', (_) => false);
   }
 

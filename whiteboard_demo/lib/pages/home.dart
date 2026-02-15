@@ -19,8 +19,13 @@ class _HomePageState extends State<HomePage> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   void _logout() async {
+    // Clear developer mode
+    final devProvider = Provider.of<DeveloperModeProvider>(context, listen: false);
+    await devProvider.clear();
+    
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('token');
+    await prefs.remove('refresh_token');
     if (!mounted) return;
     Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
   }
@@ -115,52 +120,32 @@ class _HomePageState extends State<HomePage> {
               color: theme.colorScheme.primary.withOpacity(0.1),
             ),
             child: Center(
-              // Secret tap area to enable developer mode
-              child: GestureDetector(
-                onTap: () {
-                  final toggled = devMode.handleSecretTap();
-                  if (toggled) {
-                    Navigator.pop(context); // Close drawer
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          devMode.isEnabled 
-                            ? 'Developer mode enabled' 
-                            : 'Developer mode disabled',
-                        ),
-                        behavior: SnackBarBehavior.floating,
-                        duration: const Duration(seconds: 2),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.school,
+                      size: 32, color: theme.colorScheme.primary),
+                  const SizedBox(width: 10),
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        "DrawnOut",
+                        style: TextStyle(
+                            fontSize: 24, color: theme.colorScheme.primary),
                       ),
-                    );
-                  }
-                },
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.school,
-                        size: 32, color: theme.colorScheme.primary),
-                    const SizedBox(width: 10),
-                    Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
+                      if (devMode.isEnabled)
                         Text(
-                          "DrawnOut",
+                          "Developer Mode",
                           style: TextStyle(
-                              fontSize: 24, color: theme.colorScheme.primary),
-                        ),
-                        if (devMode.isEnabled)
-                          Text(
-                            "Developer Mode",
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: theme.colorScheme.primary.withOpacity(0.7),
-                            ),
+                            fontSize: 10,
+                            color: theme.colorScheme.primary.withOpacity(0.7),
                           ),
-                      ],
-                    ),
-                  ],
-                ),
+                        ),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),
@@ -205,15 +190,12 @@ class _HomePageState extends State<HomePage> {
             },
           ),
 
-          // Developer mode controls
+          // Developer mode indicator (controlled via database)
           if (devMode.isEnabled)
-            ListTile(
-              leading: const Icon(Icons.developer_mode, color: Colors.orange),
-              title: const Text("Disable Dev Mode"),
-              onTap: () {
-                devMode.disable();
-                Navigator.pop(context);
-              },
+            const ListTile(
+              leading: Icon(Icons.developer_mode, color: Colors.orange),
+              title: Text("Developer Account"),
+              subtitle: Text("Debug features enabled", style: TextStyle(fontSize: 11)),
             ),
 
           const Divider(),
@@ -315,8 +297,16 @@ class _HomePageState extends State<HomePage> {
                     const SizedBox(height: 14),
                     ApplePrimaryButton(
                       label: 'Start lesson',
-                      onPressed: () =>
-                          Navigator.pushNamed(context, '/whiteboard'),
+                      onPressed: () {
+                        Navigator.pushNamed(
+                          context, 
+                          '/whiteboard',
+                          arguments: {
+                            'topic': 'Pythagorean Theorem',
+                            'title': 'Pythagoras Theorem',
+                          },
+                        );
+                      },
                     ),
                   ],
                 ),

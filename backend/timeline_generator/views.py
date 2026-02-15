@@ -23,8 +23,7 @@ def _get_images_from_lesson_pipeline(topic: str, subject: str = "General") -> di
     Calls generate_lesson_json() which:
     1. Does image research in background (Imageresearcher)
     2. Resolves images to base_image_url via Pinecone
-    3. Transforms images if ComfyUI available
-    4. Returns images with URLs ready to use
+    3. Returns images with URLs ready to use
     
     Returns:
         Dict mapping image IDs to image data with 'url', 'image_url', etc.

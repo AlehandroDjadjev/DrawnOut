@@ -25,11 +25,13 @@ class CustomUserSerializer(serializers.ModelSerializer):
             'credits',
             'owned_avatars',     # ✅ MUST be here
             'avatar',            # ✅ MUST be here
+            'is_developer',      # Developer flag for debug access
         ]
         read_only_fields = [
             'credits',
             'owned_avatars',
             'avatar',
+            'is_developer',      # Can only be set via admin/database
         ]
 
     def create(self, validated_data):

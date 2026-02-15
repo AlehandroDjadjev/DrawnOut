@@ -3,13 +3,17 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
+import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../providers/developer_mode_provider.dart';
+import '../services/auth_service.dart';
 
 /// App entry gate:
 /// - If no saved token -> go to /login
 /// - If token exists -> validate against backend (/api/auth/profile/)
 ///   - 200 -> go to /home
-///   - 401/403 -> clear token -> go to /login
+///   - 401 -> try refresh token -> retry
+///   - Still 401 -> clear tokens -> go to /login
 class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
 
@@ -50,7 +54,7 @@ class _AuthGateState extends State<AuthGate> {
 
     try {
       final uri = Uri.parse('$_apiBaseUrl/api/auth/profile/');
-      final resp = await http.get(
+      var resp = await http.get(
         uri,
         headers: {
           'Authorization': 'Bearer $token',
@@ -60,13 +64,44 @@ class _AuthGateState extends State<AuthGate> {
 
       if (!mounted) return;
 
+      // If 401, try refreshing the token
+      if (resp.statusCode == 401) {
+        debugPrint('🔑 Access token expired, attempting refresh...');
+        final authService = AuthService(baseUrl: _apiBaseUrl);
+        final newToken = await authService.refreshAccessToken();
+
+        if (newToken != null) {
+          // Retry with new token
+          resp = await http.get(
+            uri,
+            headers: {
+              'Authorization': 'Bearer $newToken',
+              'Accept': 'application/json',
+            },
+          );
+          if (!mounted) return;
+        }
+      }
+
       if (resp.statusCode == 200) {
+        // Refresh developer mode status
+        try {
+          final devProvider = Provider.of<DeveloperModeProvider>(context, listen: false);
+          devProvider.setBaseUrl(_apiBaseUrl);
+          await devProvider.refreshFromBackend();
+        } catch (e) {
+          debugPrint('⚠️ Could not refresh developer status: $e');
+        }
+        
+        if (!mounted) return;
         Navigator.of(context).pushReplacementNamed('/home');
         return;
       }
 
       if (resp.statusCode == 401 || resp.statusCode == 403) {
+        // Refresh also failed - clear everything
         await prefs.remove('token');
+        await prefs.remove('refresh_token');
         if (!mounted) return;
         Navigator.of(context).pushReplacementNamed('/login');
         return;

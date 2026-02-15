@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 import '../services/app_config_service.dart';
+import '../services/auth_service.dart';
 
 class EditUsernamePage extends StatefulWidget {
   final String currentUsername;
@@ -45,16 +44,14 @@ class _EditUsernamePageState extends State<EditUsernamePage> {
     });
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString('token');
-      if (token == null) throw Exception('Not logged in');
+      final apiBase = baseUrl.replaceAll('/api/', '');
+      final authService = AuthService(baseUrl: apiBase);
+      authService.onSessionExpired = () {
+        if (mounted) Navigator.of(context).pushReplacementNamed('/login');
+      };
 
-      final response = await http.put(
-        Uri.parse('${baseUrl}auth/update_username/'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
+      final response = await authService.authenticatedPut(
+        '${baseUrl}auth/update_username/',
         body: jsonEncode({'username': _usernameController.text}),
       );
 

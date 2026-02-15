@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 import '../theme_provider.dart';
 import '../services/app_config_service.dart';
+import '../services/auth_service.dart';
 import '../ui/apple_ui.dart';
 import 'edit_username_page.dart';
 
@@ -62,31 +61,17 @@ class _ProfilePageState extends State<ProfilePage> {
     }
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString('token');
+      final authService = AuthService(baseUrl: apiUrl);
+      authService.onSessionExpired = () {
+        if (mounted) Navigator.of(context).pushReplacementNamed('/login');
+      };
 
-      if (token == null) {
-        setState(() {
-          _errorMessage = 'You are not logged in';
-          _isLoading = false;
-        });
-        return;
-      }
-
-      final userResponse = await http.get(
-        Uri.parse('${_baseUrl}auth/profile/'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
+      final userResponse = await authService.authenticatedGet(
+        '${_baseUrl}auth/profile/',
       );
 
-      final lessonsResponse = await http.get(
-        Uri.parse('${_baseUrl}lessons/list/'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
+      final lessonsResponse = await authService.authenticatedGet(
+        '${_baseUrl}lessons/list/',
       );
 
       if (!mounted) return;

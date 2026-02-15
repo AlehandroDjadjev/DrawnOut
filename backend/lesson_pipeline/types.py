@@ -70,8 +70,6 @@ class ImageTag:
     style: Optional[str] = None
     aspect_ratio: Optional[str] = None  # e.g. "16:9"
     size: Optional[str] = None          # e.g. "1024x576" or "medium"
-    guidance_scale: Optional[float] = 7.5
-    strength: Optional[float] = 0.7     # img2img strength
     time_offset: Optional[float] = None  # Seconds into lesson when LLM wants it
     duration: Optional[float] = None     # Seconds the image should stay visible
     placement: Dict[str, float] = field(default_factory=dict)  # x/y/width/height ratios
@@ -169,8 +167,6 @@ def resolved_image_to_dict(resolved: ResolvedImage) -> Dict[str, Any]:
             'style': resolved.tag.style,
             'aspect_ratio': resolved.tag.aspect_ratio,
             'size': resolved.tag.size,
-            'guidance_scale': resolved.tag.guidance_scale,
-            'strength': resolved.tag.strength,
         },
         'base_image_url': resolved.base_image_url,
         'final_image_url': resolved.final_image_url,
@@ -196,8 +192,6 @@ def image_slot_to_dict(slot: ImageSlot) -> Dict[str, Any]:
             'style': slot.tag.style,
             'aspect_ratio': slot.tag.aspect_ratio,
             'size': slot.tag.size,
-            'guidance_scale': slot.tag.guidance_scale,
-            'strength': slot.tag.strength,
             'time_offset': slot.tag.time_offset,
             'duration': slot.tag.duration,
             'placement': slot.tag.placement,

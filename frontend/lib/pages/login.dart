@@ -103,6 +103,9 @@ class _LoginPageState extends State<LoginPage> {
         final data = jsonDecode(response.body);
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('token', data['access']);
+        if (data['refresh'] != null) {
+          await prefs.setString('refresh_token', data['refresh']);
+        }
         if (!mounted) return;
         Navigator.pushReplacementNamed(context, '/home');
       } else {

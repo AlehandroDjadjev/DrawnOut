@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
+import '../../services/auth_service.dart';
 
 /// Response from starting a lesson
 class LessonSessionResponse {
@@ -26,11 +26,18 @@ class LessonSessionResponse {
   }
 }
 
-/// Service for lesson API calls
+/// Service for lesson API calls - uses AuthService for automatic token refresh.
 class LessonApiService {
   final String baseUrl;
+  final AuthService _authService;
 
-  LessonApiService({this.baseUrl = 'http://127.0.0.1:8000'});
+  LessonApiService({this.baseUrl = 'http://127.0.0.1:8000'})
+      : _authService = AuthService(baseUrl: baseUrl);
+
+  /// Set callback for when session expires (refresh failed).
+  set onSessionExpired(void Function()? callback) {
+    _authService.onSessionExpired = callback;
+  }
 
   String _api(String path) =>
       '${baseUrl.replaceFirst(RegExp(r'/+$'), '')}/api/lessons$path';
@@ -39,22 +46,12 @@ class LessonApiService {
   /// Returns the session response with session ID
   Future<LessonSessionResponse> startLesson({
     required String topic,
-    String? authToken,
+    String? authToken, // Kept for API compatibility but ignored - uses AuthService
   }) async {
-    final uri = Uri.parse(_api('/start/'));
-    
-    final headers = <String, String>{
-      'Content-Type': 'application/json',
-    };
-    if (authToken != null) {
-      headers['Authorization'] = 'Bearer $authToken';
-    }
-
     debugPrint('Starting lesson with topic: $topic');
     
-    final response = await http.post(
-      uri,
-      headers: headers,
+    final response = await _authService.authenticatedPost(
+      _api('/start/'),
       body: json.encode({'topic': topic}),
     );
 
@@ -68,8 +65,9 @@ class LessonApiService {
 
   /// Get session details
   Future<LessonSessionResponse> getSession(int sessionId) async {
-    final uri = Uri.parse(_api('/$sessionId/'));
-    final response = await http.get(uri);
+    final response = await _authService.authenticatedGet(
+      _api('/$sessionId/'),
+    );
 
     if (response.statusCode != 200) {
       throw Exception('Failed to get session: ${response.statusCode}');
@@ -81,8 +79,9 @@ class LessonApiService {
 
   /// Request next segment in the lesson
   Future<LessonSessionResponse> nextSegment(int sessionId) async {
-    final uri = Uri.parse(_api('/$sessionId/next/'));
-    final response = await http.post(uri);
+    final response = await _authService.authenticatedPost(
+      _api('/$sessionId/next/'),
+    );
 
     if (response.statusCode != 200) {
       throw Exception('Failed to get next segment: ${response.statusCode}');

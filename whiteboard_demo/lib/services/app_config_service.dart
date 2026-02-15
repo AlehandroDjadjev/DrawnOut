@@ -1,25 +1,39 @@
+import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Central configuration service for app settings
 class AppConfigService extends ChangeNotifier {
   static const String _backendUrlKey = 'backendUrl';
-  static const String _defaultBackendUrl = 'http://127.0.0.1:8000';
   
-  String _backendUrl = _defaultBackendUrl;
+  /// Get platform-appropriate default URL
+  /// Android emulator uses 10.0.2.2 to reach host's localhost
+  /// Other platforms use 127.0.0.1
+  static String get _defaultBackendUrl {
+    if (!kIsWeb && Platform.isAndroid) {
+      return 'http://10.0.2.2:8000';
+    }
+    return 'http://127.0.0.1:8000';
+  }
+  
+  late String _backendUrl;
   
   String get backendUrl => _backendUrl;
   
-  /// Default backend URL
+  /// Default backend URL (platform-aware)
   static String get defaultUrl => _defaultBackendUrl;
   
   AppConfigService() {
+    _backendUrl = _defaultBackendUrl;
     _loadConfig();
   }
   
   Future<void> _loadConfig() async {
     final prefs = await SharedPreferences.getInstance();
-    _backendUrl = prefs.getString(_backendUrlKey) ?? _defaultBackendUrl;
+    final saved = prefs.getString(_backendUrlKey);
+    if (saved != null && saved.isNotEmpty) {
+      _backendUrl = saved;
+    }
     notifyListeners();
   }
   

@@ -9,9 +9,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:provider/provider.dart';
 import './providers/developer_mode_provider.dart';
-import 'package:http/http.dart' as http;
-
 // Local imports
 import 'vectorizer.dart';
 import 'assistant_api.dart';
@@ -19,12 +18,13 @@ import 'assistant_audio.dart';
 import 'sdk_live_bridge.dart';
 import 'planner.dart';
 import 'models/timeline.dart';
+import 'services/auth_service.dart';
 import 'services/timeline_api.dart';
 import 'controllers/timeline_playback_controller.dart';
+import 'controllers/whiteboard_orchestrator.dart';
 import 'services/lesson_pipeline_api.dart';
 import 'services/app_config_service.dart';
 import 'theme_provider.dart';
-import 'providers/developer_mode_provider.dart';
 import 'pages/login.dart';
 import 'pages/signup.dart';
 import 'pages/home.dart';
@@ -98,10 +98,9 @@ class DrawnOutApp extends StatelessWidget {
         '/lessons': (context) => const LessonsPage(),
         '/settings': (context) => const SettingsPage(),
         '/market': (context) => const MarketPage(),
-        '/whiteboard': (context) => const WhiteboardPageWrapper(),
-        '/whiteboard/user': (context) => const WhiteboardPageWrapper(startInDeveloperMode: false),
-        '/whiteboard/dev': (context) => const WhiteboardPageWrapper(startInDeveloperMode: true),
+        '/whiteboard': (context) => const WhiteboardPageWrapper(startInDeveloperMode: true),
         '/whiteboard/mobile': (context) => const WhiteboardPageMobile(),
+        '/whiteboard/legacy': (context) => const WhiteboardPageWrapper(),
       },
     );
   }
@@ -110,9 +109,9 @@ class DrawnOutApp extends StatelessWidget {
 // Core classes (PlacedImage, StrokePlan, VectorObject), painters (SketchPainter, 
 // CommittedPainter), and SketchPlayer widget are now imported from whiteboard/whiteboard.dart
 
-/// Smart whiteboard wrapper that switches between user and developer modes.
-class WhiteboardPageWrapper extends StatefulWidget {
-  /// Start in developer mode if true.
+/// Whiteboard wrapper that extracts route arguments and passes them through.
+class WhiteboardPageWrapper extends StatelessWidget {
+  /// Parameter kept for backward compatibility but no longer used.
   final bool startInDeveloperMode;
 
   const WhiteboardPageWrapper({
@@ -121,104 +120,27 @@ class WhiteboardPageWrapper extends StatefulWidget {
   });
 
   @override
-  State<WhiteboardPageWrapper> createState() => _WhiteboardPageWrapperState();
-}
-
-class _WhiteboardPageWrapperState extends State<WhiteboardPageWrapper> {
-  late bool _isDeveloperMode;
-
-  // Shared state between modes
-  StrokePlan? _sharedPlan;
-  List<VectorObject> _sharedBoard = [];
-  PlacedImage? _sharedRaster;
-  double _sharedSeconds = 10.0;
-  double _sharedWidth = 2.5;
-  double _sharedOpacity = 0.8;
-  int _sharedPasses = 2;
-  double _sharedJitterAmp = 0.9;
-  double _sharedJitterFreq = 0.02;
-  bool _sharedShowRaster = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _isDeveloperMode = widget.startInDeveloperMode;
-  }
-
-  void _switchToUserMode({
-    StrokePlan? plan,
-    List<VectorObject>? board,
-    PlacedImage? raster,
-    double? seconds,
-    double? width,
-    double? opacity,
-    int? passes,
-    double? jitterAmp,
-    double? jitterFreq,
-    bool? showRaster,
-  }) {
-    setState(() {
-      _isDeveloperMode = false;
-      if (plan != null) _sharedPlan = plan;
-      if (board != null) _sharedBoard = board;
-      if (raster != null) _sharedRaster = raster;
-      if (seconds != null) _sharedSeconds = seconds;
-      if (width != null) _sharedWidth = width;
-      if (opacity != null) _sharedOpacity = opacity;
-      if (passes != null) _sharedPasses = passes;
-      if (jitterAmp != null) _sharedJitterAmp = jitterAmp;
-      if (jitterFreq != null) _sharedJitterFreq = jitterFreq;
-      if (showRaster != null) _sharedShowRaster = showRaster;
-    });
-  }
-
-  void _switchToDeveloperMode() {
-    setState(() {
-      _isDeveloperMode = true;
-    });
-  }
-
-  @override
   Widget build(BuildContext context) {
-    if (_isDeveloperMode) {
-      return WhiteboardPage(
-        onSwitchToUserMode: _switchToUserMode,
-      );
+    // Extract lesson arguments if passed via route
+    final args = ModalRoute.of(context)?.settings.arguments;
+    String? topic;
+    String? title;
+    if (args is Map<String, dynamic>) {
+      topic = args['topic'] as String?;
+      title = args['title'] as String?;
     }
-
-    return UserWhiteboardPage(
-      plan: _sharedPlan,
-      totalSeconds: _sharedSeconds,
-      committedObjects: _sharedBoard,
-      raster: _sharedRaster,
-      showRasterUnderlay: _sharedShowRaster,
-      baseWidth: _sharedWidth,
-      passOpacity: _sharedOpacity,
-      passes: _sharedPasses,
-      jitterAmp: _sharedJitterAmp,
-      jitterFreq: _sharedJitterFreq,
-      onSwitchToDeveloperMode: _switchToDeveloperMode,
-    );
+    return WhiteboardPage(autoStartTopic: topic, lessonTitle: title);
   }
 }
 
 /// Developer whiteboard page with full controls.
 class WhiteboardPage extends StatefulWidget {
-  /// Callback when user wants to switch to user/presentation mode.
-  final void Function({
-    StrokePlan? plan,
-    List<VectorObject>? board,
-    PlacedImage? raster,
-    double? seconds,
-    double? width,
-    double? opacity,
-    int? passes,
-    double? jitterAmp,
-    double? jitterFreq,
-    bool? showRaster,
-  })? onSwitchToUserMode;
+  /// If set, auto-starts the synced lesson pipeline on this topic.
+  final String? autoStartTopic;
+  /// Display title for the lesson (shown in loading UI).
+  final String? lessonTitle;
 
-  const WhiteboardPage({super.key, this.onSwitchToUserMode});
+  const WhiteboardPage({super.key, this.autoStartTopic, this.lessonTitle});
 
   @override
   State<WhiteboardPage> createState() => _WhiteboardPageState();
@@ -229,18 +151,26 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   static const double canvasH = 1000; // fallback/default
   Size? _canvasSize; // live size from LayoutBuilder
 
+  // Orchestrator for whiteboard business logic
+  late final WhiteboardOrchestrator _orchestrator;
+
   // Services
   final _strokeService = const StrokeService();
   final _textSketchService = const TextSketchService();
   late ImageSketchService _imageSketchService;
 
-  // NEW: persistent board of committed vectors
-  final List<VectorObject> _board = [];
+  // Delegate board/plan/raster/busy to orchestrator
+  List<VectorObject> get _board => _orchestrator.board;
+  PlacedImage? get _raster => _orchestrator.raster;
+  StrokePlan? get _plan => _orchestrator.plan;
+  bool get _busy => _orchestrator.busy;
 
-  Uint8List? _uploadedBytes;
-  ui.Image? _uploadedImage;
-  PlacedImage? _raster;
-  StrokePlan? _plan;
+  set _raster(PlacedImage? value) => _orchestrator.raster = value;
+  set _plan(StrokePlan? value) => _orchestrator.plan = value;
+  set _busy(bool value) => _orchestrator.setBusy(value);
+
+  Uint8List? get _uploadedBytes => _orchestrator.uploadedBytes;
+  ui.Image? get _uploadedImage => _orchestrator.uploadedImage;
   DateTime?
       _currentAnimEnd; // when current sketch animation is expected to finish
   bool _diagramInFlight = false; // fetching or preparing diagram
@@ -285,7 +215,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   double _minStrokeLen = 8.70; // px/world
   double _minStrokePoints = 6; // int
 
-  bool _busy = false;
+  bool _showDevPanel = false; // Toggle for developer panel visibility (requires is_developer flag)
   double _textFontSize = 60.0;
   // Assistant
   final _apiUrlCtrl = TextEditingController(text: 'http://localhost:8000');
@@ -307,7 +237,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           '{\n  "whiteboard_actions": [\n    { "type": "heading", "text": "Sample Topic" },\n    { "type": "bullet", "level": 1, "text": "Key idea one" },\n    { "type": "bullet", "level": 1, "text": "Key idea two" }\n  ]\n}');
 
   // Layout state for orchestrator
-  LayoutState? _layout;
+  LayoutState? get _layout => _orchestrator.layout;
+  set _layout(LayoutState? value) => _orchestrator.layout = value;
   // Adjustable layout config (defaults match code below)
   double _cfgMarginTop = 60,
       _cfgMarginRight = 64,
@@ -340,12 +271,67 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   double _tutorFixedFont = 72.0;
   double _tutorMinFont = 72.0; // hard floor for any tutor-drawn text
 
+  // ── Auto-start lesson loading state ─────────────────────────────────────
+  bool _lessonLoading = false;
+  String _lessonLoadingStage = '';
+  double _lessonLoadingProgress = 0.0;
+  bool _lessonAutoStarted = false;
+
   void _showError(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating),
     );
   }
 
+  /// Sync UI vectorizer/layout config to orchestrator before calling its methods.
+  void _syncVectorConfigToOrchestrator() {
+    final v = _orchestrator.vectorConfig;
+    v.edgeMode = _edgeMode;
+    v.blurK = _blurK;
+    v.cannyLo = _cannyLo;
+    v.cannyHi = _cannyHi;
+    v.dogSigma = _dogSigma;
+    v.dogK = _dogK;
+    v.dogThresh = _dogThresh;
+    v.epsilon = _epsilon;
+    v.resample = _resample;
+    v.minPerim = _minPerim;
+    v.externalOnly = _externalOnly;
+    v.worldScale = _worldScale;
+    v.angleThreshold = _angleThreshold;
+    v.angleWindow = _angleWindow;
+    v.smoothPasses = _smoothPasses;
+    v.mergeParallel = _mergeParallel;
+    v.mergeMaxDist = _mergeMaxDist;
+    v.minStrokeLen = _minStrokeLen;
+    v.minStrokePoints = _minStrokePoints;
+  }
+
+  void _syncCenterlineAndTutorToOrchestrator() {
+    final c = _orchestrator.centerlineParams;
+    c.threshold = _clThreshold;
+    c.epsilon = _clEpsilon;
+    c.resample = _clResample;
+    c.mergeFactor = _clMergeFactor;
+    c.mergeMin = _clMergeMin;
+    c.mergeMax = _clMergeMax;
+    c.smoothPasses = _clSmoothPasses;
+    c.sketchPreferOutline = _sketchPreferOutline;
+    c.preferOutlineHeadings = _preferOutlineHeadings;
+    _orchestrator.tutorConfig.minFont = _tutorMinFont;
+  }
+
+  void _syncPlaybackConfigToOrchestrator() {
+    final p = _orchestrator.playbackConfig;
+    p.width = _width;
+    p.opacity = _opacity;
+    p.passes = _passes;
+    p.jitterAmp = _jitterAmp;
+    p.jitterFreq = _jitterFreq;
+  }
+
+  bool _devModeChecked = false;
+  
   @override
   void initState() {
     super.initState();
@@ -354,6 +340,17 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     _imageSketchService = ImageSketchService(
       baseUrl: 'http://localhost:8000',
     );
+
+    // Initialize whiteboard orchestrator with current backend URL
+    final initialBaseUrl = _apiUrlCtrl.text.trim().isEmpty
+        ? 'http://localhost:8000'
+        : _apiUrlCtrl.text.trim();
+    _orchestrator = WhiteboardOrchestrator(baseUrl: initialBaseUrl);
+    // Rebuild this widget whenever orchestrator state changes
+    _orchestrator.addListener(() {
+      if (!mounted) return;
+      setState(() {});
+    });
 
     // Initialize timeline controller
     _timelineController = TimelinePlaybackController();
@@ -367,6 +364,37 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       debugPrint('✅ Timeline completed!');
       _showError('Lesson completed!');
     };
+  }
+  
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_devModeChecked) {
+      _devModeChecked = true;
+      _checkDeveloperMode();
+      
+      // Auto-start lesson if topic was provided via route arguments
+      if (!_lessonAutoStarted && widget.autoStartTopic != null) {
+        _lessonAutoStarted = true;
+        // Delay slightly so the widget tree is fully built
+        Future.microtask(() => _autoStartLesson(widget.autoStartTopic!));
+      }
+    }
+  }
+  
+  Future<void> _checkDeveloperMode() async {
+    final devProvider = Provider.of<DeveloperModeProvider>(context, listen: false);
+    final baseUrl = _apiUrlCtrl.text.trim().isEmpty
+        ? 'http://localhost:8000'
+        : _apiUrlCtrl.text.trim();
+    devProvider.setBaseUrl(baseUrl);
+    
+    final isDeveloper = await devProvider.refreshFromBackend();
+    if (mounted) {
+      setState(() {
+        _showDevPanel = isDeveloper;
+      });
+    }
 
     // Mirror index.html end-of-segment behavior
     setAssistantOnQueueEmpty(() async {
@@ -435,28 +463,27 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       return;
     }
 
-    setState(() {
-      _busy = true;
-    });
+    _busy = true;
+    try {
+      await _orchestrator.loadImageBytes(bytes);
 
-    _uploadedBytes = bytes;
-    _uploadedImage = await _decodeUiImage(bytes);
+      final x = double.tryParse(_xCtrl.text.trim()) ?? 0;
+      final y = double.tryParse(_yCtrl.text.trim()) ?? 0;
+      final w = (double.tryParse(_wCtrl.text.trim()) ?? 800)
+          .clamp(1, 100000)
+          .toDouble();
 
-    final x = double.tryParse(_xCtrl.text.trim()) ?? 0;
-    final y = double.tryParse(_yCtrl.text.trim()) ?? 0;
-    final w = (double.tryParse(_wCtrl.text.trim()) ?? 800)
-        .clamp(1, 100000)
-        .toDouble();
-
-    final aspect = _uploadedImage!.height / _uploadedImage!.width;
-    final size = Size(w, w * aspect);
-    _raster = PlacedImage(
-        image: _uploadedImage!, worldCenter: Offset(x, y), worldSize: size);
-
-    setState(() {
-      _busy = false;
+      if (_orchestrator.uploadedImage != null) {
+        final img = _orchestrator.uploadedImage!;
+        final aspect = img.height / img.width;
+        final size = Size(w, w * aspect);
+        _raster = PlacedImage(
+            image: img, worldCenter: Offset(x, y), worldSize: size);
+      }
       _plan = null;
-    });
+    } finally {
+      _busy = false;
+    }
   }
 
   Future<void> _vectorizeAndSketch() async {
@@ -464,52 +491,18 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       _showError('Please upload an image first.');
       return;
     }
-
-    setState(() {
-      _busy = true;
-    });
-
+    _syncVectorConfigToOrchestrator();
+    final x = double.tryParse(_xCtrl.text.trim()) ?? 0;
+    final y = double.tryParse(_yCtrl.text.trim()) ?? 0;
+    final w = (double.tryParse(_wCtrl.text.trim()) ?? 800).clamp(1, 100000).toDouble();
     try {
-      final strokes = await Vectorizer.vectorize(
-        bytes: _uploadedBytes!,
-        worldScale: _worldScale,
-        edgeMode: _edgeMode,
-        blurK: _blurK.toInt().isOdd ? _blurK.toInt() : _blurK.toInt() + 1,
-        cannyLo: _cannyLo.toDouble(),
-        cannyHi: _cannyHi.toDouble(),
-        dogSigma: _dogSigma,
-        dogK: _dogK,
-        dogThresh: _dogThresh,
-        epsilon: _epsilon,
-        resampleSpacing: _resample,
-        minPerimeter: _minPerim,
-        retrExternalOnly: _externalOnly,
-
-        // Stroke shaping
-        angleThresholdDeg: _angleThreshold.toDouble(),
-        angleWindow: _angleWindow.round(),
-        smoothPasses: _smoothPasses.round(),
-        mergeParallel: _mergeParallel,
-        mergeMaxDist: _mergeMaxDist,
-        minStrokeLen: _minStrokeLen,
-        minStrokePoints: _minStrokePoints.round(),
-      );
-
-      // IMPORTANT: do NOT resize. Only translate to the chosen (X, Y)
-      // so the sketch animates exactly like before, just positioned.
-      final offset = _raster?.worldCenter ?? Offset.zero;
-      final placed =
-          strokes.map((s) => s.map((p) => p + offset).toList()).toList();
-
-      _plan = StrokePlan(placed);
+      await _orchestrator.vectorizeAndSketch(x: x, y: y, targetWidth: w);
+      if (_orchestrator.lastError != null) {
+        _showError(_orchestrator.lastError!);
+      }
     } catch (e, st) {
       debugPrint('Vectorize error: $e\n$st');
       _showError(e.toString());
-    } finally {
-      if (mounted)
-        setState(() {
-          _busy = false;
-        });
     }
   }
 
@@ -519,71 +512,47 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       _showError('Enter a diagram prompt first.');
       return;
     }
-    setState(() {
-      _busy = true;
-    });
+    _busy = true;
     try {
       final base = _apiUrlCtrl.text.trim().isEmpty
           ? 'http://127.0.0.1:8000'
           : _apiUrlCtrl.text.trim();
-      final url = Uri.parse(
-          '${base.replaceAll(RegExp(r'/+$'), '')}/api/lessons/diagram/');
-      final resp = await http.post(url,
-          headers: {'Content-Type': 'application/json'},
+      final authService = AuthService(baseUrl: base);
+      final diagramUrl =
+          '${base.replaceAll(RegExp(r'/+$'), '')}/api/lessons/diagram/';
+      final resp = await authService.authenticatedPost(diagramUrl,
           body: jsonEncode({'prompt': prompt}));
       if (resp.statusCode ~/ 100 != 2) {
         throw StateError('Diagram error: ${resp.statusCode}');
       }
       final body =
           jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
-      final b64 = (body['image_b64'] ?? '') as String;
+      final b64 = (body['image_b64'] ?? body['image'] ?? '') as String;
       if (b64.isEmpty) throw StateError('Empty image data');
       final bytes = base64Decode(b64);
 
-      // Load into upload slots and placement
-      _uploadedBytes = bytes;
-      _uploadedImage = await _decodeUiImage(bytes);
+      await _orchestrator.loadImageBytes(bytes);
       final x = double.tryParse(_xCtrl.text.trim()) ?? 0;
       final y = double.tryParse(_yCtrl.text.trim()) ?? 0;
       final w = (double.tryParse(_wCtrl.text.trim()) ?? 800)
           .clamp(1, 100000)
           .toDouble();
-      final aspect = _uploadedImage!.height / _uploadedImage!.width;
-      final size = Size(w, w * aspect);
-      _raster = PlacedImage(
-          image: _uploadedImage!, worldCenter: Offset(x, y), worldSize: size);
-
-      await _vectorizeAndSketch();
+      if (_orchestrator.uploadedImage != null) {
+        final img = _orchestrator.uploadedImage!;
+        final aspect = img.height / img.width;
+        _raster = PlacedImage(
+            image: img, worldCenter: Offset(x, y), worldSize: Size(w, w * aspect));
+      }
+      _syncVectorConfigToOrchestrator();
+      await _orchestrator.vectorizeAndSketch(x: x, y: y, targetWidth: w);
+      if (_orchestrator.lastError != null) {
+        _showError(_orchestrator.lastError!);
+      }
     } catch (e) {
       _showError(e.toString());
     } finally {
-      if (mounted)
-        setState(() {
-          _busy = false;
-        });
+      _busy = false;
     }
-  }
-
-  Future<Uint8List> _renderTextImageBytes(String text, double fontSize) async {
-    final style = const TextStyle(color: Colors.black);
-    final tp = TextPainter(
-      text: TextSpan(text: text, style: style.copyWith(fontSize: fontSize)),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    final pad = 10.0;
-    final w = (tp.width + pad * 2).ceil();
-    final h = (tp.height + pad * 2).ceil();
-
-    final recorder = ui.PictureRecorder();
-    final canvas =
-        Canvas(recorder, Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()));
-    canvas.drawRect(Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
-        Paint()..color = Colors.white);
-    tp.paint(canvas, Offset(pad, pad));
-    final pic = recorder.endRecording();
-    final img = await pic.toImage(w, h);
-    final data = await img.toByteData(format: ui.ImageByteFormat.png);
-    return data!.buffer.asUint8List();
   }
 
   Future<void> _sketchText() async {
@@ -592,89 +561,23 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       _showError('Enter some text first.');
       return;
     }
-    setState(() {
-      _busy = true;
-    });
+    _syncCenterlineAndTutorToOrchestrator();
     try {
-      final usedFont =
-          _textFontSize < _tutorMinFont ? _tutorMinFont : _textFontSize;
-      final png = await _renderTextImageBytes(text, usedFont);
-
-      // Text-optimized vectorization parameters to reduce gaps and over-sketchiness
-      final centerlineMode = !_sketchPreferOutline && usedFont < _clThreshold;
-      final mergeDist = centerlineMode
-          ? (usedFont * _clMergeFactor).clamp(_clMergeMin, _clMergeMax)
-          : 10.0;
-      final strokes = await Vectorizer.vectorize(
-        bytes: png,
-        worldScale: _worldScale,
-        edgeMode: 'Canny', // consistent edges for glyphs
-        blurK: 3, // light blur
-        cannyLo: 30.0,
-        cannyHi: 120.0,
-        dogSigma: _dogSigma,
-        dogK: _dogK,
-        dogThresh: _dogThresh,
-        epsilon: centerlineMode ? _clEpsilon : 0.8,
-        resampleSpacing: centerlineMode ? _clResample : 1.0,
-        minPerimeter: (_minPerim * 0.6).clamp(6.0, 1e9),
-        retrExternalOnly: false,
-
-        // Keep contours intact; avoid splitting curves aggressively
-        angleThresholdDeg: 85.0,
-        angleWindow: 3,
-        smoothPasses: centerlineMode ? _clSmoothPasses.round() : 1,
-        mergeParallel: true,
-        mergeMaxDist: mergeDist,
-        minStrokeLen: 4.0,
-        minStrokePoints: 3,
-      );
-
-      // Normalize direction (left-to-right) and order strokes by leftmost x
-      final normalized = strokes.map((s) {
-        if (s.isEmpty) return s;
-        return s.first.dx <= s.last.dx ? s : s.reversed.toList();
-      }).toList();
-      normalized.sort((a, b) {
-        final ax = a.map((p) => p.dx).reduce(math.min);
-        final bx = b.map((p) => p.dx).reduce(math.min);
-        return ax.compareTo(bx);
-      });
-
-      // Stitch nearby endpoints to close small gaps, scaled by font size
-      final stitched = _strokeService.stitchStrokes(normalized,
-          maxGap: (usedFont * 0.08).clamp(3.0, 18.0));
-
-      final offset = _raster?.worldCenter ?? Offset.zero;
-      final placed =
-          stitched.map((s) => s.map((p) => p + offset).toList()).toList();
-      _plan = StrokePlan(placed);
+      await _orchestrator.sketchText(text, fontSize: _textFontSize);
+      if (_orchestrator.lastError != null) {
+        _showError(_orchestrator.lastError!);
+      }
     } catch (e, st) {
       debugPrint('SketchText error: $e\n$st');
       _showError(e.toString());
-    } finally {
-      if (mounted)
-        setState(() {
-          _busy = false;
-        });
     }
   }
 
   // Commit the current animated sketch to the board memory.
   void _commitCurrentSketch() {
     if (_plan == null) return;
-    final obj = VectorObject(
-      plan: _plan!,
-      baseWidth: _width,
-      passOpacity: _opacity,
-      passes: _passes,
-      jitterAmp: _jitterAmp,
-      jitterFreq: _jitterFreq,
-    );
-    setState(() {
-      _board.add(obj);
-      _plan = null; // leave only the committed version
-    });
+    _syncPlaybackConfigToOrchestrator();
+    _orchestrator.commitCurrentSketch();
   }
 
   // ========== Whiteboard Orchestrator ==========
@@ -1092,6 +995,90 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     }
   }
 
+  /// Auto-start the synced lesson pipeline with a given topic.
+  /// Called when the user navigates here from the home/lessons page with a topic.
+  Future<void> _autoStartLesson(String topic) async {
+    setState(() {
+      _lessonLoading = true;
+      _lessonLoadingStage = 'Connecting to server...';
+      _lessonLoadingProgress = 0.0;
+    });
+
+    try {
+      debugPrint('🎬 Auto-starting lesson for topic: $topic');
+
+      // Initialize APIs
+      final baseUrl = _apiUrlCtrl.text.trim().isEmpty
+          ? 'http://localhost:8000'
+          : _apiUrlCtrl.text.trim();
+      _api = AssistantApiClient(baseUrl);
+      _timelineApi = TimelineApiClient(baseUrl);
+      _timelineController!.setBaseUrl(baseUrl);
+
+      // Step 1: Create session
+      setState(() {
+        _lessonLoadingStage = 'Starting lesson session...';
+        _lessonLoadingProgress = 0.15;
+      });
+      final data = await _api!.startLesson(topic: topic);
+      _sessionId = data['id'] as int?;
+      debugPrint('✅ Session created: $_sessionId');
+
+      if (!mounted) return;
+
+      // Step 2: Generate timeline (this is the slow step)
+      setState(() {
+        _lessonLoadingStage = 'Generating lesson content...\nThis may take 30-60 seconds';
+        _lessonLoadingProgress = 0.3;
+      });
+      
+      // Animate progress while waiting
+      final progressTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+        if (mounted && _lessonLoading && _lessonLoadingProgress < 0.85) {
+          setState(() {
+            _lessonLoadingProgress += 0.01;
+          });
+        }
+      });
+
+      final timeline = await _timelineApi!
+          .generateTimeline(_sessionId!, durationTarget: 60.0);
+      progressTimer.cancel();
+      debugPrint('✅ Timeline generated: ${timeline.segments.length} segments');
+
+      if (!mounted) return;
+
+      // Step 3: Load timeline
+      setState(() {
+        _lessonLoadingStage = 'Preparing playback...';
+        _lessonLoadingProgress = 0.9;
+      });
+      await _timelineController!.loadTimeline(timeline);
+
+      if (!mounted) return;
+
+      // Step 4: Clear loading, start playback
+      setState(() {
+        _lessonLoading = false;
+        _lessonLoadingStage = '';
+        _lessonLoadingProgress = 1.0;
+      });
+
+      debugPrint('▶️ Starting synchronized playback...');
+      await _timelineController!.play();
+    } catch (e, st) {
+      debugPrint('❌ Auto-start lesson error: $e\n$st');
+      if (mounted) {
+        setState(() {
+          _lessonLoading = false;
+          _lessonLoadingStage = '';
+          _lessonLoadingProgress = 0.0;
+        });
+        _showError('Could not start lesson: $e');
+      }
+    }
+  }
+
   Future<void> _handleSyncedDrawingActions(List<DrawingAction> actions) async {
     if (actions.isEmpty) {
       debugPrint('💬 Explanatory segment - no drawing');
@@ -1269,11 +1256,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       final base = _apiUrlCtrl.text.trim().isEmpty
           ? 'http://127.0.0.1:8000'
           : _apiUrlCtrl.text.trim();
-      final url = Uri.parse(
-          '${base.replaceAll(RegExp(r'/+$'), '')}/api/lessons/diagram/');
-      final resp = await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
+      final authService = AuthService(baseUrl: base);
+      final diagramUrl =
+          '${base.replaceAll(RegExp(r'/+$'), '')}/api/lessons/diagram/';
+      final resp = await authService.authenticatedPost(
+        diagramUrl,
         body: jsonEncode(
             {'prompt': prompt, 'size': '256x256', 'quality': 'standard'}),
       );
@@ -1459,12 +1446,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         debugPrint('🖼️ Fetching image: $resolvedUrl');
         debugPrint('   Proxied URL: $proxiedUrl');
 
-        final response = await http.get(Uri.parse(proxiedUrl)).timeout(
-          const Duration(seconds: 30),
-          onTimeout: () {
-            throw Exception('Image fetch timed out after 30s');
-          },
-        );
+        final authService = AuthService(baseUrl: baseUrl);
+        final response = await authService.authenticatedGet(proxiedUrl);
 
         if (response.statusCode == 200) {
           imageBytes = response.bodyBytes;
@@ -1988,12 +1971,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   // See whiteboard/services/stroke_service.dart
 
   void _clearBoard() {
-    setState(() => _board.clear());
+    _orchestrator.clearBoard();
   }
 
   void _undoLast() {
-    if (_board.isEmpty) return;
-    setState(() => _board.removeLast());
+    _orchestrator.undoLast();
   }
 
   Future<ui.Image> _decodeUiImage(Uint8List bytes) async {
@@ -2037,54 +2019,188 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
     return Scaffold(
       backgroundColor: Colors.white,
-      appBar: AppBar(
-        title: const Text('Vector Sketch Whiteboard'),
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
-        actions: [
-          // User/Presentation Mode button
-          if (widget.onSwitchToUserMode != null)
-            IconButton(
-              tooltip: 'Switch to Presentation Mode',
-              onPressed: () => widget.onSwitchToUserMode!(
-                plan: _plan,
-                board: List.from(_board),
-                raster: _raster,
-                seconds: _seconds,
-                width: _width,
-                opacity: _opacity,
-                passes: _passes,
-                jitterAmp: _jitterAmp,
-                jitterFreq: _jitterFreq,
-                showRaster: _showRasterUnder,
-              ),
-              icon: const Icon(Icons.slideshow),
-            ),
-          IconButton(
-            tooltip: 'Undo last',
-            onPressed: _board.isEmpty ? null : _undoLast,
-            icon: const Icon(Icons.undo),
-          ),
-          IconButton(
-            tooltip: 'Clear board',
-            onPressed: _board.isEmpty ? null : _clearBoard,
-            icon: const Icon(Icons.delete_sweep),
-          ),
-        ],
-      ),
       body: SafeArea(
-        child: Row(
+        child: Stack(
           children: [
-            Expanded(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final size =
-                      Size(constraints.maxWidth, constraints.maxHeight);
-                  return buildCanvas(size);
-                },
+            // Main content row
+            Row(
+              children: [
+                Expanded(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final size =
+                          Size(constraints.maxWidth, constraints.maxHeight);
+                      return buildCanvas(size);
+                    },
+                  ),
+                ),
+                // Toggle button for developer panel (only for developer users)
+                if (Provider.of<DeveloperModeProvider>(context).isEnabled)
+                  Container(
+                    width: 32,
+                    color: Colors.grey[100],
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        IconButton(
+                          icon: Icon(
+                            _showDevPanel ? Icons.chevron_right : Icons.developer_mode,
+                            color: Colors.grey[700],
+                          ),
+                          tooltip: _showDevPanel ? 'Hide Developer Panel' : 'Show Developer Panel',
+                          onPressed: () => setState(() => _showDevPanel = !_showDevPanel),
+                        ),
+                      ],
+                    ),
+                  ),
+                // Collapsible developer panel (only for developer users)
+                if (_showDevPanel && Provider.of<DeveloperModeProvider>(context).isEnabled)
+                  SizedBox(width: 360, child: rightPanel),
+              ],
+            ),
+            
+            // ── Lesson loading overlay ──────────────────────────────────────
+            if (_lessonLoading)
+              Positioned.fill(
+                child: Container(
+                  color: Colors.white.withOpacity(0.95),
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 48),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Animated icon
+                          TweenAnimationBuilder<double>(
+                            tween: Tween(begin: 0.0, end: 1.0),
+                            duration: const Duration(milliseconds: 1200),
+                            curve: Curves.easeInOut,
+                            builder: (context, value, child) {
+                              return Transform.scale(
+                                scale: 0.8 + (value * 0.2),
+                                child: Opacity(
+                                  opacity: 0.5 + (value * 0.5),
+                                  child: child,
+                                ),
+                              );
+                            },
+                            child: Icon(
+                              Icons.school,
+                              size: 64,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                          ),
+                          const SizedBox(height: 32),
+                          // Lesson title
+                          if (widget.lessonTitle != null) ...[
+                            Text(
+                              widget.lessonTitle!,
+                              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                                fontWeight: FontWeight.bold,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 8),
+                          ],
+                          // Stage text
+                          Text(
+                            _lessonLoadingStage,
+                            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                              color: Colors.grey[600],
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 32),
+                          // Progress bar
+                          SizedBox(
+                            width: 300,
+                            child: Column(
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: LinearProgressIndicator(
+                                    value: _lessonLoadingProgress,
+                                    minHeight: 8,
+                                    backgroundColor: Colors.grey[200],
+                                    valueColor: AlwaysStoppedAnimation(
+                                      Theme.of(context).colorScheme.primary,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  '${(_lessonLoadingProgress * 100).round()}%',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    color: Colors.grey[500],
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+                          // Cancel button
+                          TextButton.icon(
+                            onPressed: () {
+                              setState(() {
+                                _lessonLoading = false;
+                                _lessonLoadingStage = '';
+                                _lessonLoadingProgress = 0.0;
+                              });
+                              Navigator.of(context).pop();
+                            },
+                            icon: const Icon(Icons.close, size: 18),
+                            label: const Text('Cancel'),
+                            style: TextButton.styleFrom(
+                              foregroundColor: Colors.grey[600],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            
+            // Floating buttons on the left side
+            Positioned(
+              left: 12,
+              top: 12,
+              child: Column(
+                children: [
+                  // Exit button
+                  FloatingActionButton.small(
+                    heroTag: 'exit',
+                    tooltip: 'Exit',
+                    backgroundColor: Colors.white,
+                    foregroundColor: Colors.black87,
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Icon(Icons.close),
+                  ),
+                  const SizedBox(height: 8),
+                  // Undo button
+                  FloatingActionButton.small(
+                    heroTag: 'undo',
+                    tooltip: 'Undo last',
+                    backgroundColor: Colors.white,
+                    foregroundColor: _board.isEmpty ? Colors.grey : Colors.black87,
+                    onPressed: _board.isEmpty ? null : _undoLast,
+                    child: const Icon(Icons.undo),
+                  ),
+                  const SizedBox(height: 8),
+                  // Clear button
+                  FloatingActionButton.small(
+                    heroTag: 'clear',
+                    tooltip: 'Clear board',
+                    backgroundColor: Colors.white,
+                    foregroundColor: _board.isEmpty ? Colors.grey : Colors.black87,
+                    onPressed: _board.isEmpty ? null : _clearBoard,
+                    child: const Icon(Icons.delete_sweep),
+                  ),
+                ],
               ),
             ),
-            SizedBox(width: 360, child: rightPanel),
           ],
         ),
       ),
@@ -2097,6 +2213,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         (prev.width - size.width).abs() < 1 &&
         (prev.height - size.height).abs() < 1) return;
     _canvasSize = size;
+    _orchestrator.setCanvasSize(size);
     // rebuild layout config for new page size while preserving cursor/blocks
     if (_layout == null) return;
     final newCfg = _buildLayoutConfigForSize(size.width, size.height);
