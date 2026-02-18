@@ -60,3 +60,7 @@ android/local.properties
 ios/Pods
 ios/Flutter/Flutter.framework
 ios/Flutter/Flutter.podspec
+
+
+#environments
+.env
