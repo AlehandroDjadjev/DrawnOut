@@ -505,3 +505,67 @@ class LessonsListView(generics.ListAPIView):
     queryset = Lesson.objects.all()
     serializer_class = LessonSerializer
 
+
+class LessonHistoryView(APIView):
+    """Return the authenticated user's lesson sessions with timeline metadata.
+
+    Only sessions that have a valid timeline (with duration > 0 and at least
+    one segment) are returned. Results are deduplicated by topic — only the
+    most recent valid session per topic is shown. Invalid sessions (no
+    timeline or zero duration) are deleted from the database automatically.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from timeline_generator.models import Timeline
+
+        sessions = LessonSession.objects.filter(
+            user=request.user,
+        ).order_by('-created_at')
+
+        # Collect valid sessions and delete invalid ones
+        valid = []          # (session, timeline)
+        invalid_ids = []    # session IDs to purge
+
+        for s in sessions:
+            tl = s.timelines.order_by('-created_at').first()
+            if tl is None or (tl.total_duration or 0) <= 0 or tl.segment_records.count() == 0:
+                invalid_ids.append(s.id)
+            else:
+                valid.append((s, tl))
+
+        # Purge invalid sessions from the database
+        if invalid_ids:
+            LessonSession.objects.filter(id__in=invalid_ids).delete()
+
+        # Deduplicate: keep only the most recent session per topic
+        seen_topics = set()
+        results = []
+        for s, tl in valid:
+            topic_key = s.topic.strip().lower()
+            if topic_key in seen_topics:
+                continue
+            seen_topics.add(topic_key)
+            results.append({
+                'id': s.id,
+                'topic': s.topic,
+                'is_completed': s.is_completed,
+                'created_at': s.created_at.isoformat(),
+                'timeline_id': tl.id,
+                'total_duration': tl.total_duration,
+                'segment_count': tl.segment_records.count(),
+            })
+
+        return Response(results)
+
+
+class MarkLessonCompleteView(APIView):
+    """Mark a lesson session as completed."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, session_id):
+        session = get_object_or_404(LessonSession, pk=session_id, user=request.user)
+        session.is_completed = True
+        session.save(update_fields=['is_completed', 'updated_at'])
+        return Response({'status': 'completed'})
+

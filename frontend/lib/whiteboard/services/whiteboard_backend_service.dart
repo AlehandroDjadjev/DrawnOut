@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui';
 import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
-import 'package:http/http.dart' as http;
+import '../../services/auth_service.dart';
 
 /// Backend object types
 enum WhiteboardObjectKind { image, text, sketchImage }
@@ -92,6 +92,7 @@ class WhiteboardObject {
 class WhiteboardBackendService {
   final String baseUrl;
   bool enabled;
+  late final AuthService _authService;
 
   WhiteboardBackendService({
     this.baseUrl = const String.fromEnvironment(
@@ -99,9 +100,16 @@ class WhiteboardBackendService {
       defaultValue: 'http://127.0.0.1:8001',
     ),
     this.enabled = false,  // Disabled by default - enable when backend API is ready
-  });
+  }) {
+    _authService = AuthService(baseUrl: baseUrl);
+  }
 
-  Uri _apiUri(String path) => Uri.parse('$baseUrl$path');
+  /// Set callback for when session expires (refresh failed).
+  set onSessionExpired(void Function()? callback) {
+    _authService.onSessionExpired = callback;
+  }
+
+  String _apiUrl(String path) => '$baseUrl$path';
 
   // ─────────────────────────────────────────────────────────────────────────
   // Image Proxy (CORS workaround for web)
@@ -129,10 +137,7 @@ class WhiteboardBackendService {
       final fetchUrl = buildProxiedImageUrl(url);
       debugPrint('🖼️ Fetching image: $url');
 
-      final response = await http.get(Uri.parse(fetchUrl)).timeout(
-        timeout,
-        onTimeout: () => throw Exception('Image fetch timed out'),
-      );
+      final response = await _authService.authenticatedGet(fetchUrl);
 
       if (response.statusCode == 200) {
         debugPrint('   ✅ Fetched ${response.bodyBytes.length} bytes');
@@ -158,7 +163,7 @@ class WhiteboardBackendService {
   }) async {
     if (!enabled) return;
 
-    final uri = _apiUri('/api/whiteboard/objects/image/');
+    final url = _apiUrl('/api/whiteboard/objects/image/');
     final body = json.encode({
       'file_name': fileName,
       'x': origin.dx,
@@ -166,11 +171,7 @@ class WhiteboardBackendService {
       'scale': scale,
     });
 
-    final resp = await http.post(
-      uri,
-      headers: {'Content-Type': 'application/json'},
-      body: body,
-    );
+    final resp = await _authService.authenticatedPost(url, body: body);
 
     if (resp.statusCode >= 400) {
       throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
@@ -192,7 +193,7 @@ class WhiteboardBackendService {
   }) async {
     if (!enabled) return;
 
-    final uri = _apiUri('/api/whiteboard/objects/sketch_image/');
+    final url = _apiUrl('/api/whiteboard/objects/sketch_image/');
     final body = json.encode({
       'name': name,
       'image_url': imageUrl,
@@ -204,11 +205,7 @@ class WhiteboardBackendService {
       if (metadata != null) 'metadata': metadata,
     });
 
-    final resp = await http.post(
-      uri,
-      headers: {'Content-Type': 'application/json'},
-      body: body,
-    );
+    final resp = await _authService.authenticatedPost(url, body: body);
 
     if (resp.statusCode >= 400) {
       throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
@@ -228,7 +225,7 @@ class WhiteboardBackendService {
   }) async {
     if (!enabled) return;
 
-    final uri = _apiUri('/api/whiteboard/objects/text/');
+    final url = _apiUrl('/api/whiteboard/objects/text/');
     final body = json.encode({
       'prompt': prompt,
       'x': origin.dx,
@@ -237,11 +234,7 @@ class WhiteboardBackendService {
       'letter_gap': letterGap,
     });
 
-    final resp = await http.post(
-      uri,
-      headers: {'Content-Type': 'application/json'},
-      body: body,
-    );
+    final resp = await _authService.authenticatedPost(url, body: body);
 
     if (resp.statusCode >= 400) {
       throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
@@ -258,7 +251,7 @@ class WhiteboardBackendService {
   }) async {
     if (!enabled) return;
 
-    final uri = _apiUri('/api/whiteboard/objects/text/$name/');
+    final url = _apiUrl('/api/whiteboard/objects/text/$name/');
     final body = json.encode({
       if (prompt != null) 'prompt': prompt,
       if (origin != null) 'x': origin.dx,
@@ -267,11 +260,7 @@ class WhiteboardBackendService {
       if (letterGap != null) 'letter_gap': letterGap,
     });
 
-    final resp = await http.patch(
-      uri,
-      headers: {'Content-Type': 'application/json'},
-      body: body,
-    );
+    final resp = await _authService.authenticatedPatch(url, body: body);
 
     if (resp.statusCode >= 400) {
       throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
@@ -286,14 +275,10 @@ class WhiteboardBackendService {
   Future<void> deleteObject(String name) async {
     if (!enabled) return;
 
-    final uri = _apiUri('/api/whiteboard/objects/delete/');
+    final url = _apiUrl('/api/whiteboard/objects/delete/');
     final body = json.encode({'name': name});
 
-    final resp = await http.delete(
-      uri,
-      headers: {'Content-Type': 'application/json'},
-      body: body,
-    );
+    final resp = await _authService.authenticatedDelete(url, body: body);
 
     // 404 is ok - already deleted
     if (resp.statusCode >= 400 && resp.statusCode != 404) {
@@ -305,8 +290,8 @@ class WhiteboardBackendService {
   Future<List<WhiteboardObject>> loadObjects() async {
     if (!enabled) return [];
 
-    final uri = _apiUri('/api/whiteboard/objects/');
-    final resp = await http.get(uri);
+    final url = _apiUrl('/api/whiteboard/objects/');
+    final resp = await _authService.authenticatedGet(url);
 
     if (resp.statusCode != 200) {
       throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
@@ -328,8 +313,8 @@ class WhiteboardBackendService {
   Future<void> clearAll() async {
     if (!enabled) return;
 
-    final uri = _apiUri('/api/whiteboard/objects/clear/');
-    final resp = await http.post(uri);
+    final url = _apiUrl('/api/whiteboard/objects/clear/');
+    final resp = await _authService.authenticatedPost(url);
 
     if (resp.statusCode >= 400) {
       throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
@@ -340,8 +325,8 @@ class WhiteboardBackendService {
   Future<WhiteboardObject?> getObject(String name) async {
     if (!enabled) return null;
 
-    final uri = _apiUri('/api/whiteboard/objects/$name/');
-    final resp = await http.get(uri);
+    final url = _apiUrl('/api/whiteboard/objects/$name/');
+    final resp = await _authService.authenticatedGet(url);
 
     if (resp.statusCode == 404) return null;
     if (resp.statusCode != 200) {

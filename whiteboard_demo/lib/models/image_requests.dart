@@ -1,4 +1,5 @@
 /// Shared image pipeline contracts for script requests and research results.
+library;
 
 class ImagePlacement {
   final double x;
@@ -143,15 +144,3 @@ class ImageSelectionResult {
     };
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-

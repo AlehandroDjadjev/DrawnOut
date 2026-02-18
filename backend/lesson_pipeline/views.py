@@ -158,8 +158,6 @@ def health_check(request):
     from lesson_pipeline.services.vector_store import get_vector_store
     from lesson_pipeline.services.image_researcher import get_image_research_service
     from lesson_pipeline.services.script_writer import get_script_writer_service
-    from lesson_pipeline.services.image_to_image import get_image_to_image_service
-    
     health = {
         'ok': True,
         'services': {}
@@ -203,14 +201,6 @@ def health_check(request):
     except Exception as e:
         health['services']['script_writer'] = {'available': False, 'error': str(e)}
         health['ok'] = False
-    
-    try:
-        img2img_svc = get_image_to_image_service()
-        health['services']['image_to_image'] = {
-            'available': img2img_svc.is_available()
-        }
-    except Exception as e:
-        health['services']['image_to_image'] = {'available': False, 'error': str(e)}
     
     status_code = 200 if health['ok'] else 503
     return JsonResponse(health, status=status_code)

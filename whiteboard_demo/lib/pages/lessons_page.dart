@@ -123,8 +123,14 @@ class LessonsPage extends StatelessWidget {
   }
 
   void _startLesson(BuildContext context, Lesson lesson) {
-    // Navigate to main whiteboard - it has full drawing infrastructure
-    Navigator.pushNamed(context, '/whiteboard');
+    Navigator.pushNamed(
+      context,
+      '/whiteboard',
+      arguments: {
+        'topic': lesson.title,
+        'title': lesson.title,
+      },
+    );
   }
 }
 

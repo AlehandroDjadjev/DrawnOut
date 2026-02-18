@@ -17,6 +17,8 @@ class SketchPlayer extends StatefulWidget {
   final double jitterFreq;
   final bool showRasterUnderlay;
   final PlacedImage? raster;
+  /// When true, the drawing animation is paused at its current frame.
+  final bool isPaused;
 
   const SketchPlayer({
     super.key,
@@ -29,6 +31,7 @@ class SketchPlayer extends StatefulWidget {
     this.jitterFreq = 0.02,
     this.showRasterUnderlay = true,
     this.raster,
+    this.isPaused = false,
   });
 
   @override
@@ -66,6 +69,15 @@ class _SketchPlayerState extends State<SketchPlayer>
       _anim
         ..reset()
         ..forward();
+    }
+
+    // Respond to pause / resume changes
+    if (oldWidget.isPaused != widget.isPaused) {
+      if (widget.isPaused) {
+        _anim.stop(); // freeze at current frame
+      } else if (!_anim.isCompleted) {
+        _anim.forward(); // resume from where it stopped
+      }
     }
   }
 

@@ -7,6 +7,7 @@ import 'pages/auth_gate.dart';
 import 'pages/login.dart';
 import 'pages/signup.dart';
 import 'pages/home.dart';
+import 'pages/test_page.dart';
 import 'pages/lessons_page.dart';
 import 'pages/settings_page.dart';
 import 'pages/market_page.dart';

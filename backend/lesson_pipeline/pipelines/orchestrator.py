@@ -7,9 +7,8 @@ Pipeline flow:
 1. Parallel: Image research + Script generation
 2. Parse IMAGE tags from script
 3. Resolve tags to base images (Pinecone vector search + keyword fallback)
-4. Transform images (img2img via ComfyUI, graceful fallback if unavailable)
-5. Inject resolved images into script
-6. Build LessonDocument
+4. Inject resolved images into script
+5. Build LessonDocument
 """
 import logging
 from dataclasses import dataclass, field
@@ -19,6 +18,7 @@ from lesson_pipeline.types import (
     UserPrompt,
     LessonDocument,
     ImageCandidate,
+    ResolvedImage,
     lesson_document_to_dict,
 )
 from lesson_pipeline.utils.image_tags import (
@@ -31,7 +31,6 @@ from lesson_pipeline.pipelines.image_vector_subprocess import (
     ImageVectorSubprocess,
 )
 from lesson_pipeline.pipelines.image_resolver import resolve_image_tags_for_topic
-from lesson_pipeline.pipelines.image_transformation import transform_resolved_images
 from lesson_pipeline.services.script_writer import generate_script
 from lesson_pipeline.config import config
 
@@ -79,8 +78,7 @@ def generate_lesson(
     1. Parallel: Image research (background) + Script generation
     2. Parse IMAGE tags from generated script
     3. Resolve tags to base images (Pinecone + keyword fallback)
-    4. Transform images (img2img if ComfyUI available)
-    5. Inject into script content
+    4. Inject resolved images into script content
     
     Args:
         prompt_text: Lesson topic
@@ -180,21 +178,33 @@ def generate_lesson(
     logger.info(f"[Orchestrator] Resolved {stats.images_resolved}/{stats.image_tags_found} tags")
     
     # -------------------------------------------------------------------------
-    # STEP 4: Transform images using img2img (graceful fallback if unavailable)
+    # STEP 4: Build ResolvedImage objects from base images (no transformation)
     # -------------------------------------------------------------------------
-    logger.info("[Orchestrator] Step 4: Transforming images...")
+    logger.info("[Orchestrator] Step 4: Preparing resolved images...")
     
-    transformed = transform_resolved_images(resolved_base)
-    stats.images_transformed = len(transformed)
+    resolved_images: List[ResolvedImage] = []
+    for item in resolved_base:
+        tag = item['tag']
+        base_image_url = item['base_image_url']
+        resolved = ResolvedImage(
+            tag=tag,
+            base_image_url=base_image_url,
+            final_image_url=base_image_url or "",
+            metadata={
+                'base': item.get('base_metadata'),
+            }
+        )
+        resolved_images.append(resolved)
     
-    logger.info(f"[Orchestrator] Transformed {stats.images_transformed} images")
+    stats.images_transformed = len(resolved_images)
+    logger.info(f"[Orchestrator] Prepared {stats.images_transformed} images")
     
     # -------------------------------------------------------------------------
     # STEP 5: Inject final images into script
     # -------------------------------------------------------------------------
     logger.info("[Orchestrator] Step 5: Injecting images into script...")
     
-    final_content = inject_resolved_images(cleaned_content, transformed)
+    final_content = inject_resolved_images(cleaned_content, resolved_images)
     
     # -------------------------------------------------------------------------
     # Build final lesson document
@@ -202,7 +212,7 @@ def generate_lesson(
     lesson = LessonDocument(
         prompt_id=prompt.id,
         content=final_content,
-        images=transformed,
+        images=resolved_images,
         topic_id=stats.topic_id,
         indexed_image_count=stats.images_indexed,
         image_slots=image_slots,

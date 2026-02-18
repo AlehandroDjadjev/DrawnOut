@@ -138,6 +138,9 @@ class _SignupPageState extends State<SignupPage> {
           }
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('token', tokenData['access']);
+          if (tokenData['refresh'] != null) {
+            await prefs.setString('refresh_token', tokenData['refresh']);
+          }
           if (!mounted) return;
           Navigator.pushReplacementNamed(context, '/home');
         } else {

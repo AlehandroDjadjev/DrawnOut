@@ -1,0 +1,19 @@
+---
+description: Defines that whiteboard_demo is the active frontend — never modify the frontend/ folder
+alwaysApply: true
+---
+
+# Project Structure — Active Frontend
+
+The **active frontend** for this project is `whiteboard_demo/`, NOT `frontend/`.
+
+## Rules
+
+- All frontend work (UI, pages, services, providers, models) MUST be done in `whiteboard_demo/lib/`.
+- **Never read, edit, or create files** inside `frontend/lib/` unless the user explicitly asks you to.
+- When searching for existing code to reuse or extend, search in `whiteboard_demo/lib/` first.
+- Route, page, and service references (e.g. `AuthService`, `DeveloperModeProvider`, `LessonApiService`) should always resolve to `whiteboard_demo/lib/`.
+
+## Why
+
+The `frontend/` folder is an older/parallel codebase that is **not actively used**. Changes there have no effect on the running app and waste effort.

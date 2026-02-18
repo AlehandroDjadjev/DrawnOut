@@ -52,15 +52,30 @@ class _SettingsPageState extends State<SettingsPage> {
           // Appearance Section
           _buildSectionHeader('Appearance'),
           Card(
-            child: SwitchListTile(
-              title: const Text('Dark Mode'),
-              subtitle: Text(themeProvider.isDarkMode ? 'On' : 'Off'),
-              value: themeProvider.isDarkMode,
-              onChanged: (_) => themeProvider.toggleTheme(),
-              secondary: Icon(
-                themeProvider.isDarkMode ? Icons.dark_mode : Icons.light_mode,
-                color: colorScheme.primary,
-              ),
+            child: Column(
+              children: [
+                SwitchListTile(
+                  title: const Text('Dark Mode'),
+                  subtitle: Text(themeProvider.isDarkMode ? 'On' : 'Off'),
+                  value: themeProvider.isDarkMode,
+                  onChanged: (_) => themeProvider.toggleTheme(),
+                  secondary: Icon(
+                    themeProvider.isDarkMode ? Icons.dark_mode : Icons.light_mode,
+                    color: colorScheme.primary,
+                  ),
+                ),
+                const Divider(height: 1),
+                SwitchListTile(
+                  title: const Text('High Contrast'),
+                  subtitle: Text(themeProvider.isHighContrast ? 'On' : 'Off'),
+                  value: themeProvider.isHighContrast,
+                  onChanged: (_) => themeProvider.toggleHighContrast(),
+                  secondary: Icon(
+                    Icons.contrast,
+                    color: colorScheme.primary,
+                  ),
+                ),
+              ],
             ),
           ),
 
@@ -119,23 +134,12 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
             const SizedBox(height: 16),
-            Card(
+            const Card(
               child: ListTile(
-                leading: const Icon(Icons.developer_mode_outlined, color: Colors.orange),
-                title: const Text('Developer Mode'),
-                subtitle: const Text('Enabled'),
-                trailing: TextButton(
-                  onPressed: () {
-                    devMode.disable();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Developer mode disabled'),
-                        behavior: SnackBarBehavior.floating,
-                      ),
-                    );
-                  },
-                  child: const Text('Disable'),
-                ),
+                leading: Icon(Icons.developer_mode_outlined, color: Colors.orange),
+                title: Text('Developer Account'),
+                subtitle: Text('Debug features enabled (managed via database)'),
+                trailing: Icon(Icons.check_circle, color: Colors.green),
               ),
             ),
           ],

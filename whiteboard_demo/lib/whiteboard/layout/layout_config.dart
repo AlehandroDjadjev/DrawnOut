@@ -1,6 +1,7 @@
 /// Configuration classes for whiteboard layout.
 ///
 /// These define page dimensions, margins, fonts, indentation, and columns.
+library;
 
 /// Page dimensions and margins.
 ///
