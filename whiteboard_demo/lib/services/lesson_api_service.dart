@@ -30,7 +30,12 @@ class LessonSessionResponse {
 class LessonApiService {
   final String baseUrl;
 
-  LessonApiService({this.baseUrl = 'http://127.0.0.1:8000'});
+  LessonApiService({
+    this.baseUrl = const String.fromEnvironment(
+      'BACKEND_URL',
+      defaultValue: 'http://127.0.0.1:8001',
+    ),
+  });
 
   String _api(String path) =>
       '${baseUrl.replaceFirst(RegExp(r'/+$'), '')}/api/lessons$path';

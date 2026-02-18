@@ -4,7 +4,7 @@ import 'package:http/http.dart' as http;
 class WhiteboardPlanner {
   WhiteboardPlanner(this.baseUrl);
 
-  final String baseUrl; // e.g., http://127.0.0.1:8000
+  final String baseUrl; // e.g., http://127.0.0.1:8001
 
   String _api(String path) =>
       '${baseUrl.replaceFirst(RegExp(r'/+$'), '')}/api$path';

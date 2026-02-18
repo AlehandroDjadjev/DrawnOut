@@ -5,11 +5,15 @@ class AssistantApiClient {
   AssistantApiClient(String baseUrl)
       : baseUrl = _normalizeBase(baseUrl);
 
-  String baseUrl; // normalized like http://127.0.0.1:8000
+  String baseUrl; // normalized like http://127.0.0.1:8001
 
   static String _normalizeBase(String url) {
-    var u = (url.isEmpty ? 'http://127.0.0.1:8000/' : url.trim());
-    if (!u.startsWith('http')) u = 'http://127.0.0.1:8000/';
+    final fallback = const String.fromEnvironment(
+      'BACKEND_URL',
+      defaultValue: 'http://127.0.0.1:8001',
+    );
+    var u = (url.isEmpty ? '$fallback/' : url.trim());
+    if (!u.startsWith('http')) u = '$fallback/';
     while (u.endsWith('/')) { u = u.substring(0, u.length - 1); }
     // If user passed .../api or .../api/lessons, strip it to the root
     u = u.replaceFirst(RegExp(r'/api/lessons$'), '').replaceFirst(RegExp(r'/api$'), '');

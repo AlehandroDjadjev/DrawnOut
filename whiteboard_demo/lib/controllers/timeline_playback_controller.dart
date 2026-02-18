@@ -12,7 +12,10 @@ class TimelinePlaybackController extends ChangeNotifier {
   final AudioPlayer _audioPlayer = AudioPlayer();
   Timer? _progressTimer;
   double _currentTime = 0.0;
-  String _baseUrl = 'http://localhost:8000';
+  String _baseUrl = const String.fromEnvironment(
+    'BACKEND_URL',
+    defaultValue: 'http://127.0.0.1:8001',
+  );
   
   // Callbacks
   Future<void> Function(List<DrawingAction> actions)? onDrawingActionsTriggered;  // Changed to async

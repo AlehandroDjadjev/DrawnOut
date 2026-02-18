@@ -19,7 +19,13 @@ void setAssistantAudioBaseUrl(String baseUrl) {
   _apiBaseUrl = baseUrl.trim();
   try {
     var cleaned = _apiBaseUrl.trim();
-    if (cleaned.isEmpty) cleaned = 'http://127.0.0.1:8000/';
+    if (cleaned.isEmpty) {
+      cleaned = const String.fromEnvironment(
+        'BACKEND_URL',
+        defaultValue: 'http://127.0.0.1:8001',
+      );
+      cleaned = '$cleaned/';
+    }
     while (cleaned.endsWith('/')) { cleaned = cleaned.substring(0, cleaned.length - 1); }
     cleaned = cleaned
       .replaceFirst(RegExp(r'/api/lessons$'), '')

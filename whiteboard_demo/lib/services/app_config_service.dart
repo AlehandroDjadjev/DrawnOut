@@ -4,7 +4,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// Central configuration service for app settings
 class AppConfigService extends ChangeNotifier {
   static const String _backendUrlKey = 'backendUrl';
-  static const String _defaultBackendUrl = 'http://127.0.0.1:8000';
+  static const String _defaultBackendUrl = String.fromEnvironment(
+    'BACKEND_URL',
+    defaultValue: 'http://127.0.0.1:8001',
+  );
   
   String _backendUrl = _defaultBackendUrl;
   

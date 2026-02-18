@@ -23,7 +23,12 @@ class _AuthGateState extends State<AuthGate> {
 
   String get _apiBaseUrl {
     final raw = (dotenv.env['API_URL'] ?? '').trim();
-    if (raw.isEmpty) return 'http://127.0.0.1:8000';
+    if (raw.isEmpty) {
+      return const String.fromEnvironment(
+        'BACKEND_URL',
+        defaultValue: 'http://127.0.0.1:8001',
+      );
+    }
     return raw.endsWith('/') ? raw.substring(0, raw.length - 1) : raw;
   }
 

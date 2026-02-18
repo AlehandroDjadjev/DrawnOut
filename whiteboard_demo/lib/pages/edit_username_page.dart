@@ -27,7 +27,11 @@ class _EditUsernamePageState extends State<EditUsernamePage> {
       return '${config.backendUrl}/api/';
     } catch (_) {
       final envUrl = dotenv.env['API_URL'];
-      return '${envUrl ?? 'http://127.0.0.1:8000'}/api/';
+      final fallback = const String.fromEnvironment(
+        'BACKEND_URL',
+        defaultValue: 'http://127.0.0.1:8001',
+      );
+      return '${envUrl ?? fallback}/api/';
     }
   }
 

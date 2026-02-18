@@ -94,7 +94,10 @@ class WhiteboardBackendService {
   bool enabled;
 
   WhiteboardBackendService({
-    this.baseUrl = 'http://127.0.0.1:8000',
+    this.baseUrl = const String.fromEnvironment(
+      'BACKEND_URL',
+      defaultValue: 'http://127.0.0.1:8001',
+    ),
     this.enabled = false,  // Disabled by default - enable when backend API is ready
   });
 

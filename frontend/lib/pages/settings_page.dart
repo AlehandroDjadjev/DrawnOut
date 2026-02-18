@@ -82,7 +82,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     child: TextField(
                       controller: _backendUrlController,
                       decoration: InputDecoration(
-                        hintText: 'http://127.0.0.1:8000',
+                        hintText: 'http://127.0.0.1:8001',
                         border: const OutlineInputBorder(),
                         suffixIcon: _urlModified
                             ? IconButton(

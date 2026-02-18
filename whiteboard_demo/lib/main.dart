@@ -288,7 +288,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   bool _busy = false;
   double _textFontSize = 60.0;
   // Assistant
-  final _apiUrlCtrl = TextEditingController(text: 'http://localhost:8000');
+  final _apiUrlCtrl = TextEditingController(
+      text: const String.fromEnvironment(
+    'BACKEND_URL',
+    defaultValue: 'http://127.0.0.1:8001',
+  ));
   AssistantApiClient? _api;
   int? _sessionId;
   final _questionCtrl = TextEditingController();
@@ -352,7 +356,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
     // Initialize image sketch service with default base URL
     _imageSketchService = ImageSketchService(
-      baseUrl: 'http://localhost:8000',
+      baseUrl: const String.fromEnvironment(
+        'BACKEND_URL',
+        defaultValue: 'http://127.0.0.1:8001',
+      ),
     );
 
     // Initialize timeline controller
@@ -524,7 +531,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     });
     try {
       final base = _apiUrlCtrl.text.trim().isEmpty
-          ? 'http://127.0.0.1:8000'
+          ? const String.fromEnvironment(
+              'BACKEND_URL',
+              defaultValue: 'http://127.0.0.1:8001',
+            )
           : _apiUrlCtrl.text.trim();
       final url = Uri.parse(
           '${base.replaceAll(RegExp(r'/+$'), '')}/api/lessons/diagram/');
@@ -801,7 +811,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     try {
       await _ensureLayout();
       final planner = WhiteboardPlanner(_apiUrlCtrl.text.trim().isEmpty
-          ? 'http://127.0.0.1:8000'
+          ? const String.fromEnvironment(
+              'BACKEND_URL',
+              defaultValue: 'http://127.0.0.1:8001',
+            )
           : _apiUrlCtrl.text.trim());
       final plan = await planner.planForSession(
         sessionData,
@@ -857,7 +870,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       debugPrint('🎨 Starting AI Lesson Pipeline with Images...');
 
       final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-          ? 'http://localhost:8000'
+          ? const String.fromEnvironment(
+            'BACKEND_URL',
+            defaultValue: 'http://127.0.0.1:8001',
+          )
           : _apiUrlCtrl.text.trim();
       final pipelineApi = LessonPipelineApi(baseUrl: baseUrl);
 
@@ -1054,7 +1070,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
       // Initialize APIs
       final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-          ? 'http://localhost:8000'
+          ? const String.fromEnvironment(
+            'BACKEND_URL',
+            defaultValue: 'http://127.0.0.1:8001',
+          )
           : _apiUrlCtrl.text.trim();
       _api = AssistantApiClient(baseUrl);
       _timelineApi = TimelineApiClient(baseUrl);
@@ -1267,7 +1286,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   void _startDiagramPipeline(String prompt, double currentSeconds) async {
     try {
       final base = _apiUrlCtrl.text.trim().isEmpty
-          ? 'http://127.0.0.1:8000'
+          ? const String.fromEnvironment(
+              'BACKEND_URL',
+              defaultValue: 'http://127.0.0.1:8001',
+            )
           : _apiUrlCtrl.text.trim();
       final url = Uri.parse(
           '${base.replaceAll(RegExp(r'/+$'), '')}/api/lessons/diagram/');
@@ -1451,7 +1473,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       try {
         // Use proxy for CORS safety on web
         final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-            ? 'http://localhost:8000'
+            ? const String.fromEnvironment(
+                'BACKEND_URL',
+                defaultValue: 'http://127.0.0.1:8001',
+              )
             : _apiUrlCtrl.text.trim();
         final api = LessonPipelineApi(baseUrl: baseUrl);
         final proxiedUrl = api.buildProxiedImageUrl(resolvedUrl);
@@ -2434,7 +2459,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           TextField(
             controller: _apiUrlCtrl,
             decoration: const InputDecoration(
-                labelText: 'Backend URL (e.g. http://localhost:8000)'),
+                labelText: 'Backend URL (e.g. http://127.0.0.1:8001)'),
           ),
           const SizedBox(height: 8),
           // NEW: Lesson Pipeline with Intelligent Images

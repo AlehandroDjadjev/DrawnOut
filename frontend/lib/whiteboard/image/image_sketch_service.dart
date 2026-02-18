@@ -87,7 +87,10 @@ class ImageSketchService {
   final double worldScale;
 
   ImageSketchService({
-    this.baseUrl = 'http://localhost:8000',
+    this.baseUrl = const String.fromEnvironment(
+      'BACKEND_URL',
+      defaultValue: 'http://127.0.0.1:8001',
+    ),
     this.vectorConfig = const ImageVectorConfig(),
     this.worldScale = 1.0,
   });
