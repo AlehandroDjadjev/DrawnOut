@@ -7,6 +7,7 @@ import 'dart:convert';
 import '../theme_provider.dart';
 import '../providers/developer_mode_provider.dart';
 import '../services/auth_service.dart';
+import '../ui/apple_ui.dart';
 import 'home.dart';
 import 'profile_page.dart';
 import 'owned_items.dart';
@@ -43,6 +44,7 @@ class _MarketPageState extends State<MarketPage> {
 
   Future<void> _loadCurrentUser() async {
     final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
     setState(() => _currentUsername = prefs.getString('username'));
   }
 
@@ -250,12 +252,12 @@ class _MarketPageState extends State<MarketPage> {
     }
   }
 
-  void _openBargainDialog(dynamic listing) {
+  Future<void> _openBargainDialog(dynamic listing) async {
     final controller = TextEditingController(text: _money(listing['price']));
 
-    showDialog(
+    await showDialog(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text("Make an Offer"),
         content: TextField(
           controller: controller,
@@ -265,8 +267,7 @@ class _MarketPageState extends State<MarketPage> {
         actions: [
           TextButton(
             onPressed: () {
-              controller.dispose();
-              Navigator.pop(context);
+              Navigator.of(dialogContext).pop();
             },
             child: const Text("Cancel"),
           ),
@@ -307,14 +308,15 @@ class _MarketPageState extends State<MarketPage> {
                 }
               }
 
-              controller.dispose();
-              if (!context.mounted) return;
-              Navigator.pop(context);
+              if (!dialogContext.mounted) return;
+              Navigator.of(dialogContext).pop();
             },
           ),
         ],
       ),
     );
+
+    controller.dispose();
   }
 
   void _logout() async {
@@ -345,7 +347,7 @@ class _MarketPageState extends State<MarketPage> {
       if (!mounted) return;
       showDialog(
         context: context,
-        builder: (_) => AlertDialog(
+        builder: (dialogContext) => AlertDialog(
           title: const Text('Offers'),
           content: SizedBox(
             width: 400,
@@ -367,14 +369,15 @@ class _MarketPageState extends State<MarketPage> {
                               icon:
                                   const Icon(Icons.check, color: Colors.green),
                               onPressed: p['status'] == 'pending'
-                                  ? () => _respondToOffer(p['id'], accept: true)
+                                  ? () => _respondToOffer(dialogContext, p['id'],
+                                      accept: true)
                                   : null,
                             ),
                             IconButton(
                               icon: const Icon(Icons.close, color: Colors.red),
                               onPressed: p['status'] == 'pending'
-                                  ? () =>
-                                      _respondToOffer(p['id'], accept: false)
+                                  ? () => _respondToOffer(dialogContext, p['id'],
+                                      accept: false)
                                   : null,
                             ),
                             IconButton(
@@ -396,7 +399,7 @@ class _MarketPageState extends State<MarketPage> {
           ),
           actions: [
             TextButton(
-                onPressed: () => Navigator.pop(context),
+                onPressed: () => Navigator.pop(dialogContext),
                 child: const Text('Close')),
           ],
         ),
@@ -407,11 +410,12 @@ class _MarketPageState extends State<MarketPage> {
     }
   }
 
-  void _openCounterDialog(int proposalId, {String? suggestedPrice}) {
+  Future<void> _openCounterDialog(int proposalId,
+      {String? suggestedPrice}) async {
     final controller = TextEditingController(text: suggestedPrice ?? '');
-    showDialog(
+    await showDialog(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Counter Offer'),
         content: TextField(
           controller: controller,
@@ -421,8 +425,7 @@ class _MarketPageState extends State<MarketPage> {
         actions: [
           TextButton(
               onPressed: () {
-                controller.dispose();
-                Navigator.pop(context);
+                Navigator.of(dialogContext).pop();
               },
               child: const Text('Cancel')),
           ElevatedButton(
@@ -446,7 +449,9 @@ class _MarketPageState extends State<MarketPage> {
                   if (resp.statusCode == 201 || resp.statusCode == 200) {
                     ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(content: Text('Counter sent')));
-                    Navigator.pop(context);
+                    if (dialogContext.mounted) {
+                      Navigator.of(dialogContext).pop();
+                    }
                     _fetchListings();
                   } else {
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -459,15 +464,17 @@ class _MarketPageState extends State<MarketPage> {
                   ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('Network error')));
                 }
-                controller.dispose();
               },
               child: const Text('Send')),
         ],
       ),
     );
+
+    controller.dispose();
   }
 
-  Future<void> _respondToOffer(int proposalId, {required bool accept}) async {
+  Future<void> _respondToOffer(BuildContext dialogContext, int proposalId,
+      {required bool accept}) async {
     final authService = AuthService(baseUrl: _apiBase);
 
     final url =
@@ -477,7 +484,9 @@ class _MarketPageState extends State<MarketPage> {
       if (resp.statusCode == 200) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(accept ? 'Offer accepted' : 'Offer declined')));
-        Navigator.pop(context); // close offers dialog
+        if (dialogContext.mounted) {
+          Navigator.pop(dialogContext); // close offers dialog
+        }
         _fetchListings();
       } else {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -606,178 +615,271 @@ class _MarketPageState extends State<MarketPage> {
     );
   }
 
+  Widget _buildErrorState(ThemeData theme) {
+    return Center(
+      key: const ValueKey('market-error'),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 620),
+          child: AppleCard(
+            child: AppleErrorBanner(message: errorMessage ?? 'Unknown error'),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyState(ThemeData theme) {
+    return Center(
+      key: const ValueKey('market-empty'),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 620),
+          child: AppleCard(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.storefront_outlined,
+                  size: 56,
+                  color: theme.colorScheme.primary.withOpacity(0.55),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  _showMineOnly
+                      ? 'No active listings from you'
+                      : 'No listings available',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: theme.colorScheme.onSurface.withOpacity(0.75),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  _showMineOnly
+                      ? 'Use "My Items" to list items first'
+                      : 'Check back later for new items',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurface.withOpacity(0.60),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFilterCard(ThemeData theme) {
+    return AnimatedOpacity(
+      duration: const Duration(milliseconds: 200),
+      opacity: _isSubmitting ? 0.85 : 1,
+      child: AppleCard(
+        margin: const EdgeInsets.only(bottom: 14),
+        child: Column(
+          children: [
+            TextField(
+              onChanged: (value) => setState(() => _searchQuery = value),
+              decoration: appleFieldDecoration(
+                context,
+                hintText: 'Search item or seller',
+                icon: Icons.search,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primary.withOpacity(0.10),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      value: _showMineOnly ? 'mine' : 'all',
+                      items: const [
+                        DropdownMenuItem(value: 'all', child: Text('All')),
+                        DropdownMenuItem(
+                            value: 'mine', child: Text('My Listings')),
+                      ],
+                      onChanged: (value) =>
+                          setState(() => _showMineOnly = value == 'mine'),
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: _fetchListings,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Refresh'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildListingCard(ThemeData theme, dynamic item) {
+    final isMine = _isMine(item);
+    final itemName = item['item_name']?.toString() ?? 'Unnamed';
+    final sellerName = item['seller_username']?.toString() ?? '';
+    final quantity = _toInt(item['quantity']);
+
+    return AnimatedOpacity(
+      duration: const Duration(milliseconds: 220),
+      opacity: _isSubmitting ? 0.88 : 1,
+      child: AppleCard(
+        margin: const EdgeInsets.only(bottom: 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    itemName,
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.2,
+                    ),
+                  ),
+                ),
+                if (isMine)
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.primary.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(
+                      'Your listing',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Seller: $sellerName',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurface.withOpacity(0.72),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Price: ${_money(item['price'])} credits | Left: $quantity',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: theme.colorScheme.primary,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: (isMine || _isSubmitting)
+                        ? null
+                        : () => _openBuyDialog(item),
+                    child: const Text('BUY'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: (isMine || _isSubmitting)
+                        ? null
+                        : () => _openBargainDialog(item),
+                    child: const Text('MAKE OFFER'),
+                  ),
+                ),
+              ],
+            ),
+            if (isMine) ...[
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    TextButton(
+                      onPressed: _isSubmitting
+                          ? null
+                          : () => _viewOffersDialog(item['id']),
+                      child: const Text('View Offers'),
+                    ),
+                    OutlinedButton(
+                      onPressed: _isSubmitting
+                          ? null
+                          : () => _cancelListing(item['id']),
+                      child: const Text('Cancel Listing'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildListingsState(ThemeData theme) {
+    if (isLoading) {
+      return const Center(
+        key: ValueKey('market-loading'),
+        child: CircularProgressIndicator(),
+      );
+    }
+
+    if (errorMessage != null) {
+      return _buildErrorState(theme);
+    }
+
+    if (_visibleListings.isEmpty) {
+      return _buildEmptyState(theme);
+    }
+
+    return ListView.builder(
+      key: const ValueKey('market-list'),
+      padding: const EdgeInsets.all(16),
+      itemCount: _visibleListings.length + 1,
+      itemBuilder: (_, index) {
+        if (index == 0) return _buildFilterCard(theme);
+        final item = _visibleListings[index - 1];
+        return _buildListingCard(theme, item);
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final themeProvider = context.watch<ThemeProvider>();
     final isDarkMode = themeProvider.isDarkMode;
-
-    // consistent centered layout
-    Widget content = isLoading
-        ? const Center(child: CircularProgressIndicator())
-        : errorMessage != null
-            ? Center(
-                child: Text(
-                  errorMessage!,
-                  style: TextStyle(color: theme.colorScheme.error),
-                ),
-              )
-            : _visibleListings.isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.storefront_outlined,
-                          size: 64,
-                          color: theme.colorScheme.primary.withOpacity(0.5),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          _showMineOnly
-                              ? 'No active listings from you'
-                              : 'No listings available',
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            color: theme.colorScheme.onSurface.withOpacity(0.6),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          _showMineOnly
-                              ? 'Use "My Items" to list items first'
-                              : 'Check back later for new items',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: theme.colorScheme.onSurface.withOpacity(0.4),
-                          ),
-                        ),
-                      ],
-                    ),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: _visibleListings.length + 1,
-                    itemBuilder: (_, index) {
-                      if (index == 0) {
-                        return Card(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12)),
-                          elevation: 2,
-                          child: Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Column(
-                              children: [
-                                TextField(
-                                  onChanged: (value) =>
-                                      setState(() => _searchQuery = value),
-                                  decoration: InputDecoration(
-                                    hintText: 'Search item or seller',
-                                    prefixIcon: const Icon(Icons.search),
-                                    border: OutlineInputBorder(
-                                        borderRadius:
-                                            BorderRadius.circular(10)),
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    DropdownButton<String>(
-                                      value: _showMineOnly ? 'mine' : 'all',
-                                      items: const [
-                                        DropdownMenuItem(
-                                            value: 'all', child: Text('All')),
-                                        DropdownMenuItem(
-                                            value: 'mine',
-                                            child: Text('My Listings')),
-                                      ],
-                                      onChanged: (v) => setState(
-                                          () => _showMineOnly = (v == 'mine')),
-                                    ),
-                                    Expanded(child: Container()),
-                                    TextButton.icon(
-                                        onPressed: _fetchListings,
-                                        icon: const Icon(Icons.refresh),
-                                        label: const Text('Refresh')),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      }
-                      final item = _visibleListings[index - 1];
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 16),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
-                        elevation: 2,
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(item['item_name'] ?? 'Unnamed',
-                                  style: theme.textTheme.titleLarge),
-                              const SizedBox(height: 8),
-                              Text('Seller: ${item['seller_username'] ?? ''}'),
-                              const SizedBox(height: 6),
-                              Text(
-                                  'Price: ${item['price']} credits  •  Left: ${item['quantity'] ?? 1}',
-                                  style: TextStyle(
-                                      color: theme.colorScheme.primary,
-                                      fontWeight: FontWeight.bold)),
-                              const SizedBox(height: 12),
-                              Row(children: [
-                                Expanded(
-                                    child: ElevatedButton(
-                                        style: ElevatedButton.styleFrom(
-                                            shape: RoundedRectangleBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(8))),
-                                        onPressed:
-                                            (_isMine(item) || _isSubmitting)
-                                                ? null
-                                                : () => _openBuyDialog(item),
-                                        child: const Text('BUY'))),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                    child: OutlinedButton(
-                                        style: OutlinedButton.styleFrom(
-                                            shape: RoundedRectangleBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(8))),
-                                        onPressed: (_isMine(item) ||
-                                                _isSubmitting)
-                                            ? null
-                                            : () => _openBargainDialog(item),
-                                        child: const Text('MAKE OFFER'))),
-                              ]),
-                              const SizedBox(height: 8),
-                              if (_isMine(item))
-                                Align(
-                                    alignment: Alignment.centerRight,
-                                    child: Wrap(spacing: 8, children: [
-                                      TextButton(
-                                          onPressed: _isSubmitting
-                                              ? null
-                                              : () =>
-                                                  _viewOffersDialog(item['id']),
-                                          child: const Text('View Offers')),
-                                      OutlinedButton(
-                                          onPressed: _isSubmitting
-                                              ? null
-                                              : () =>
-                                                  _cancelListing(item['id']),
-                                          child: const Text('Cancel Listing'))
-                                    ]))
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  );
 
     return Scaffold(
       drawer: _buildDrawer(theme),
@@ -798,10 +900,19 @@ class _MarketPageState extends State<MarketPage> {
               onPressed: themeProvider.toggleTheme),
         ],
       ),
-      body: Center(
+      body: AppleBackground(
+        child: Center(
           child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 980),
-              child: content)),
+            constraints: const BoxConstraints(maxWidth: 980),
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 240),
+              switchInCurve: Curves.easeOut,
+              switchOutCurve: Curves.easeIn,
+              child: _buildListingsState(theme),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

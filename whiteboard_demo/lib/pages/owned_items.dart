@@ -234,78 +234,166 @@ class _OwnedItemsPageState extends State<OwnedItemsPage> {
     priceController.dispose();
   }
 
+  Widget _buildIntroHeader(ThemeData theme) {
+    return AppleCard(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: const AppleHeader(
+        title: 'My Market Items',
+        subtitle:
+            'Review your inventory and list items for sale with clear quantity and price control.',
+      ),
+    );
+  }
+
+  Widget _buildErrorState() {
+    return ListView(
+      key: const ValueKey('owned-error'),
+      padding: const EdgeInsets.all(16),
+      children: [
+        _buildIntroHeader(Theme.of(context)),
+        AppleCard(
+          child: AppleErrorBanner(
+            message: _errorMessage ?? 'Failed to load items',
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEmptyState(ThemeData theme) {
+    return ListView(
+      key: const ValueKey('owned-empty'),
+      padding: const EdgeInsets.all(16),
+      children: [
+        _buildIntroHeader(theme),
+        AppleCard(
+          child: Column(
+            children: [
+              Icon(
+                Icons.inventory_2_outlined,
+                size: 52,
+                color: theme.colorScheme.primary.withOpacity(0.55),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'No owned market items yet',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildItemCard(ThemeData theme, Map<String, dynamic> item) {
+    final qtyOwned = _toInt(item['quantity']);
+    final itemName = item['item_name']?.toString() ?? 'Unnamed item';
+    final itemPrice = _toMoney(item['item_price']);
+
+    return AnimatedOpacity(
+      duration: const Duration(milliseconds: 220),
+      opacity: _submitting ? 0.88 : 1,
+      child: AppleCard(
+        margin: const EdgeInsets.only(bottom: 12),
+        child: Row(
+          children: [
+            Container(
+              width: 46,
+              height: 46,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primary.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(Icons.widgets_outlined, color: theme.colorScheme.primary),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    itemName,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.2,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Base price: $itemPrice credits',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurface.withOpacity(0.72),
+                    ),
+                  ),
+                  Text(
+                    'Owned: $qtyOwned',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 10),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              onPressed:
+                  (qtyOwned <= 0 || _submitting) ? null : () => _openListDialog(item),
+              child: _submitting
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('List'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildItemsState(ThemeData theme) {
+    if (_loading) {
+      return const Center(
+        key: ValueKey('owned-loading'),
+        child: CircularProgressIndicator(),
+      );
+    }
+
+    if (_errorMessage != null) {
+      return _buildErrorState();
+    }
+
+    return RefreshIndicator(
+      onRefresh: _loadData,
+      child: _items.isEmpty
+          ? _buildEmptyState(theme)
+          : ListView.builder(
+              key: const ValueKey('owned-list'),
+              padding: const EdgeInsets.all(16),
+              itemCount: _items.length + 1,
+              itemBuilder: (_, i) {
+                if (i == 0) return _buildIntroHeader(theme);
+                final item = _items[i - 1] as Map<String, dynamic>;
+                return _buildItemCard(theme, item);
+              },
+            ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final themeProvider = context.watch<ThemeProvider>();
     final isDark = themeProvider.isDarkMode;
-
-    Widget bodyContent = _loading
-        ? const Center(child: CircularProgressIndicator())
-        : _errorMessage != null
-            ? Center(child: Text(_errorMessage!))
-            : RefreshIndicator(
-                onRefresh: _loadData,
-                child: _items.isEmpty
-                    ? ListView(
-                        padding: const EdgeInsets.all(24),
-                        children: const [
-                            SizedBox(height: 32),
-                            Center(child: Text('No owned market items yet'))
-                          ])
-                    : ListView.builder(
-                        padding: const EdgeInsets.all(16),
-                        itemCount: _items.length,
-                        itemBuilder: (_, i) {
-                          final item = _items[i] as Map<String, dynamic>;
-                          final qtyOwned = _toInt(item['quantity']);
-                          final itemName =
-                              item['item_name']?.toString() ?? 'Unnamed item';
-                          final itemPrice = _toMoney(item['item_price']);
-
-                          return AppleCard(
-                            margin: const EdgeInsets.only(bottom: 12),
-                            child: Padding(
-                              padding: const EdgeInsets.all(12),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(itemName,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .titleMedium
-                                                ?.copyWith(
-                                                    fontWeight:
-                                                        FontWeight.w700)),
-                                        const SizedBox(height: 4),
-                                        Text('Base price: $itemPrice credits'),
-                                        Text('Owned: $qtyOwned'),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  ElevatedButton(
-                                    onPressed: (qtyOwned <= 0 || _submitting)
-                                        ? null
-                                        : () => _openListDialog(item),
-                                    child: _submitting
-                                        ? const SizedBox(
-                                            width: 16,
-                                            height: 16,
-                                            child: CircularProgressIndicator(
-                                                strokeWidth: 2))
-                                        : const Text('List'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-              );
 
     return Scaffold(
       appBar: AppBar(
@@ -323,10 +411,18 @@ class _OwnedItemsPageState extends State<OwnedItemsPage> {
         ],
       ),
       body: AppleBackground(
-          child: Center(
-              child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 980),
-                  child: bodyContent))),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 980),
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              switchInCurve: Curves.easeOut,
+              switchOutCurve: Curves.easeIn,
+              child: _buildItemsState(theme),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
