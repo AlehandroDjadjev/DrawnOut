@@ -6,8 +6,8 @@ import 'dart:ui' show Offset;
 
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as html;
-import 'dart:js' as js;
-import 'package:js/js.dart' show allowInterop;
+
+import 'dart:js_util' as js_util;
 
 class Vectorizer {
   static Future<List<List<Offset>>> vectorize({
@@ -41,6 +41,7 @@ class Vectorizer {
     if (width <= 0 || height <= 0) {
       throw StateError('Failed to decode image for web vectorization');
     }
+
     final canvas = html.CanvasElement(width: width, height: height);
     final ctx = canvas.context2D;
     ctx.drawImageScaled(decoded, 0, 0, width.toDouble(), height.toDouble());
@@ -64,16 +65,19 @@ class Vectorizer {
     final cx = width / 2.0;
     final cy = height / 2.0;
 
-    // 3) Convert to world coords and apply Dart-side shaping (same knobs)
+    // 3) Convert to world coords and apply Dart-side shaping
     final List<List<Offset>> rawStrokes = [];
-    // jsResult is a dartified LinkedHashMap<dynamic,dynamic>
-    final polylines = (jsResult as Map)['polylines'] as List;
+
+    if (jsResult == null) return rawStrokes;
+
+    final polylines = (jsResult as Map)['polylines'] as List? ?? const [];
     for (final pl in polylines.cast<List>()) {
       var polyWorld = pl
           .map((p) => Offset(
-              ((p as List)[0] as num).toDouble(), ((p)[1] as num).toDouble()))
-          .map(
-              (p) => Offset((p.dx - cx) * worldScale, (p.dy - cy) * worldScale))
+                ((p as List)[0] as num).toDouble(),
+                ((p)[1] as num).toDouble(),
+              ))
+          .map((p) => Offset((p.dx - cx) * worldScale, (p.dy - cy) * worldScale))
           .toList();
 
       if (smoothPasses > 0) {
@@ -96,8 +100,12 @@ class Vectorizer {
     }
 
     final merged = mergeParallel
-        ? _mergeParallelStrokes(rawStrokes,
-            maxDist: mergeMaxDist, maxAngleDiffDeg: 12.0, minOverlapFrac: 0.45)
+        ? _mergeParallelStrokes(
+            rawStrokes,
+            maxDist: mergeMaxDist,
+            maxAngleDiffDeg: 12.0,
+            minOverlapFrac: 0.45,
+          )
         : rawStrokes;
 
     merged.sort((a, b) {
@@ -107,16 +115,15 @@ class Vectorizer {
       final lenA = _polyLen(a), lenB = _polyLen(b);
       return lenB.compareTo(lenA);
     });
-    final ordered = _orderGreedy(merged);
 
-    return ordered;
+    return _orderGreedy(merged);
   }
 
-  static Future<html.ImageElement> _decodeToImageElement(
-      Uint8List bytes) async {
+  static Future<html.ImageElement> _decodeToImageElement(Uint8List bytes) async {
     final blob = html.Blob([bytes]);
     final url = html.Url.createObjectUrlFromBlob(blob);
     final img = html.ImageElement(src: url);
+
     final completer = Completer<html.ImageElement>();
     img.onLoad.listen((_) {
       html.Url.revokeObjectUrl(url);
@@ -130,46 +137,38 @@ class Vectorizer {
   }
 
   static Future<dynamic> _cvVectorizeContours(
-      html.ImageData imageData, Map<String, dynamic> options) async {
+    html.ImageData imageData,
+    Map<String, dynamic> options,
+  ) async {
     // Call global cvVectorizeContours(imageData, opts) which returns a Promise.
-    final jsOpts = js.JsObject.jsify(options);
-    final promise = js.context.callMethod('cvVectorizeContours', [imageData, jsOpts]);
+    final jsOpts = js_util.jsify(options);
+
+    final promise = js_util.callMethod(
+      js_util.globalThis,
+      'cvVectorizeContours',
+      [imageData, jsOpts],
+    );
 
     final jsObject = await _promiseToFuture<Object?>(promise);
     if (jsObject == null) return null;
 
-    // Safest generic conversion: JSON.stringify in JS, then jsonDecode in Dart.
-    // The expected return shape is JSON-safe (polylines arrays of numbers).
+    // Convert to JSON-safe structure: JSON.stringify in JS, then jsonDecode in Dart.
     try {
-      final jsonStr = js.context['JSON'].callMethod('stringify', [jsObject]);
+      final jsonObj = js_util.getProperty(js_util.globalThis, 'JSON');
+      final jsonStr = js_util.callMethod(jsonObj, 'stringify', [jsObject]);
       if (jsonStr is String && jsonStr.isNotEmpty) {
         return jsonDecode(jsonStr);
       }
-    } catch (_) {}
+    } catch (_) {
+      // Fallback below
+    }
 
     return jsObject;
   }
 
   static Future<T?> _promiseToFuture<T>(dynamic promise) {
-    if (promise is Future<T>) return promise;
-    if (promise is! js.JsObject) return Future<T?>.value(promise as T?);
-
-    final c = Completer<T?>();
-    try {
-      promise.callMethod('then', [
-        allowInterop((dynamic value) {
-          if (!c.isCompleted) c.complete(value as T?);
-        })
-      ]);
-      promise.callMethod('catch', [
-        allowInterop((dynamic _) {
-          if (!c.isCompleted) c.complete(null);
-        })
-      ]);
-    } catch (_) {
-      if (!c.isCompleted) c.complete(null);
-    }
-    return c.future;
+    // Modern Dart interop: Promise -> Future without allowInterop.
+    return js_util.promiseToFuture<T?>(promise);
   }
 
   // --- Dart-side shaping helpers (same as native) ---
@@ -222,8 +221,8 @@ class Vectorizer {
       final v2 = pts[i1] - pts[i];
       final ang = _angleBetween(v1, v2).abs();
 
-      final shouldSplit = (ang > threshRad) &&
-          (curLen >= minSegmentLen || cur.length >= minPoints);
+      final shouldSplit =
+          (ang > threshRad) && (curLen >= minSegmentLen || cur.length >= minPoints);
 
       if (shouldSplit) {
         if (cur.length >= 2) segs.add(cur);
@@ -231,6 +230,7 @@ class Vectorizer {
         curLen = 0.0;
       }
     }
+
     cur.add(pts.last);
     if (cur.length >= 2) segs.add(cur);
 
@@ -272,7 +272,6 @@ class Vectorizer {
     for (int i = 0; i < list.length; i++) {
       if (used[i]) continue;
       var a = list[i];
-      bool mergedAny = false;
 
       for (int j = i + 1; j < list.length; j++) {
         if (used[j]) continue;
@@ -287,26 +286,22 @@ class Vectorizer {
         final ang = _angleBetween(da, db);
         if (ang > maxAngle && (3.141592653589793 - ang) > maxAngle) continue;
 
-        final distFF =
-            (a.first - b.first).distance + (a.last - b.last).distance;
-        final distFR =
-            (a.first - b.last).distance + (a.last - b.first).distance;
+        final distFF = (a.first - b.first).distance + (a.last - b.last).distance;
+        final distFR = (a.first - b.last).distance + (a.last - b.first).distance;
         final bAligned = (distFR < distFF) ? b.reversed.toList() : b;
 
         final avgDistOverlap = _avgAlignedDistance(a, bAligned, samples: 32);
         final avgDist = avgDistOverlap.$1;
         final overlapFrac = avgDistOverlap.$2;
+
         if (avgDist <= maxDist && overlapFrac >= minOverlapFrac) {
-          final merged = _averageCenterline(a, bAligned, samples: 64);
-          a = merged;
+          a = _averageCenterline(a, bAligned, samples: 64);
           used[j] = true;
-          mergedAny = true;
         }
       }
 
       out.add(a);
       used[i] = true;
-      if (mergedAny) {}
     }
 
     return out;
@@ -335,10 +330,9 @@ class Vectorizer {
     double sum = 0.0;
     int overlap = 0;
     for (int k = 0; k < n; k++) {
-      final ta = k / (n - 1);
-      final tb = ta;
-      final pa = _sampleAlong(a, ta);
-      final pb = _sampleAlong(b, tb);
+      final t = k / (n - 1);
+      final pa = _sampleAlong(a, t);
+      final pb = _sampleAlong(b, t);
       if (pa == null || pb == null) continue;
       sum += (pa - pb).distance;
       overlap++;
@@ -416,10 +410,10 @@ class Vectorizer {
           reverse = true;
         }
       }
+
       var next = remaining.removeAt(bestIdx);
-      if (reverse) {
-        next = next.reversed.toList();
-      }
+      if (reverse) next = next.reversed.toList();
+
       result.add(next);
       current = next;
     }
@@ -430,6 +424,7 @@ class Vectorizer {
 class RectLike {
   final double left, top, right, bottom;
   RectLike(this.left, this.top, this.right, this.bottom);
+
   bool overlaps(RectLike other) {
     return !(other.left > right ||
         other.right < left ||
@@ -437,6 +432,5 @@ class RectLike {
         other.bottom < top);
   }
 
-  RectLike inflate(double d) =>
-      RectLike(left - d, top - d, right + d, bottom + d);
+  RectLike inflate(double d) => RectLike(left - d, top - d, right + d, bottom + d);
 }

@@ -25,6 +25,9 @@ class _HomePageState extends State<HomePage> {
   int _unreadCount = 0;
   Map<String, dynamic>? _profile;
 
+  String get _apiBase =>
+      (dotenv.env['API_URL'] ?? 'http://127.0.0.1:8000').trim();
+
   @override
   void initState() {
     super.initState();
@@ -34,9 +37,8 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _fetchProfile() async {
     try {
-      final base = (dotenv.env['API_URL'] ?? 'http://127.0.0.1:8000').trim();
-      final authService = AuthService(baseUrl: base);
-      final url = '$base/api/auth/profile/';
+      final authService = AuthService(baseUrl: _apiBase);
+      final url = '$_apiBase/api/auth/profile/';
       final resp = await authService.authenticatedGet(url);
       if (resp.statusCode == 200) {
         final map = jsonDecode(resp.body) as Map<String, dynamic>;
@@ -48,9 +50,8 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _fetchNotifications() async {
     try {
-      final base = (dotenv.env['API_URL'] ?? 'http://127.0.0.1:8000').trim();
-      final authService = AuthService(baseUrl: base);
-      final url = '$base/api/market/notifications/';
+      final authService = AuthService(baseUrl: _apiBase);
+      final url = '$_apiBase/api/market/notifications/';
       final resp = await authService.authenticatedGet(url);
       if (resp.statusCode == 200) {
         final list = jsonDecode(resp.body) as List<dynamic>;
@@ -65,13 +66,24 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _markNotificationRead(int id) async {
     try {
-      final base = (dotenv.env['API_URL'] ?? 'http://127.0.0.1:8000').trim();
-      final authService = AuthService(baseUrl: base);
-      final url = '$base/api/market/notifications/read/$id/';
+      final authService = AuthService(baseUrl: _apiBase);
+      final url = '$_apiBase/api/market/notifications/read/$id/';
       final resp = await authService.authenticatedPost(url);
       if (resp.statusCode == 200) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('Marked as read')));
+        await _fetchNotifications();
+      }
+    } catch (_) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Network error')));
+    }
+  }
+
+  Future<void> _markAllNotificationsRead() async {
+    try {
+      final authService = AuthService(baseUrl: _apiBase);
+      final url = '$_apiBase/api/market/notifications/read-all/';
+      final resp = await authService.authenticatedPost(url);
+      if (resp.statusCode == 200) {
         await _fetchNotifications();
       }
     } catch (_) {
@@ -82,9 +94,10 @@ class _HomePageState extends State<HomePage> {
 
   void _logout() async {
     // Clear developer mode
-    final devProvider = Provider.of<DeveloperModeProvider>(context, listen: false);
+    final devProvider =
+        Provider.of<DeveloperModeProvider>(context, listen: false);
     await devProvider.clear();
-    
+
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('token');
     await prefs.remove('refresh_token');
@@ -120,7 +133,19 @@ class _HomePageState extends State<HomePage> {
                   showDialog(
                     context: context,
                     builder: (_) => AlertDialog(
-                      title: const Text('Notifications'),
+                      title: Row(
+                        children: [
+                          const Expanded(child: Text('Notifications')),
+                          if (_unreadCount > 0)
+                            TextButton(
+                              onPressed: () async {
+                                Navigator.pop(context);
+                                await _markAllNotificationsRead();
+                              },
+                              child: const Text('Mark all read'),
+                            ),
+                        ],
+                      ),
                       content: SizedBox(
                         width: 400,
                         child: _notifications.isEmpty
@@ -130,29 +155,41 @@ class _HomePageState extends State<HomePage> {
                                 itemCount: _notifications.length,
                                 itemBuilder: (_, i) {
                                   final n = _notifications[i];
+                                  final proposalId =
+                                      n['proposal_id'] is int ? n['proposal_id'] as int : null;
+                                  final itemName = n['item_name']?.toString();
                                   return ListTile(
+                                    leading: Icon(
+                                      n['is_read'] == false
+                                          ? Icons.markunread
+                                          : Icons.notifications_none,
+                                      size: 20,
+                                    ),
                                     title: Text(n['verb'] ?? ''),
-                                    subtitle: Text(n['created_at'] ?? ''),
-                                    trailing: n['is_read'] == false
-                                        ? TextButton(
-                                            onPressed: () async {
-                                              Navigator.pop(context);
-                                              await _markNotificationRead(
-                                                  n['id']);
-                                            },
-                                            child: const Text('Mark read'),
-                                          )
-                                        : TextButton(
-                                            onPressed: () {
-                                              Navigator.pop(context);
-                                              Navigator.push(
-                                                context,
-                                                MaterialPageRoute(
-                                                    builder: (_) =>
-                                                        const NegotiationsPage()),
-                                              );
-                                            },
-                                            child: const Text('Open')),
+                                    subtitle: Text(itemName == null
+                                        ? (n['created_at'] ?? '')
+                                        : '$itemName • ${n['created_at'] ?? ''}'),
+                                    trailing: TextButton(
+                                      onPressed: () async {
+                                        Navigator.pop(context);
+                                        if (n['is_read'] == false) {
+                                          await _markNotificationRead(n['id']);
+                                        }
+                                        if (proposalId != null && mounted) {
+                                          Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (_) => NegotiationsPage(
+                                                highlightProposalId: proposalId,
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                      },
+                                      child: Text(
+                                        proposalId != null ? 'Open' : 'Read',
+                                      ),
+                                    ),
                                   );
                                 },
                               ),
@@ -264,21 +301,20 @@ class _HomePageState extends State<HomePage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                            _profile != null
-                                ? (_profile!['username'] ?? 'DrawnOut')
-                                : 'DrawnOut',
-                            style: TextStyle(
-                                fontSize: 18,
-                                color: theme.colorScheme.primary)),
-                        const SizedBox(height: 6),
-                        Text(
-                            _profile != null
-                                ? 'Credits: ${_profile!['credits']}'
-                                : '',
-                            style: TextStyle(
-                                fontSize: 12,
-                                color: theme.colorScheme.onSurface
-                                    .withOpacity(0.7))),
+                          _profile != null
+                              ? (_profile!['username'] ?? 'DrawnOut')
+                              : 'DrawnOut',
+                          style: TextStyle(
+                              fontSize: 18, color: theme.colorScheme.primary)),
+                      const SizedBox(height: 6),
+                      Text(
+                          _profile != null
+                              ? 'Credits: ${_profile!['credits']}'
+                              : '',
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: theme.colorScheme.onSurface
+                                  .withOpacity(0.7))),
                       if (devMode.isEnabled)
                         Text(
                           "Developer Mode",
@@ -377,7 +413,8 @@ class _HomePageState extends State<HomePage> {
             const ListTile(
               leading: Icon(Icons.developer_mode, color: Colors.orange),
               title: Text("Developer Account"),
-              subtitle: Text("Debug features enabled", style: TextStyle(fontSize: 11)),
+              subtitle: Text("Debug features enabled",
+                  style: TextStyle(fontSize: 11)),
             ),
 
           const Divider(),
@@ -419,7 +456,8 @@ class _HomePageState extends State<HomePage> {
                             icon: Icons.menu_book,
                             title: 'Lessons',
                             subtitle: 'Browse all lessons',
-                            onTap: () => Navigator.pushNamed(context, '/lessons'),
+                            onTap: () =>
+                                Navigator.pushNamed(context, '/lessons'),
                           ),
                         ),
                         const SizedBox(width: 12),
@@ -428,7 +466,8 @@ class _HomePageState extends State<HomePage> {
                             icon: Icons.storefront_outlined,
                             title: 'Market',
                             subtitle: 'Explore the marketplace',
-                            onTap: () => Navigator.pushNamed(context, '/market'),
+                            onTap: () =>
+                                Navigator.pushNamed(context, '/market'),
                           ),
                         ),
                       ],
@@ -481,7 +520,7 @@ class _HomePageState extends State<HomePage> {
                       label: 'Start lesson',
                       onPressed: () {
                         Navigator.pushNamed(
-                          context, 
+                          context,
                           '/whiteboard',
                           arguments: {
                             'topic': 'Pythagorean Theorem',
@@ -554,8 +593,7 @@ class _QuickActionCard extends StatelessWidget {
                       Text(
                         subtitle,
                         style: theme.textTheme.bodyMedium?.copyWith(
-                          color:
-                              theme.colorScheme.onSurface.withOpacity(0.70),
+                          color: theme.colorScheme.onSurface.withOpacity(0.70),
                         ),
                       ),
                     ],

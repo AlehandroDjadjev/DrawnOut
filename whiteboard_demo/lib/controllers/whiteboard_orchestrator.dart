@@ -241,7 +241,9 @@ class WhiteboardOrchestrator extends ChangeNotifier {
     final prev = canvasSize;
     if (prev != null &&
         (prev.width - size.width).abs() < 1 &&
-        (prev.height - size.height).abs() < 1) return;
+        (prev.height - size.height).abs() < 1) {
+      return;
+    }
     canvasSize = size;
     // Rebuild layout config for new page size
     if (layout != null) {
