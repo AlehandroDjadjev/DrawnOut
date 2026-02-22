@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List
 
 from PIL import Image, ImageDraw, ImageFont
-from ImageVectorizer import _process_single
+from wb_vectorize.ImageVectorizer import _process_single
 
 import shutil
 import numpy as np

@@ -44,15 +44,23 @@ class LessonApiService {
 
   /// Start a new lesson session
   /// Returns the session response with session ID
+  /// [useExistingImages] when true, skips image research and uses existing DB images (faster)
+  /// [useElevenlabsTts] when true, uses ElevenLabs TTS; else Google Cloud TTS
   Future<LessonSessionResponse> startLesson({
     required String topic,
+    bool useExistingImages = false,
+    bool useElevenlabsTts = false,
     String? authToken, // Kept for API compatibility but ignored - uses AuthService
   }) async {
-    debugPrint('Starting lesson with topic: $topic');
-    
+    debugPrint('Starting lesson with topic: $topic, useExistingImages: $useExistingImages, useElevenlabsTts: $useElevenlabsTts');
+
     final response = await _authService.authenticatedPost(
       _api('/start/'),
-      body: json.encode({'topic': topic}),
+      body: json.encode({
+        'topic': topic,
+        'use_existing_images': useExistingImages,
+        'use_elevenlabs_tts': useElevenlabsTts,
+      }),
     );
 
     if (response.statusCode != 201 && response.statusCode != 200) {

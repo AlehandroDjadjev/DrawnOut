@@ -87,7 +87,8 @@ def generate_lesson_view(request):
     {
         "prompt": "Explain DNA structure and replication",
         "subject": "Biology",  // optional
-        "duration_target": 60.0  // optional, seconds
+        "duration_target": 60.0,  // optional, seconds
+        "use_existing_images": false  // optional: skip research, use existing Pinecone images only (faster)
     }
     
     Response:
@@ -121,17 +122,19 @@ def generate_lesson_view(request):
     prompt = body.get('prompt', '').strip()
     if not prompt:
         return HttpResponseBadRequest("'prompt' is required")
-    
+
     subject = body.get('subject', 'General')
     duration_target = float(body.get('duration_target', 60.0))
-    
-    logger.info(f"Generating lesson: prompt='{prompt}', subject='{subject}'")
-    
+    use_existing_images = body.get('use_existing_images', False) in (True, 'true', '1')
+
+    logger.info(f"Generating lesson: prompt='{prompt}', subject='{subject}', use_existing_images={use_existing_images}")
+
     try:
         lesson_dict = generate_lesson_json(
             prompt_text=prompt,
             subject=subject,
-            duration_target=duration_target
+            duration_target=duration_target,
+            use_existing_images=use_existing_images,
         )
         
         return JsonResponse({

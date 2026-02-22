@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup, Tag
 from urllib.parse import urlparse, unquote
 import re
 
-from smart_hits import (
+from .smart_hits import (
     QueryProfile,
     _image_dom_context,
     _nearest_heading,

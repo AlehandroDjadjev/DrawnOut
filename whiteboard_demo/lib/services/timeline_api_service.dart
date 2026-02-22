@@ -12,19 +12,25 @@ class TimelineApiService {
       '${baseUrl.replaceFirst(RegExp(r'/+$'), '')}/api$path';
 
   /// Generate a new timeline for a session
+  /// [useExistingImages] when true, skips image research and uses existing DB images
   Future<SyncedTimeline> generateTimeline(
     int sessionId, {
     double durationTarget = 60.0,
     bool regenerate = false,
+    bool? useExistingImages,
   }) async {
     final url = Uri.parse(_api('/timeline/generate/$sessionId/'));
+    final body = <String, dynamic>{
+      'duration_target': durationTarget,
+      'regenerate': regenerate,
+    };
+    if (useExistingImages != null) {
+      body['use_existing_images'] = useExistingImages;
+    }
     final response = await http.post(
       url,
       headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'duration_target': durationTarget,
-        'regenerate': regenerate,
-      }),
+      body: jsonEncode(body),
     );
 
     if (response.statusCode ~/ 100 != 2) {

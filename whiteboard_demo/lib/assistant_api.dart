@@ -25,10 +25,18 @@ class AssistantApiClient {
 
   String _url(String path) => '$baseUrl/api$path';
 
-  Future<Map<String, dynamic>> startLesson({String topic = 'Pythagorean Theorem'}) async {
+  Future<Map<String, dynamic>> startLesson({
+    String topic = 'Pythagorean Theorem',
+    bool useExistingImages = false,
+    bool useElevenlabsTts = false,
+  }) async {
     final resp = await _authService.authenticatedPost(
       _url('/lessons/start/'),
-      body: jsonEncode({'topic': topic}),
+      body: jsonEncode({
+        'topic': topic,
+        'use_existing_images': useExistingImages,
+        'use_elevenlabs_tts': useElevenlabsTts,
+      }),
     );
     if (resp.statusCode >= 200 && resp.statusCode < 300) {
       return jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;

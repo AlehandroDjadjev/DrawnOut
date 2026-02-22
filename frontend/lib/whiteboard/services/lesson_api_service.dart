@@ -49,7 +49,7 @@ class LessonApiService {
     String? authToken, // Kept for API compatibility but ignored - uses AuthService
   }) async {
     debugPrint('Starting lesson with topic: $topic');
-    
+
     final response = await _authService.authenticatedPost(
       _api('/start/'),
       body: json.encode({'topic': topic}),

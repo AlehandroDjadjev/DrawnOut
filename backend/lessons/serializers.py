@@ -15,7 +15,9 @@ class LessonSessionSerializer(serializers.ModelSerializer):
         model = LessonSession
         fields = [
             'id', 'user', 'topic', 'lesson_plan', 'current_step_index',
-            'is_waiting_for_question', 'is_completed', 'created_at', 'updated_at',
+            'is_waiting_for_question', 'is_completed', 'use_existing_images',
+            'use_elevenlabs_tts',
+            'created_at', 'updated_at',
             'utterances'
         ]
         read_only_fields = ['user', 'created_at', 'updated_at']

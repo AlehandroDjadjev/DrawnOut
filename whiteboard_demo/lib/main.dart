@@ -13,6 +13,7 @@ import 'package:provider/provider.dart';
 import './providers/developer_mode_provider.dart';
 // Local imports
 import 'vectorizer.dart';
+import 'services/backend_vectorizer.dart';
 import 'assistant_api.dart';
 import 'assistant_audio.dart';
 import 'sdk_live_bridge.dart';
@@ -185,6 +186,16 @@ class WhiteboardPage extends StatefulWidget {
 }
 
 class _WhiteboardPageState extends State<WhiteboardPage> {
+  /// Single source of truth for the backend API base URL.  Reads from the
+  /// .env file (API_URL) and falls back to 127.0.0.1:8000.
+  static String get _defaultApiUrl =>
+      (dotenv.env['API_URL'] ?? 'http://127.0.0.1:8000').trim();
+
+  String get _effectiveBaseUrl {
+    final text = _apiUrlCtrl.text.trim();
+    return text.isEmpty ? _defaultApiUrl : text;
+  }
+
   static const double canvasW = 1600; // fallback/default
   static const double canvasH = 1000; // fallback/default
   Size? _canvasSize; // live size from LayoutBuilder
@@ -256,7 +267,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   bool _showDevPanel = false; // Toggle for developer panel visibility (requires is_developer flag)
   double _textFontSize = 60.0;
   // Assistant
-  final _apiUrlCtrl = TextEditingController(text: 'http://localhost:8000');
+  late final _apiUrlCtrl = TextEditingController(text: _defaultApiUrl);
   AssistantApiClient? _api;
   int? _sessionId;
   final _questionCtrl = TextEditingController();
@@ -393,14 +404,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
     // Initialize image sketch service with default base URL
     _imageSketchService = ImageSketchService(
-      baseUrl: 'http://localhost:8000',
+      baseUrl: _defaultApiUrl,
     );
 
     // Initialize whiteboard orchestrator with current backend URL
-    final initialBaseUrl = _apiUrlCtrl.text.trim().isEmpty
-        ? 'http://localhost:8000'
-        : _apiUrlCtrl.text.trim();
-    _orchestrator = WhiteboardOrchestrator(baseUrl: initialBaseUrl);
+    _orchestrator = WhiteboardOrchestrator(baseUrl: _defaultApiUrl);
     // Rebuild this widget whenever orchestrator state changes
     _orchestrator.addListener(() {
       if (!mounted) return;
@@ -450,10 +458,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   
   Future<void> _checkDeveloperMode() async {
     final devProvider = Provider.of<DeveloperModeProvider>(context, listen: false);
-    final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-        ? 'http://localhost:8000'
-        : _apiUrlCtrl.text.trim();
-    devProvider.setBaseUrl(baseUrl);
+    devProvider.setBaseUrl(_effectiveBaseUrl);
     
     final isDeveloper = await devProvider.refreshFromBackend();
     if (mounted) {
@@ -504,6 +509,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   @override
   void dispose() {
     _timelineController?.removeListener(_onTimelinePauseChanged);
+    _timelineController?.stop();
+    _timelineController?.dispose();
     _xCtrl.dispose();
     _yCtrl.dispose();
     _wCtrl.dispose();
@@ -588,9 +595,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     }
     _busy = true;
     try {
-      final base = _apiUrlCtrl.text.trim().isEmpty
-          ? 'http://127.0.0.1:8000'
-          : _apiUrlCtrl.text.trim();
+      final base = _effectiveBaseUrl;
       final authService = AuthService(baseUrl: base);
       final diagramUrl =
           '${base.replaceAll(RegExp(r'/+$'), '')}/api/lessons/diagram/';
@@ -787,9 +792,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   Future<void> _runPlannerAndRender(Map<String, dynamic> sessionData) async {
     try {
       await _ensureLayout();
-      final planner = WhiteboardPlanner(_apiUrlCtrl.text.trim().isEmpty
-          ? 'http://127.0.0.1:8000'
-          : _apiUrlCtrl.text.trim());
+      final planner = WhiteboardPlanner(_effectiveBaseUrl);
       final plan = await planner.planForSession(
         sessionData,
         maxItems: _plMaxItems.round(),
@@ -843,9 +846,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     try {
       debugPrint('🎨 Starting AI Lesson Pipeline with Images...');
 
-      final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-          ? 'http://localhost:8000'
-          : _apiUrlCtrl.text.trim();
+      final baseUrl = _effectiveBaseUrl;
       final pipelineApi = LessonPipelineApi(baseUrl: baseUrl);
 
       // Show progress dialog
@@ -1038,9 +1039,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       debugPrint('🎬 Starting synchronized lesson...');
 
       // Initialize APIs
-      final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-          ? 'http://localhost:8000'
-          : _apiUrlCtrl.text.trim();
+      final baseUrl = _effectiveBaseUrl;
       _api = AssistantApiClient(baseUrl);
       _timelineApi = TimelineApiClient(baseUrl);
       _timelineController!.setBaseUrl(baseUrl);
@@ -1080,6 +1079,21 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   /// Auto-start the synced lesson pipeline with a given topic.
   /// Called when the user navigates here from the home/lessons page with a topic.
   Future<void> _autoStartLesson(String topic) async {
+    // Show image source popup at lesson start
+    final useExistingImages = await _showImageSourceDialog();
+    if (!mounted) return;
+    if (useExistingImages == null) {
+      Navigator.of(context).pop();
+      return;
+    }
+    // Show TTS provider choice: Google or ElevenLabs
+    final useElevenlabsTts = await _showTtsDialog();
+    if (!mounted) return;
+    if (useElevenlabsTts == null) {
+      Navigator.of(context).pop();
+      return;
+    }
+
     setState(() {
       _lessonLoading = true;
       _lessonLoadingStage = 'Connecting to server...';
@@ -1087,12 +1101,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     });
 
     try {
-      debugPrint('🎬 Auto-starting lesson for topic: $topic');
+      debugPrint('🎬 Auto-starting lesson for topic: $topic, useExistingImages: $useExistingImages, useElevenlabsTts: $useElevenlabsTts');
 
       // Initialize APIs
-      final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-          ? 'http://localhost:8000'
-          : _apiUrlCtrl.text.trim();
+      final baseUrl = _effectiveBaseUrl;
       _api = AssistantApiClient(baseUrl);
       _timelineApi = TimelineApiClient(baseUrl);
       _timelineController!.setBaseUrl(baseUrl);
@@ -1102,7 +1114,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         _lessonLoadingStage = 'Starting lesson session...';
         _lessonLoadingProgress = 0.15;
       });
-      final data = await _api!.startLesson(topic: topic);
+      final data = await _api!.startLesson(
+        topic: topic,
+        useExistingImages: useExistingImages,
+        useElevenlabsTts: useElevenlabsTts,
+      );
       _sessionId = data['id'] as int?;
       debugPrint('✅ Session created: $_sessionId');
 
@@ -1159,6 +1175,122 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     }
   }
 
+  /// Shows a dialog at lesson start: use existing DB images vs start research.
+  /// Returns true = use existing, false = start research, null = cancelled.
+  Future<bool?> _showImageSourceDialog() async {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.image_search, size: 28),
+            SizedBox(width: 12),
+            Text('Image Source'),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Choose how to get images for this lesson:',
+              style: TextStyle(fontSize: 15),
+            ),
+            SizedBox(height: 16),
+            Text(
+              '• Use existing images – Faster, uses images already in the database (if available).',
+              style: TextStyle(fontSize: 13),
+            ),
+            SizedBox(height: 8),
+            Text(
+              '• Start research – Searches and indexes new images (slower, but fresh results).',
+              style: TextStyle(fontSize: 13),
+            ),
+          ],
+        ),
+        backgroundColor: isDark ? Colors.grey[900] : Colors.white,
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            icon: const Icon(Icons.storage, size: 18),
+            label: const Text('Use existing images'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            icon: const Icon(Icons.search, size: 18),
+            label: const Text('Start research'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Shows a dialog at lesson start: Google TTS or ElevenLabs TTS.
+  /// Returns true = ElevenLabs, false = Google, null = cancelled.
+  Future<bool?> _showTtsDialog() async {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.record_voice_over, size: 28),
+            SizedBox(width: 12),
+            Text('Voice (TTS)'),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Choose text-to-speech provider:',
+              style: TextStyle(fontSize: 15),
+            ),
+            SizedBox(height: 16),
+            Text(
+              '• Google Cloud TTS – Uses Google voices (requires GOOGLE_APPLICATION_CREDENTIALS).',
+              style: TextStyle(fontSize: 13),
+            ),
+            SizedBox(height: 8),
+            Text(
+              '• ElevenLabs – Uses your voice (Netanyahu + voice_id env vars).',
+              style: TextStyle(fontSize: 13),
+            ),
+          ],
+        ),
+        backgroundColor: isDark ? Colors.grey[900] : Colors.white,
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            icon: const Icon(Icons.cloud, size: 18),
+            label: const Text('Google TTS'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            icon: const Icon(Icons.voice_chat, size: 18),
+            label: const Text('ElevenLabs'),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// Rewatch a previously completed lesson by loading its saved timeline.
   /// Skips session creation and timeline generation.
   Future<void> _rewatchLesson(int sessionId) async {
@@ -1173,9 +1305,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       debugPrint('🔁 Rewatching lesson session $sessionId');
 
       // Initialize APIs
-      final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-          ? 'http://localhost:8000'
-          : _apiUrlCtrl.text.trim();
+      final baseUrl = _effectiveBaseUrl;
       _api = AssistantApiClient(baseUrl);
       _timelineApi = TimelineApiClient(baseUrl);
       _timelineController!.setBaseUrl(baseUrl);
@@ -1228,9 +1358,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   Future<void> _markSessionComplete() async {
     if (_sessionId == null) return;
     try {
-      final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-          ? 'http://localhost:8000'
-          : _apiUrlCtrl.text.trim();
+      final baseUrl = _effectiveBaseUrl;
       final authService = AuthService(baseUrl: baseUrl);
       await authService.authenticatedPost(
         '$baseUrl/api/lessons/$_sessionId/complete/',
@@ -1431,9 +1559,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
   void _startDiagramPipeline(String prompt, double currentSeconds) async {
     try {
-      final base = _apiUrlCtrl.text.trim().isEmpty
-          ? 'http://127.0.0.1:8000'
-          : _apiUrlCtrl.text.trim();
+      final base = _effectiveBaseUrl;
       final authService = AuthService(baseUrl: base);
       final diagramUrl =
           '${base.replaceAll(RegExp(r'/+$'), '')}/api/lessons/diagram/';
@@ -1510,26 +1636,32 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     // push down to avoid overlaps with previous blocks
     y = _nextNonCollidingY(st, x, targetH, y);
 
-    // Vectorize with image-friendly params (no raster shown)
-    final strokes = await Vectorizer.vectorize(
-      bytes: Uint8List.fromList(bytes),
-      worldScale: _worldScale,
-      edgeMode: 'Canny',
-      blurK: 3,
-      cannyLo: 35.0,
-      cannyHi: 140.0,
-      epsilon: 0.9,
-      resampleSpacing: 1.1,
-      minPerimeter: math.max(20.0, _minPerim),
-      retrExternalOnly: false,
-      angleThresholdDeg: 85.0,
-      angleWindow: 3,
-      smoothPasses: 2,
-      mergeParallel: true,
-      mergeMaxDist: 14.0,
-      minStrokeLen: 16.0,
-      minStrokePoints: 10,
-    );
+    // Vectorize via backend when baseUrl set, else local
+    final base = _effectiveBaseUrl;
+    final strokes = base.isNotEmpty
+        ? await BackendVectorizer.vectorize(
+            baseUrl: base,
+            bytes: Uint8List.fromList(bytes),
+          )
+        : await Vectorizer.vectorize(
+            bytes: Uint8List.fromList(bytes),
+            worldScale: _worldScale,
+            edgeMode: 'Canny',
+            blurK: 3,
+            cannyLo: 35.0,
+            cannyHi: 140.0,
+            epsilon: 0.9,
+            resampleSpacing: 1.1,
+            minPerimeter: math.max(20.0, _minPerim),
+            retrExternalOnly: false,
+            angleThresholdDeg: 85.0,
+            angleWindow: 3,
+            smoothPasses: 2,
+            mergeParallel: true,
+            mergeMaxDist: 14.0,
+            minStrokeLen: 16.0,
+            minStrokePoints: 10,
+          );
 
     // Drop tiny decorative strokes (dots/specks) to keep result simple
     final filtered =
@@ -1615,9 +1747,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     if (resolvedUrl != null && resolvedUrl.isNotEmpty) {
       try {
         // Use proxy for CORS safety on web
-        final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-            ? 'http://localhost:8000'
-            : _apiUrlCtrl.text.trim();
+        final baseUrl = _effectiveBaseUrl;
         final api = LessonPipelineApi(baseUrl: baseUrl);
         final proxiedUrl = api.buildProxiedImageUrl(resolvedUrl);
 
@@ -1727,28 +1857,34 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
     debugPrint('   📐 Placement: ($x, $y) size: ${targetW}x$targetH');
 
-    // ── Step 5: Vectorize the image ────────────────────────────────────────
+    // ── Step 5: Vectorize the image (backend when baseUrl set) ───────────────
     List<List<Offset>> strokes;
     try {
-      strokes = await Vectorizer.vectorize(
-        bytes: imageBytes,
-        worldScale: _worldScale,
-        edgeMode: 'Canny',
-        blurK: 3,
-        cannyLo: 35.0,
-        cannyHi: 140.0,
-        epsilon: 0.9,
-        resampleSpacing: 1.1,
-        minPerimeter: math.max(20.0, _minPerim),
-        retrExternalOnly: false,
-        angleThresholdDeg: 85.0,
-        angleWindow: 3,
-        smoothPasses: 2,
-        mergeParallel: true,
-        mergeMaxDist: 14.0,
-        minStrokeLen: 16.0,
-        minStrokePoints: 10,
-      );
+      final base = _effectiveBaseUrl;
+      strokes = base.isNotEmpty
+          ? await BackendVectorizer.vectorize(
+              baseUrl: base,
+              bytes: imageBytes,
+            )
+          : await Vectorizer.vectorize(
+              bytes: imageBytes,
+              worldScale: _worldScale,
+              edgeMode: 'Canny',
+              blurK: 3,
+              cannyLo: 35.0,
+              cannyHi: 140.0,
+              epsilon: 0.9,
+              resampleSpacing: 1.1,
+              minPerimeter: math.max(20.0, _minPerim),
+              retrExternalOnly: false,
+              angleThresholdDeg: 85.0,
+              angleWindow: 3,
+              smoothPasses: 2,
+              mergeParallel: true,
+              mergeMaxDist: 14.0,
+              minStrokeLen: 16.0,
+              minStrokePoints: 10,
+            );
     } catch (e) {
       debugPrint('❌ Vectorization failed: $e');
       return false;
@@ -2028,28 +2164,34 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       final mergeDist = centerlineMode
           ? (fontSize * _clMergeFactor).clamp(_clMergeMin, _clMergeMax)
           : 10.0;
-      final strokes = await Vectorizer.vectorize(
-        bytes: rl.bytes,
-        worldScale: _worldScale,
-        edgeMode: 'Canny',
-        blurK: 3,
-        cannyLo: 30,
-        cannyHi: 120,
-        dogSigma: _dogSigma,
-        dogK: _dogK,
-        dogThresh: _dogThresh,
-        epsilon: centerlineMode ? _clEpsilon : 0.8,
-        resampleSpacing: centerlineMode ? _clResample : 1.0,
-        minPerimeter: (_minPerim * 0.6).clamp(6.0, 1e9),
-        retrExternalOnly: false,
-        angleThresholdDeg: 85,
-        angleWindow: 3,
-        smoothPasses: centerlineMode ? _clSmoothPasses.round() : 1,
-        mergeParallel: true,
-        mergeMaxDist: mergeDist,
-        minStrokeLen: 4.0,
-        minStrokePoints: 3,
-      );
+      final base = _effectiveBaseUrl;
+      final strokes = base.isNotEmpty
+          ? await BackendVectorizer.vectorize(
+              baseUrl: base,
+              bytes: rl.bytes,
+            )
+          : await Vectorizer.vectorize(
+              bytes: rl.bytes,
+              worldScale: _worldScale,
+              edgeMode: 'Canny',
+              blurK: 3,
+              cannyLo: 30,
+              cannyHi: 120,
+              dogSigma: _dogSigma,
+              dogK: _dogK,
+              dogThresh: _dogThresh,
+              epsilon: centerlineMode ? _clEpsilon : 0.8,
+              resampleSpacing: centerlineMode ? _clResample : 1.0,
+              minPerimeter: (_minPerim * 0.6).clamp(6.0, 1e9),
+              retrExternalOnly: false,
+              angleThresholdDeg: 85,
+              angleWindow: 3,
+              smoothPasses: centerlineMode ? _clSmoothPasses.round() : 1,
+              mergeParallel: true,
+              mergeMaxDist: mergeDist,
+              minStrokeLen: 4.0,
+              minStrokePoints: 3,
+            );
       final lineHeight = fontSize * 1.25;
       // Center-of-image placement: vectorizer returns strokes centered at (0,0) of the image
       final centerOffset = Offset(rl.w / 2.0, rl.h / 2.0);

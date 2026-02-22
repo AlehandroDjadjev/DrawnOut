@@ -70,41 +70,58 @@ def generate_lesson(
     subject: str = "General",
     duration_target: float = 60.0,
     vector_timeout: Optional[float] = None,
+    use_existing_images: bool = False,
 ) -> LessonDocument:
     """
     Generate a complete lesson with intelligently matched and transformed images.
-    
+
+    When use_existing_images=True, skips image research and indexing; resolves
+    images from Pinecone using topic_id (same prompt = same topic). Use for
+    fast repeat lessons or when DB already has images for this topic.
+
     Pipeline:
-    1. Parallel: Image research (background) + Script generation
+    1. If use_existing_images: skip research, compute topic_id only
+       Else: parallel image research (background) + script generation
     2. Parse IMAGE tags from generated script
     3. Resolve tags to base images (Pinecone + keyword fallback)
     4. Inject resolved images into script content
-    
+
     Args:
         prompt_text: Lesson topic
         subject: Subject area (e.g., "Biology", "Physics")
         duration_target: Target duration in seconds
         vector_timeout: Max seconds to wait for image indexing (None = config default)
-    
+        use_existing_images: If True, skip research phase and use existing Pinecone images only
+
     Returns:
         LessonDocument with complete lesson and images
     """
     stats = OrchestrationStats()
     timeout = vector_timeout or DEFAULT_VECTOR_SUBPROCESS_TIMEOUT
-    
-    logger.info(f"=== Starting lesson generation for: {prompt_text} ===")
-    
+
+    logger.info(f"=== Starting lesson generation for: {prompt_text} (use_existing={use_existing_images}) ===")
+
     # Create user prompt
     prompt = UserPrompt(text=prompt_text)
-    
-    # -------------------------------------------------------------------------
-    # STEP 1: Kick off background image vector subprocess + script generation
-    # -------------------------------------------------------------------------
-    logger.info("[Orchestrator] Step 1: Starting parallel image research + script generation...")
-    
-    vector_subprocess = start_image_vector_subprocess(prompt, subject)
+
+    if use_existing_images:
+        from lesson_pipeline.pipelines.image_ingestion import _generate_topic_id
+        stats.topic_id = _generate_topic_id(prompt_text)
+        stats.images_indexed = 0
+        image_index_info = {
+            "topic_id": stats.topic_id,
+            "indexed_count": 0,
+            "candidates": [],
+        }
+        logger.info(f"[Orchestrator] Skipping research, using existing images for topic_id={stats.topic_id}")
+    else:
+        # -------------------------------------------------------------------------
+        # STEP 1: Kick off background image vector subprocess + script generation
+        # -------------------------------------------------------------------------
+        logger.info("[Orchestrator] Step 1: Starting parallel image research + script generation...")
+        vector_subprocess = start_image_vector_subprocess(prompt, subject)
+
     script_draft = None
-    
     try:
         script_draft = generate_script(prompt, duration_target)
         if script_draft:
@@ -115,11 +132,12 @@ def generate_lesson(
         error_msg = f"Script generation failed: {e}"
         logger.error(f"[Orchestrator] {error_msg}")
         stats.errors.append(error_msg)
-    
-    # Wait for vector subprocess with timeout
-    image_index_info = _wait_for_vector_subprocess(vector_subprocess, timeout)
-    stats.images_indexed = image_index_info.get('indexed_count', 0)
-    stats.topic_id = image_index_info.get('topic_id', '')
+
+    if not use_existing_images:
+        image_index_info = _wait_for_vector_subprocess(vector_subprocess, timeout)
+
+    stats.images_indexed = image_index_info.get("indexed_count", 0)
+    stats.topic_id = image_index_info.get("topic_id", stats.topic_id)
     
     logger.info(
         f"[Orchestrator] ✓ Image indexing complete: {stats.images_indexed} images indexed"
@@ -262,16 +280,18 @@ def generate_lesson_json(
     subject: str = "General",
     duration_target: float = 60.0,
     vector_timeout: Optional[float] = None,
+    use_existing_images: bool = False,
 ) -> Dict[str, Any]:
     """
     Generate lesson and return as JSON-serializable dict.
-    
+
     Args:
         prompt_text: Lesson topic
         subject: Subject area
         duration_target: Target duration
         vector_timeout: Max seconds to wait for image indexing
-    
+        use_existing_images: Skip research phase and use existing Pinecone images only
+
     Returns:
         Dict representation of LessonDocument
     """
@@ -280,6 +300,7 @@ def generate_lesson_json(
         subject,
         duration_target,
         vector_timeout,
+        use_existing_images,
     )
     return lesson_document_to_dict(lesson)
 
@@ -288,14 +309,17 @@ def generate_lesson_async_safe(
     prompt_text: str,
     subject: str = "General",
     duration_target: float = 60.0,
+    use_existing_images: bool = False,
 ) -> Dict[str, Any]:
     """
     Generate lesson with extra error handling for API use.
-    
+
     Returns a result dict that always has 'success' and either 'data' or 'error'.
     """
     try:
-        result = generate_lesson_json(prompt_text, subject, duration_target)
+        result = generate_lesson_json(
+            prompt_text, subject, duration_target, use_existing_images=use_existing_images
+        )
         return {
             "success": True,
             "data": result,

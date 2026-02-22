@@ -5,71 +5,23 @@ import json
 import math
 import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import cv2
 import numpy as np
 
+import os
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
-#Step 3 of printing - take our skeletonized image and split it into vectors to draw
+from .StrokeBundleMerger import merge_polyline_collections
 
-#Input  - 1px skeleton PNGs (0 / 255) coming out of our pen-width-aware skeletonizer
-#Output - JSON files with clean, cubic Bezier strokes, ready for drawing / printing
 
-#This is the main image → vector step. Here we take the thin skeleton lines and turn them into strokes that actually make sense to draw
 
-#Step 1 – load + binarize
-#We treat the skeleton PNG as a simple 0/1 mask, and dont do any extra thinning -> thats been pushed out to the skeletonizer :
-
-#Step 2 – graph-based stroke tracing
-#We see the skeleton as a graph:
-#- every foreground pixel is a node,
-#- 8-connected neighbors are edges,
-#- degree map tells us if a pixel is an endpoint of a line, a plain interior point - 2 node, or a junction (intersecting point of lines)
-
-#Tracing logic:
-#As a baseline we  want to break off at SHARP turns to have simpler strokes. But when 2 lines intersect we dont want a false breakoff -> we wanna keep going
-#So we start strokes from all non-degree-2 nodes first (endpoints / junctions),
-#- follow chains of degree-2 pixels straight through (simple interior lines) -> simply walking a line,
-#- at junctions (intersections) we simulate short “look-ahead” walks on all branches and scores them by:
-#   * how straight they are (deflection angle),
-#   * how smooth they are (local curvature),
-#   * how long they run.
-#This allows us to continue on a valid path, and leave the other sharp degreee breakoffs behind, not causing trouble
-
-#Second pass:
-#- after endpoints/junctions, we run again starting from pure degree-2 loops to pick up closed shapes like circles that never hit an endpoint.
-
-#Step 3 – corner-aware segmentation 
-#Here we have ready traced lines and we ACTUALLY start splitting their inner sharp turns into seperate strokes
-#We do this by:
-#- computing a smoothed direction angle along the polyline in a small window,
-#- measuring how much the direction changes between samples (curvature),
-#- scanning forward and grouping “turn regions” over several indices.
-
-#Step 4 – Douglas–Peucker simplification
-#Now each stroke is still a polyline with potentially too many points ->
-#We want to give more opurtunity to the rendering engine, and not just have many pixels to draw
-#We run a conservative
-#We never touch indices where the direction changes, so curves stay intact;
-
-#Step 5 – merge small strokes into neighbours
-#The vectorizer tends to create lots of tiny strokes around bigger ones and we end up with a crazy amount of strokes
-#*optimizing the walk and breakoff logic to prevent this is just not worth it, considering how difficult i'd be 
-#To make drawing cleaner and reduce overhead we try to merge small strokes together, and with their natural bigger neighbors
-
-#Step 5b – coverage safety pass
-#All of the earlier logic sometimes drops some strokes, so we keep a hard pixel record.
-#If any of the pixels have been left unasigned we walk them to turn them into strokes
-
-#Step 6 – Catmull–Rom → cubic Bezier conversion
-#At this point we have clean polylines (list of [x, y] points). We convert them into
-#cubic Bezier segments, which are nicer to render and animate:
-#- use centripetal Catmull–Rom splines (alpha = 0.5) to estimate a smooth curve
-#  passing through the sample points,
-#- for each segment between Pi and Pi+1 we compute control points from local tangents
-#  and emit [x0, y0, cx1, cy1, cx2, cy2, x1, y1].
-
+# ------------------- PARALLELISM -------------------
+BUNDLE_PARALLEL = True
+BUNDLE_MAX_WORKERS = 0  # 0 = auto
+CV2_THREADS_PER_PROCESS = 1  # prevent OpenCV thread oversubscription when using many processes
 
 
 # ------------------- PATHS -------------------
@@ -80,7 +32,7 @@ IN_DIR = BASE / "Skeletonized"
 OUT_DIR = BASE / "StrokeVectors"
 
 # ------------------- GLOBAL KNOBS -------------------
-LEFTOVER_MIN_CC_PIXELS = 0   
+LEFTOVER_MIN_CC_PIXELS = 0
 BLUR_BEFORE_BIN = 0            # 0 off, else odd (e.g., 3)
 
 CATMULL_ALPHA = 0.5            # centripetal Catmull–Rom
@@ -98,7 +50,7 @@ BRANCH_W_LEN               = 0.5  # weight for length (subtracted)
 # junction continuation gating:
 #ONLY angle is used to decide if we stop at a junction;
 # curvature is NOT a hard gate here (corner splitting happens later).
-JUNC_CONTINUE_ANG_MAX      = 45.0   # deg – how much deflection we still accept
+JUNC_CONTINUE_ANG_MAX      = 60   # deg – how much deflection we still accept
 
 # per-stroke segmentation (corner detection) knobs
 CURV_WIN_RADIUS_SMALL      = 4      # half-window for local orientation smoothing
@@ -116,14 +68,14 @@ MIN_STROKE_POINTS          = 2      # drop only single-pixel "strokes"
 
 # merge-small-strokes knobs
 MERGE_SMALL_LEN_PERCENTILE = 75.0   # strokes below this length percentile are "small"
-MERGE_SMALL_LEN_MIN        = 65.0    # absolute minimum length (px) to consider "not tiny"
+MERGE_SMALL_LEN_MIN        = 65.0   # absolute minimum length (px) to consider "not tiny"
 MERGE_DIST_FRAC_DIAG       = 0.004  # relative distance gate vs image diagonal
-MERGE_DIST_MIN             = 2.0    # px
+MERGE_DIST_MIN             = 2   # px
 MERGE_DIST_MAX             = 10.0    # px
 MERGE_ANGLE_MAX            = 90.0  # deg – max angle at join to allow merge
 
 #POINT SIMPLIFICATION
-SIMPLIFY_EPS_PX = 0.4 
+SIMPLIFY_EPS_PX = 0.4
 
 # 8-connected neighbor offsets
 NEIGHBORS_8 = [
@@ -131,6 +83,96 @@ NEIGHBORS_8 = [
     ( 0, -1),          ( 0, 1),
     ( 1, -1), ( 1, 0), ( 1, 1),
 ]
+
+# ------------------- FAST 8-NBR LUTS (bitmasks) -------------------
+
+_DIRS_8 = np.array(NEIGHBORS_8, dtype=np.int8)   # (8,2) dy,dx in the same order as NEIGHBORS_8
+_DIR_DY = _DIRS_8[:, 0]
+_DIR_DX = _DIRS_8[:, 1]
+
+_DIR_TO_IDX = {(int(dy), int(dx)): i for i, (dy, dx) in enumerate(NEIGHBORS_8)}
+_DIR_OPP = np.array([_DIR_TO_IDX[(-int(dy), -int(dx))] for dy, dx in NEIGHBORS_8], dtype=np.uint8)
+
+_DIR_VEC = np.stack([_DIR_DX.astype(np.float32), _DIR_DY.astype(np.float32)], axis=1)  # (dx,dy)
+_DIR_NRM = np.linalg.norm(_DIR_VEC, axis=1, keepdims=True)
+_DIR_UNIT = _DIR_VEC / np.maximum(_DIR_NRM, 1e-12)
+
+_DOT8 = (_DIR_UNIT @ _DIR_UNIT.T).astype(np.float32)
+_DOT8 = np.clip(_DOT8, -1.0, 1.0)
+_ANG8 = np.degrees(np.arccos(_DOT8)).astype(np.float32)
+
+_BITCOUNT_LUT = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
+
+
+def _build_neighbor_mask_and_deg(skel01: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Build:
+      sk      : contiguous uint8 0/1
+      nei_mask: uint8 bitmask per pixel (bit i => that 8-neighbor exists and is FG)
+      deg     : uint8 degree per pixel (popcount of nei_mask), 0 on background
+    """
+    sk = (skel01 > 0).astype(np.uint8)
+    if sk.size == 0:
+        return sk, np.zeros_like(sk, dtype=np.uint8), np.zeros_like(sk, dtype=np.uint8)
+
+    sk = np.ascontiguousarray(sk)
+    h, w = sk.shape
+
+    sp = np.pad(sk, ((1, 1), (1, 1)), mode="constant", constant_values=0)
+    center = sp[1:-1, 1:-1]
+
+    nei = np.zeros((h, w), dtype=np.uint8)
+    for i, (dy, dx) in enumerate(NEIGHBORS_8):
+        nb = sp[1 + dy: 1 + dy + h, 1 + dx: 1 + dx + w]
+        nei |= ((nb > 0).astype(np.uint8) << i)
+
+    nei[center == 0] = 0
+    deg = _BITCOUNT_LUT[nei]
+    return sk, nei, deg
+
+
+def _angle_between_dir_and_chord_deg(dir_idx: int, chord_dx: float, chord_dy: float) -> float:
+    """
+    Angle (deg) between a step direction (one of the 8 dirs) and a chord vector.
+    """
+    nd = math.hypot(chord_dx, chord_dy)
+    if nd < 1e-6:
+        return 0.0
+
+    dx = float(_DIR_DX[dir_idx])
+    dy = float(_DIR_DY[dir_idx])
+    nr = math.hypot(dx, dy)
+    if nr < 1e-6:
+        return 0.0
+
+    dot = dx * chord_dx + dy * chord_dy
+    c = dot / (nr * nd)
+    c = max(-1.0, min(1.0, c))
+    return math.degrees(math.acos(c))
+
+
+# ------------------- COLOR GROUP ID -------------------
+COLOR_ORDER_LIGHT_TO_DARK = [
+    "white",
+    "yellow",
+    "orange",
+    "cyan",
+    "green",
+    "magenta",
+    "red",
+    "blue",
+    "purple",
+    "gray",
+    "black",
+]
+
+def _color_group_id_from_color_name(name: str) -> int:
+    n = (name or "").strip().lower()
+    try:
+        return int(COLOR_ORDER_LIGHT_TO_DARK.index(n) + 1)  # 1..11
+    except ValueError:
+        return 0
+
 
 # ------------------- FINITE CHECKS -------------------
 
@@ -149,13 +191,6 @@ def nan_to_num_nd(a: np.ndarray) -> np.ndarray:
 # ------------------- IO / BINARIZE -------------------
 
 def _load_edges_binary(path: Path) -> np.ndarray:
-    """
-    Load skeleton / edge image and return foreground mask 0/1.
-
-    We assume the input is your skeletonized PNG (0/255). We:
-      - Otsu-threshold to be safe,
-      - pick minority color as foreground (line).
-    """
     img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise FileNotFoundError(str(path))
@@ -163,16 +198,11 @@ def _load_edges_binary(path: Path) -> np.ndarray:
     if BLUR_BEFORE_BIN and BLUR_BEFORE_BIN % 2 == 1:
         img = cv2.GaussianBlur(img, (BLUR_BEFORE_BIN, BLUR_BEFORE_BIN), 0)
 
-    _, bw = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    white_ratio = (bw == 255).mean()
+    # skeleton output is 0 background, >0 foreground
+    return (img > 0).astype(np.uint8)
 
-    # minority color = foreground
-    if white_ratio < 0.5:
-        fg = (bw == 255).astype(np.uint8)
-    else:
-        fg = (bw == 0).astype(np.uint8)
 
-    return fg
+
 
 # ------------------- GEOM HELPERS -------------------
 
@@ -230,17 +260,18 @@ def _build_degree_map(skel01: np.ndarray) -> np.ndarray:
     For each foreground pixel (==1), count how many 8-neighbors are also foreground.
     Returns a uint8 degree image.
     """
-    h, w = skel01.shape
-    deg = np.zeros_like(skel01, dtype=np.uint8)
-    ys, xs = np.where(skel01 > 0)
-    for y, x in zip(ys, xs):
-        c = 0
-        for dy, dx in NEIGHBORS_8:
-            ny, nx = y + dy, x + dx
-            if 0 <= ny < h and 0 <= nx < w and skel01[ny, nx] > 0:
-                c += 1
-        deg[y, x] = c
+    sk = (skel01 > 0).astype(np.uint8)
+    if sk.size == 0:
+        return np.zeros_like(sk, dtype=np.uint8)
+
+    k = np.array([[1,1,1],
+                  [1,0,1],
+                  [1,1,1]], dtype=np.uint8)
+
+    deg = cv2.filter2D(sk, ddepth=cv2.CV_8U, kernel=k, borderType=cv2.BORDER_CONSTANT)
+    deg[sk == 0] = 0
     return deg
+
 
 def _neighbors_fg(y: int, x: int, skel01: np.ndarray):
     """
@@ -477,42 +508,244 @@ def _trace_strokes_graph(skel01: np.ndarray) -> List[np.ndarray]:
 
     Input: skel01 – 0/1 skeleton mask (1px wide lines).
     Output: list of polylines, each Nx2 [x,y] float32.
-    """
-    skel = (skel01 > 0).astype(np.uint8)
-    h, w = skel.shape
-    deg = _build_degree_map(skel)
 
-    visited_edges: set = set()
+    Same logic as before (degree-2 chains, junction lookahead scoring, angle gating),
+    but using per-pixel 8-neighbor bitmasks + per-pixel visited-direction bitmasks
+    instead of a Python set of edge tuples.
+    """
+    skel, nei_mask, deg = _build_neighbor_mask_and_deg(skel01)
+    h, w = skel.shape
+    if skel.size == 0:
+        return []
+
+    visited = np.zeros((h, w), dtype=np.uint8)
     strokes: List[np.ndarray] = []
 
-    ys, xs = np.where(skel > 0)
+    ys, xs = np.nonzero(skel)
+
+    def _simulate_branch_from_fast(curr_yx, first_dir_idx, prev_dir_idx, max_steps: int = LOOKAHEAD_STEPS_MAX):
+        """
+        Simulate a short walk along a branch (NO global visited usage) for scoring at junctions.
+        Mirrors _simulate_branch_from behavior but runs on masks and direction LUTs.
+        """
+        cy, cx = curr_yx
+        dy = int(_DIR_DY[first_dir_idx]); dx = int(_DIR_DX[first_dir_idx])
+        ny = cy + dy; nx = cx + dx
+        if not (0 <= ny < h and 0 <= nx < w) or skel[ny, nx] == 0:
+            return None
+
+        if prev_dir_idx is None:
+            prev_dir_idx = first_dir_idx
+
+        steps = 1
+        curv_max = 0.0
+
+        prev = (cy, cx)
+        curr2 = (ny, nx)
+        prev_step_dir = int(first_dir_idx)
+
+        local_seen = {(cy, cx), (ny, nx)}
+
+        while steps < max_steps:
+            cy2, cx2 = curr2
+
+            avail = int(nei_mask[cy2, cx2])
+            back_dir = int(_DIR_OPP[prev_step_dir])
+            avail &= ~(1 << back_dir)
+            if avail == 0:
+                break
+
+            best_dir = None
+            best_dot = -1e9
+
+            m = avail
+            while m:
+                lsb = m & -m
+                d_idx = (lsb.bit_length() - 1)
+                dot = float(_DOT8[prev_step_dir, d_idx])
+                if dot > best_dot:
+                    best_dot = dot
+                    best_dir = d_idx
+                m ^= lsb
+
+            if best_dir is None:
+                break
+
+            yy = cy2 + int(_DIR_DY[best_dir])
+            xx = cx2 + int(_DIR_DX[best_dir])
+
+            if (yy, xx) in local_seen:
+                break
+            local_seen.add((yy, xx))
+
+            turn = float(_ANG8[prev_step_dir, best_dir])
+            if turn > curv_max:
+                curv_max = turn
+
+            prev = curr2
+            curr2 = (yy, xx)
+            prev_step_dir = int(best_dir)
+            steps += 1
+
+            if int(deg[yy, xx]) != 2:
+                break
+
+        end_y, end_x = curr2
+        chord_dx = float(end_x - cx)
+        chord_dy = float(end_y - cy)
+        ang_deflect = _angle_between_dir_and_chord_deg(int(prev_dir_idx), chord_dx, chord_dy)
+
+        return {
+            "steps": steps,
+            "length": float(steps),
+            "ang_deflect": float(ang_deflect),
+            "curv_max": float(curv_max),
+        }
+
+    def _trace_one_stroke_fast(start_yx, first_dir_idx):
+        """
+        Trace one stroke starting at start_yx and taking first_dir_idx as the first edge.
+        Uses visited-direction bitmasks instead of visited edge tuple set.
+        """
+        sy, sx = start_yx
+
+        dy = int(_DIR_DY[first_dir_idx]); dx = int(_DIR_DX[first_dir_idx])
+        cy = sy + dy; cx = sx + dx
+        if not (0 <= cy < h and 0 <= cx < w) or skel[cy, cx] == 0:
+            return None
+
+        stroke = [
+            [float(sx), float(sy)],
+            [float(cx), float(cy)],
+        ]
+
+        visited[sy, sx] |= (1 << int(first_dir_idx))
+        visited[cy, cx] |= (1 << int(_DIR_OPP[int(first_dir_idx)]))
+
+        prev = (sy, sx)
+        curr = (cy, cx)
+        prev_dir_idx = int(first_dir_idx)
+
+        while True:
+            cy, cx = curr
+
+            avail = int(nei_mask[cy, cx]) & (~int(visited[cy, cx]) & 0xFF)
+            if avail == 0:
+                break
+
+            d_here = int(deg[cy, cx])
+
+            if d_here == 2:
+                best_dir = None
+                best_dot = -1e9
+                m = avail
+                while m:
+                    lsb = m & -m
+                    d_idx = (lsb.bit_length() - 1)
+                    dot = float(_DOT8[prev_dir_idx, d_idx])
+                    if dot > best_dot:
+                        best_dot = dot
+                        best_dir = d_idx
+                    m ^= lsb
+
+                if best_dir is None:
+                    break
+
+                ny = cy + int(_DIR_DY[best_dir])
+                nx = cx + int(_DIR_DX[best_dir])
+
+                visited[cy, cx] |= (1 << int(best_dir))
+                visited[ny, nx] |= (1 << int(_DIR_OPP[int(best_dir)]))
+
+                stroke.append([float(nx), float(ny)])
+
+                prev = curr
+                curr = (ny, nx)
+                prev_dir_idx = int(best_dir)
+                continue
+
+            best_dir = None
+            best_score = None
+            best_metrics = None
+
+            m = avail
+            while m:
+                lsb = m & -m
+                d_idx = (lsb.bit_length() - 1)
+                metrics = _simulate_branch_from_fast(curr, d_idx, prev_dir_idx, max_steps=LOOKAHEAD_STEPS_MAX)
+                if metrics is not None:
+                    ang_def = metrics["ang_deflect"]
+                    curv_max = metrics["curv_max"]
+                    length = metrics["length"]
+
+                    score = (BRANCH_W_ANG * ang_def +
+                             BRANCH_W_CURV * curv_max -
+                             BRANCH_W_LEN * length)
+
+                    if (best_score is None) or (score < best_score):
+                        best_score = score
+                        best_dir = d_idx
+                        best_metrics = metrics
+                m ^= lsb
+
+            if best_dir is None or best_metrics is None:
+                break
+
+            if best_metrics["ang_deflect"] > JUNC_CONTINUE_ANG_MAX:
+                break
+
+            ny = cy + int(_DIR_DY[best_dir])
+            nx = cx + int(_DIR_DX[best_dir])
+
+            visited[cy, cx] |= (1 << int(best_dir))
+            visited[ny, nx] |= (1 << int(_DIR_OPP[int(best_dir)]))
+
+            stroke.append([float(nx), float(ny)])
+
+            prev = curr
+            curr = (ny, nx)
+            prev_dir_idx = int(best_dir)
+
+        if len(stroke) < MIN_STROKE_POINTS:
+            return None
+
+        arr = np.asarray(stroke, dtype=np.float32)
+        nan_to_num_nd(arr)
+        return arr
 
     # pass 1: start from nodes that are NOT pure degree-2 (endpoints, junctions)
     for y, x in zip(ys, xs):
         d = int(deg[y, x])
         if d == 0 or d == 2:
             continue
-        for ny, nx in _neighbors_fg(y, x, skel):
-            ek = _edge_key((y, x), (ny, nx))
-            if ek in visited_edges:
-                continue
-            stroke = _trace_one_stroke((y, x), (ny, nx), skel, deg, visited_edges)
-            if stroke is not None:
-                strokes.append(stroke)
+
+        m = int(nei_mask[y, x])
+        while m:
+            lsb = m & -m
+            d_idx = (lsb.bit_length() - 1)
+            if (int(visited[y, x]) & (1 << d_idx)) == 0:
+                stroke = _trace_one_stroke_fast((int(y), int(x)), int(d_idx))
+                if stroke is not None:
+                    strokes.append(stroke)
+            m ^= lsb
 
     # pass 2: pick up loops made only of degree-2 nodes (circles etc.)
     for y, x in zip(ys, xs):
         if int(deg[y, x]) != 2:
             continue
-        for ny, nx in _neighbors_fg(y, x, skel):
-            ek = _edge_key((y, x), (ny, nx))
-            if ek in visited_edges:
-                continue
-            stroke = _trace_one_stroke((y, x), (ny, nx), skel, deg, visited_edges)
-            if stroke is not None:
-                strokes.append(stroke)
+
+        m = int(nei_mask[y, x])
+        while m:
+            lsb = m & -m
+            d_idx = (lsb.bit_length() - 1)
+            if (int(visited[y, x]) & (1 << d_idx)) == 0:
+                stroke = _trace_one_stroke_fast((int(y), int(x)), int(d_idx))
+                if stroke is not None:
+                    strokes.append(stroke)
+            m ^= lsb
 
     return strokes
+
 
 # ------------------- PER-STROKE SEGMENTATION (CORNERS) -------------------
 
@@ -527,22 +760,33 @@ def _compute_orientations(pts: np.ndarray, win_radius: int) -> np.ndarray:
     if n < 2:
         return phi
 
-    for i in range(n):
-        a = max(0, i - win_radius)
-        b = min(n - 1, i + win_radius)
-        if b == a:
+    P = pts.astype(np.float32, copy=False)
+    nan_to_num_nd(P)
+
+    idx = np.arange(n, dtype=np.int32)
+    a = np.clip(idx - int(win_radius), 0, n - 1)
+    b = np.clip(idx + int(win_radius), 0, n - 1)
+
+    v = P[b] - P[a]
+
+    eq = (a == b)
+    if np.any(eq):
+        # only really happens for win_radius==0 or n==1; match your original behavior
+        ii = np.where(eq)[0]
+        for i in ii:
             if i < n - 1:
-                v = pts[i + 1] - pts[i]
+                v[i] = P[i + 1] - P[i]
             else:
-                v = pts[i] - pts[i - 1]
-        else:
-            v = pts[b] - pts[a]
-        dx, dy = float(v[0]), float(v[1])
-        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
-            phi[i] = 0.0
-        else:
-            phi[i] = math.atan2(dy, dx)
+                v[i] = P[i] - P[i - 1]
+
+    dx = v[:, 0]
+    dy = v[:, 1]
+    small = (np.abs(dx) < 1e-6) & (np.abs(dy) < 1e-6)
+
+    phi[~small] = np.arctan2(dy[~small], dx[~small]).astype(np.float32)
+    phi[small] = 0.0
     return phi
+
 
 def _segment_polyline_on_corners(poly: np.ndarray) -> List[np.ndarray]:
     """
@@ -682,20 +926,16 @@ def _simplify_poly_conservative(poly: np.ndarray) -> np.ndarray:
 
 def _merge_small_strokes(polys: List[np.ndarray], diag: float) -> List[np.ndarray]:
     """
-    Post-pass: merge small strokes into neighboring strokes to reduce stroke count.
+    Optimized version of your merge-small-strokes pass.
 
-    - define "small" strokes by length percentile (lower 25%) with an absolute floor;
-    - only those small strokes try to merge into others;
-    - require:
-        * endpoints very close in Euclidean distance,
-        * direction at the join compatible (angle <= MERGE_ANGLE_MAX);
-    - non-merged strokes remain unchanged.
+    Old version was O(n^2). This uses spatial hashing on stroke endpoints:
+    - index endpoints into grid tiles
+    - for each small stroke, only consider candidates in neighboring tiles
     """
     n = len(polys)
     if n == 0:
         return polys
 
-    # copy to avoid aliasing
     merged = [p.astype(np.float32, copy=True) for p in polys]
     for p in merged:
         nan_to_num_nd(p)
@@ -705,26 +945,90 @@ def _merge_small_strokes(polys: List[np.ndarray], diag: float) -> List[np.ndarra
     if not np.any(len_arr > 0):
         return merged
 
-    # define "small" threshold from distribution
     if n >= 10:
         perc = float(np.percentile(len_arr, MERGE_SMALL_LEN_PERCENTILE))
         small_len_thresh = max(MERGE_SMALL_LEN_MIN, perc)
     else:
         small_len_thresh = max(MERGE_SMALL_LEN_MIN, float(np.min(len_arr)))
 
-    # which indices are small
     small_indices = [i for i, L in enumerate(lengths) if 0.0 < L <= small_len_thresh]
     if not small_indices:
         return merged
 
-    # tight distance gate
     base = MERGE_DIST_FRAC_DIAG * float(diag)
     dist_thresh = max(MERGE_DIST_MIN, min(MERGE_DIST_MAX, base))
+    dist2_thresh = float(dist_thresh * dist_thresh)
     angle_thresh = MERGE_ANGLE_MAX
 
+    tile = int(max(4.0, dist_thresh * 2.0))
+    grid = {}  # (tx,ty) -> set(stroke_index)
     active = [True] * n
 
-    # process small strokes from shortest to longest
+    s_start = [None] * n
+    s_end   = [None] * n
+    t_start = [None] * n
+    t_end   = [None] * n
+
+    stroke_cells: List[set] = [set() for _ in range(n)]
+
+    def _cell_for_pt(pt):
+        return (int(pt[0] // tile), int(pt[1] // tile))
+
+    def _deindex(idx):
+        cells = stroke_cells[idx]
+        if not cells:
+            return
+        for key in cells:
+            s = grid.get(key)
+            if s is not None:
+                s.discard(idx)
+                if not s:
+                    grid.pop(key, None)
+        cells.clear()
+
+    def _index_endpoint(idx, pt):
+        key = _cell_for_pt(pt)
+        grid.setdefault(key, set()).add(idx)
+        stroke_cells[idx].add(key)
+
+    def recache(idx):
+        _deindex(idx)
+
+        p = merged[idx]
+        if p is None or p.shape[0] < 2:
+            s_start[idx] = s_end[idx] = None
+            t_start[idx] = t_end[idx] = None
+            return
+
+        a = p[0]
+        b = p[-1]
+        s_start[idx] = a
+        s_end[idx] = b
+
+        if p.shape[0] >= 2:
+            t_start[idx] = _unit_vec(p[1] - p[0])
+            t_end[idx]   = _unit_vec(p[-1] - p[-2])
+        else:
+            t_start[idx] = np.array([1.0, 0.0], np.float32)
+            t_end[idx]   = np.array([1.0, 0.0], np.float32)
+
+        _index_endpoint(idx, a)
+        _index_endpoint(idx, b)
+
+    for i in range(n):
+        if merged[i] is None or merged[i].shape[0] < 2:
+            active[i] = False
+            continue
+        recache(i)
+
+    def candidates_near(pt):
+        tx, ty = _cell_for_pt(pt)
+        out = set()
+        for oy in (-1, 0, 1):
+            for ox in (-1, 0, 1):
+                out |= grid.get((tx + ox, ty + oy), set())
+        return out
+
     small_indices_sorted = sorted(small_indices, key=lambda i: lengths[i])
 
     for si in small_indices_sorted:
@@ -733,117 +1037,119 @@ def _merge_small_strokes(polys: List[np.ndarray], diag: float) -> List[np.ndarra
         p_small = merged[si]
         if p_small is None or p_small.shape[0] < 2:
             active[si] = False
+            _deindex(si)
             continue
 
-        # endpoints and tangents for small
-        s_start = p_small[0]
-        s_end = p_small[-1]
-        if p_small.shape[0] >= 2:
-            s_tan_start = _unit_vec(p_small[1] - p_small[0])
-            s_tan_end = _unit_vec(p_small[-1] - p_small[-2])
-        else:
-            s_tan_start = np.array([1.0, 0.0], dtype=np.float32)
-            s_tan_end = np.array([1.0, 0.0], dtype=np.float32)
+        s0 = s_start[si]
+        s1 = s_end[si]
+        if s0 is None or s1 is None:
+            active[si] = False
+            _deindex(si)
+            continue
+
+        st0 = t_start[si]
+        st1 = t_end[si]
+
+        cand = candidates_near(s0) | candidates_near(s1)
+        cand.discard(si)
 
         best_target_j = None
         best_new_poly = None
         best_score = None
 
-        # search all other active strokes as potential targets
-        for j in range(n):
-            if j == si or not active[j]:
+        for j in cand:
+            if not active[j]:
                 continue
             p_big = merged[j]
             if p_big is None or p_big.shape[0] < 2:
                 continue
 
-            b_start = p_big[0]
-            b_end = p_big[-1]
-            b_tan_start = _unit_vec(p_big[1] - p_big[0])
-            b_tan_end = _unit_vec(p_big[-1] - p_big[-2])
+            b0 = s_start[j]
+            b1 = s_end[j]
+            if b0 is None or b1 is None:
+                continue
 
-            combos = []
+            bt0 = t_start[j]
+            bt1 = t_end[j]
 
-            # 1) attach small at end of big: big_end -> small_start
-            d = float(np.linalg.norm(b_end - s_start))
-            if d <= dist_thresh:
-                ang = _angle_between_vecs(b_tan_end, s_tan_start)
-                combos.append(("b_end_s_start", d, ang))
+            dx = float(b1[0] - s0[0]); dy = float(b1[1] - s0[1])
+            d2 = dx*dx + dy*dy
+            if d2 <= dist2_thresh:
+                d = math.sqrt(d2)
+                ang = _angle_between_vecs(bt1, st0)
+                if ang <= angle_thresh:
+                    score = float(d + 0.1 * ang)
+                    if best_score is None or score < best_score:
+                        new = np.vstack([p_big, p_small[1:]]) if d < 1e-3 else np.vstack([p_big, p_small])
+                        nan_to_num_nd(new)
+                        if finite_nd(new) and new.shape[0] >= 2:
+                            best_score = score
+                            best_target_j = j
+                            best_new_poly = new
 
-            # 2) big_end -> small_end (reverse small)
-            d = float(np.linalg.norm(b_end - s_end))
-            if d <= dist_thresh:
-                ang = _angle_between_vecs(b_tan_end, -s_tan_end)
-                combos.append(("b_end_s_end", d, ang))
+            dx = float(b1[0] - s1[0]); dy = float(b1[1] - s1[1])
+            d2 = dx*dx + dy*dy
+            if d2 <= dist2_thresh:
+                d = math.sqrt(d2)
+                ang = _angle_between_vecs(bt1, -st1)
+                if ang <= angle_thresh:
+                    score = float(d + 0.1 * ang)
+                    if best_score is None or score < best_score:
+                        s_rev = p_small[::-1]
+                        new = np.vstack([p_big, s_rev[1:]]) if d < 1e-3 else np.vstack([p_big, s_rev])
+                        nan_to_num_nd(new)
+                        if finite_nd(new) and new.shape[0] >= 2:
+                            best_score = score
+                            best_target_j = j
+                            best_new_poly = new
 
-            # 3) attach small at start of big: small_end -> big_start
-            d = float(np.linalg.norm(s_end - b_start))
-            if d <= dist_thresh:
-                ang = _angle_between_vecs(s_tan_end, b_tan_start)
-                combos.append(("s_end_b_start", d, ang))
+            dx = float(s1[0] - b0[0]); dy = float(s1[1] - b0[1])
+            d2 = dx*dx + dy*dy
+            if d2 <= dist2_thresh:
+                d = math.sqrt(d2)
+                ang = _angle_between_vecs(st1, bt0)
+                if ang <= angle_thresh:
+                    score = float(d + 0.1 * ang)
+                    if best_score is None or score < best_score:
+                        new = np.vstack([p_small, p_big[1:]]) if d < 1e-3 else np.vstack([p_small, p_big])
+                        nan_to_num_nd(new)
+                        if finite_nd(new) and new.shape[0] >= 2:
+                            best_score = score
+                            best_target_j = j
+                            best_new_poly = new
 
-            # 4) small_start -> big_start (reverse small)
-            d = float(np.linalg.norm(s_start - b_start))
-            if d <= dist_thresh:
-                ang = _angle_between_vecs(-s_tan_start, b_tan_start)
-                combos.append(("s_start_b_start", d, ang))
+            dx = float(s0[0] - b0[0]); dy = float(s0[1] - b0[1])
+            d2 = dx*dx + dy*dy
+            if d2 <= dist2_thresh:
+                d = math.sqrt(d2)
+                ang = _angle_between_vecs(-st0, bt0)
+                if ang <= angle_thresh:
+                    score = float(d + 0.1 * ang)
+                    if best_score is None or score < best_score:
+                        s_rev = p_small[::-1]
+                        new = np.vstack([s_rev, p_big[1:]]) if d < 1e-3 else np.vstack([s_rev, p_big])
+                        nan_to_num_nd(new)
+                        if finite_nd(new) and new.shape[0] >= 2:
+                            best_score = score
+                            best_target_j = j
+                            best_new_poly = new
 
-            for tag, d, ang in combos:
-                if ang > angle_thresh:
-                    continue
-                # score: prioritize close and reasonably aligned
-                score = float(d + 0.1 * ang)
-
-                if best_score is not None and score >= best_score:
-                    continue
-
-                # build candidate merged polyline for this combo
-                if tag == "b_end_s_start":
-                    if d < 1e-3:
-                        new = np.vstack([p_big, p_small[1:]])
-                    else:
-                        new = np.vstack([p_big, p_small])
-                elif tag == "b_end_s_end":
-                    s_rev = p_small[::-1]
-                    if d < 1e-3:
-                        new = np.vstack([p_big, s_rev[1:]])
-                    else:
-                        new = np.vstack([p_big, s_rev])
-                elif tag == "s_end_b_start":
-                    if d < 1e-3:
-                        new = np.vstack([p_small, p_big[1:]])
-                    else:
-                        new = np.vstack([p_small, p_big])
-                elif tag == "s_start_b_start":
-                    s_rev = p_small[::-1]
-                    if d < 1e-3:
-                        new = np.vstack([s_rev, p_big[1:]])
-                    else:
-                        new = np.vstack([s_rev, p_big])
-                else:
-                    continue
-
-                nan_to_num_nd(new)
-                if not finite_nd(new) or new.shape[0] < 2:
-                    continue
-
-                best_score = score
-                best_target_j = j
-                best_new_poly = new
-
-        # merge small stroke into best target if found
         if best_target_j is not None and best_new_poly is not None:
             merged[best_target_j] = best_new_poly
             lengths[best_target_j] = _stroke_length(best_new_poly)
-            active[si] = False
+            recache(best_target_j)
 
-    # keep only active, non-degenerate polylines
+            active[si] = False
+            _deindex(si)
+
     out = [
         merged[i]
         for i in range(n)
         if active[i] and merged[i] is not None and merged[i].shape[0] >= 2
     ]
     return out
+
+
 
 def _coverage_safety_pass(skel01: np.ndarray,
                           polys: List[np.ndarray]) -> List[np.ndarray]:
@@ -915,48 +1221,77 @@ def _coverage_safety_pass(skel01: np.ndarray,
 
 def _catmull_rom_to_beziers(pts: np.ndarray, alpha=0.5) -> List[List[float]]:
     """
-    Convert open polyline to list of cubic Beziers:
-    [x0,y0, cx1,cy1, cx2,cy2, x1,y1]
-    All numbers guaranteed finite.
+    Safe Catmull–Rom (centripetal) → cubic Beziers.
+    Fixes NaNs caused by duplicated endpoints / zero-length parameter intervals.
     """
     P = pts.astype(np.float32)
     nan_to_num_nd(P)
+
     n = P.shape[0]
     if n < 2:
         return []
 
+    # 1) drop consecutive duplicates (very common in pixel polylines)
+    keep = [0]
+    for i in range(1, n):
+        if float(np.linalg.norm(P[i] - P[i - 1])) > 1e-6:
+            keep.append(i)
+    P = P[keep]
+    n = P.shape[0]
+    if n < 2:
+        return []
+
+    # 2) endpoint extrapolation instead of duplicating endpoints
+    # avoids t0==tm and similar zero denominators on first/last segment
+    if n >= 3:
+        Pm = P[0] + (P[0] - P[1])
+        Pp = P[-1] + (P[-1] - P[-2])
+    else:
+        # only 2 points: just extrapolate linearly
+        Pm = P[0] + (P[0] - P[1])
+        Pp = P[1] + (P[1] - P[0])
+
+    P_ext = np.vstack((Pm, P, Pp)).astype(np.float32)
+
+    # centripetal parameterization
     def tj(ti, Pi, Pj):
         d = float(np.linalg.norm(Pj - Pi))
         if not math.isfinite(d):
             d = 0.0
+        d = max(d, 1e-4)  # enforce strictly increasing t
         return ti + (d ** alpha)
 
-    beziers: List[List[float]] = []
-
-    P_ext = np.vstack((P[0], P, P[-1]))
     t = [0.0]
     for i in range(1, P_ext.shape[0]):
-        t.append(tj(t[-1], P_ext[i-1], P_ext[i]))
+        t.append(tj(t[-1], P_ext[i - 1], P_ext[i]))
 
-    for k in range(1, n + 0):
-        i1 = k
-        if i1 >= n:
-            break
+    eps = 1e-6
+    beziers: List[List[float]] = []
 
-        Pm = P_ext[k-1].astype(np.float32)
-        P0 = P_ext[k].astype(np.float32)
-        P1 = P_ext[k+1].astype(np.float32)
-        Pp = P_ext[k+2].astype(np.float32)
+    # segments between P[i] and P[i+1] in original polyline
+    # P_ext index shift: original P[0] is at P_ext[1]
+    for i in range(1, n):
+        k = i  # P0 at P_ext[k], P1 at P_ext[k+1]
+        Pm = P_ext[k - 1]
+        P0 = P_ext[k]
+        P1 = P_ext[k + 1]
+        Pp = P_ext[k + 2]
 
-        tm, t0, t1, tp = t[k-1], t[k], t[k+1], t[k+2]
-        dt0 = (t1 - tm)
-        dt1 = (tp - t0)
-        if abs(dt0) < 1e-12 or abs(dt1) < 1e-12:
+        tm, t0, t1, tp = t[k - 1], t[k], t[k + 1], t[k + 2]
+
+        # If any interval is degenerate, fall back to straight tangents
+        if (abs(t0 - tm) < eps or abs(t1 - t0) < eps or abs(tp - t1) < eps):
             m0 = (P1 - P0)
             m1 = (P1 - P0)
         else:
-            m0 = ((P1 - Pm) / (t1 - tm) - (P0 - Pm) / (t0 - tm)) * (t1 - t0)
-            m1 = ((Pp - P0) / (tp - t0) - (P1 - P0) / (t1 - t0)) * (t1 - t0)
+            # safe denominators
+            a1 = (P1 - Pm) / max(eps, float(t1 - tm))
+            a2 = (P0 - Pm) / max(eps, float(t0 - tm))
+            m0 = (a1 - a2) * float(t1 - t0)
+
+            b1 = (Pp - P0) / max(eps, float(tp - t0))
+            b2 = (P1 - P0) / max(eps, float(t1 - t0))
+            m1 = (b1 - b2) * float(t1 - t0)
 
         c1 = P0 + m0 / 3.0
         c2 = P1 - m1 / 3.0
@@ -969,12 +1304,27 @@ def _catmull_rom_to_beziers(pts: np.ndarray, alpha=0.5) -> List[List[float]]:
         ]
         if finite_seq(seg):
             beziers.append(seg)
+        else:
+            # hard fallback: straight segment
+            a = P0.astype(np.float32)
+            b = P1.astype(np.float32)
+            c1s = a + (b - a) / 3.0
+            c2s = a + 2.0 * (b - a) / 3.0
+            seg2 = [
+                float(a[0]), float(a[1]),
+                float(c1s[0]), float(c1s[1]),
+                float(c2s[0]), float(c2s[1]),
+                float(b[0]), float(b[1]),
+            ]
+            if finite_seq(seg2):
+                beziers.append(seg2)
 
     return beziers
 
+
 # ------------------- PROCESS SINGLE -------------------
 
-def _process_single(path: Path, output : Path) -> Tuple[str, dict]:
+def _process_single_to_data(path: Path, color_group_id: int = 0) -> dict:
     fg = _load_edges_binary(path)
     H, W = fg.shape
     diag = math.hypot(W, H)
@@ -983,10 +1333,8 @@ def _process_single(path: Path, output : Path) -> Tuple[str, dict]:
 
     sk = (fg > 0).astype(np.uint8)
 
-    # 1) graph-based strokes directly from skeleton
     polys_raw = _trace_strokes_graph(sk)
 
-    # 2) per-stroke corner-aware segmentation
     polys_seg: List[np.ndarray] = []
     for p in polys_raw:
         if p.shape[0] < 2:
@@ -996,7 +1344,6 @@ def _process_single(path: Path, output : Path) -> Tuple[str, dict]:
             if seg.shape[0] >= CURV_MIN_SEG_POINTS:
                 polys_seg.append(seg)
 
-    # 3) conservative simplification
     polys_simpl: List[np.ndarray] = []
     for p in polys_seg:
         if p.shape[0] < 2:
@@ -1007,10 +1354,8 @@ def _process_single(path: Path, output : Path) -> Tuple[str, dict]:
         else:
             polys_simpl.append(p)
 
-    # 4) merge small strokes into neighbours (big merge wave)
     polys_merged = _merge_small_strokes(polys_simpl, diag)
 
-    # 5) optional stride
     if SEG_STRIDE > 1:
         polys_final = [
             p[::SEG_STRIDE] if p.shape[0] > SEG_STRIDE else p
@@ -1019,11 +1364,8 @@ def _process_single(path: Path, output : Path) -> Tuple[str, dict]:
     else:
         polys_final = polys_merged
 
-     # 5b) coverage-based safety pass: ensure every skeleton pixel
-    #      is represented by at least one stroke
     polys_final = _coverage_safety_pass(sk, polys_final)
 
-    # 6) Catmull–Rom → cubic Beziers
     strokes = []
     for p in polys_final:
         if p.shape[0] < 2:
@@ -1047,7 +1389,7 @@ def _process_single(path: Path, output : Path) -> Tuple[str, dict]:
                     segs.append(seg)
             beziers = segs
         if beziers:
-            strokes.append({"segments": beziers})
+            strokes.append({"segments": beziers, "color_group_id": int(color_group_id)})
 
     t1 = time.time()
 
@@ -1072,40 +1414,421 @@ def _process_single(path: Path, output : Path) -> Tuple[str, dict]:
             "merge_small_len_percentile": MERGE_SMALL_LEN_PERCENTILE,
         },
     }
+    return data
+
+def _process_single_to_polylines(path: Path) -> Tuple[int, int, List[np.ndarray]]:
+    fg = _load_edges_binary(path)
+    H, W = fg.shape
+    diag = math.hypot(W, H)
+
+    sk = (fg > 0).astype(np.uint8)
+
+    polys_raw = _trace_strokes_graph(sk)
+
+    polys_simpl: List[np.ndarray] = []
+    for p in polys_raw:
+        if p.shape[0] < 2:
+            continue
+        segments = _segment_polyline_on_corners(p)
+        for seg in segments:
+            if seg.shape[0] < CURV_MIN_SEG_POINTS:
+                continue
+            simp = _simplify_poly_conservative(seg)
+            polys_simpl.append(simp if simp.shape[0] >= 2 else seg)
+
+    polys_merged = _merge_small_strokes(polys_simpl, diag)
+
+    if SEG_STRIDE > 1:
+        polys_final = [
+            p[::SEG_STRIDE] if p.shape[0] > SEG_STRIDE else p
+            for p in polys_merged
+        ]
+    else:
+        polys_final = polys_merged
+
+    polys_final = _coverage_safety_pass(sk, polys_final)
+
+    return W, H, polys_final
+
+
+
+
+def _process_single(path: Path, output: Path) -> Tuple[str, dict]:
+    cname = _parse_color_name_from_stem(path.stem)
+    gid = _color_group_id_from_color_name(cname)
+    data = _process_single_to_data(path, color_group_id=gid)
     output.mkdir(parents=True, exist_ok=True)
     out_json = output / f"{path.stem}.json"
     out_json.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return str(path), data
 
+def _process_one_bundle_dir(bdir_str: str, out_dir_str: str) -> Tuple[str, dict]:
+    """
+    Worker: process ONE bundle folder (11-pass images), merge polylines, convert to bezier, write JSON.
+    Returns (bundle_name, stats_dict). Safe for Windows ProcessPool (top-level, picklable).
+    """
+    # keep OpenCV from spawning extra threads in each process
+    try:
+        cv2.setNumThreads(int(CV2_THREADS_PER_PROCESS))
+    except Exception:
+        pass
+
+    bdir = Path(bdir_str)
+    out_dir = Path(out_dir_str)
+
+    exts = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
+    imgs = sorted(
+        [p for p in bdir.glob("*") if p.is_file() and p.suffix.lower() in exts],
+        key=lambda p: p.name.lower(),
+    )
+
+    if not imgs:
+        return (bdir.name, {"skipped": True, "reason": "no images"})
+
+    t0 = time.time()
+
+    collections = []
+    base_W = None
+    base_H = None
+    pass_total_polys = 0
+
+    for p in imgs:
+        W, H, polys = _process_single_to_polylines(p)
+        cname = _parse_color_name_from_stem(p.stem)
+        collections.append((cname, polys))
+
+        pass_total_polys += len(polys)
+        if base_W is None:
+            base_W = W
+            base_H = H
+
+    if base_W is None or base_H is None:
+        return (bdir.name, {"skipped": True, "reason": "no valid passes"})
+
+    merged_items = merge_polyline_collections(collections, width=base_W, height=base_H)
+
+    # Convert merged polylines -> bezier strokes once (keep color_group_id from merger)
+    strokes = []
+    for poly, gid in merged_items:
+        if poly is None or poly.shape[0] < 2:
+            continue
+        beziers = _catmull_rom_to_beziers(poly, alpha=CATMULL_ALPHA)
+        if not beziers:
+            continue
+        strokes.append({"segments": beziers, "color_group_id": int(gid)})
+
+    out = {
+        "version": 15,
+        "source_image": str(bdir),
+        "width": int(base_W),
+        "height": int(base_H),
+        "vector_format": "bezier_cubic",
+        "strokes": strokes,
+        "stats": {
+            "curves": int(len(strokes)),
+            "passes": int(len(collections)),
+            "pass_total_polys": int(pass_total_polys),
+            "time_sec": round(time.time() - t0, 3),
+        },
+    }
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{bdir.name}.json"
+    out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
+
+    return (bdir.name, out["stats"])
+
+
+
 # ------------------- MAIN -------------------
 
+def _parse_color_name_from_stem(stem: str) -> str:
+    s = stem.lower()
+    # expected: edges_<idx>_<color>
+    parts = s.split("_")
+    if len(parts) >= 3:
+        return parts[-1]
+    return "unknown"
+
+
 def vectorize_images():
-    
-    import shutil
-    if OUT_DIR.exists():
-        shutil.rmtree(OUT_DIR)
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    imgs = sorted([
+    def _out_exists(stem: str) -> bool:
+        return (OUT_DIR / f"{stem}.json").exists()
+
+    # bundle folders (new format)
+    bundle_dirs = sorted(
+        [p for p in IN_DIR.iterdir() if p.is_dir()],
+        key=lambda p: p.name.lower()
+    )
+
+    # legacy flat files in root (old format)
+    flat_imgs = sorted([
         p for p in IN_DIR.glob("*")
-        if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
-    ])
-    print(f"[INFO] IN={IN_DIR}  OUT={OUT_DIR}  found={len(imgs)} image(s)")
-    if not imgs:
-        return
-    for p in imgs:
+        if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
+    ], key=lambda p: p.name.lower())
+
+    bundle_dirs = [b for b in bundle_dirs if not _out_exists(b.name)]
+    flat_imgs = [p for p in flat_imgs if not _out_exists(p.stem)]
+
+
+    print(f"[INFO] IN={IN_DIR} OUT={OUT_DIR} bundles={len(bundle_dirs)} flat={len(flat_imgs)}")
+
+    # ---- 1) bundled (11-pass) images in parallel ----
+    if bundle_dirs:
+        if BUNDLE_PARALLEL:
+            cpu = os.cpu_count() or 1
+            if BUNDLE_MAX_WORKERS and BUNDLE_MAX_WORKERS > 0:
+                workers = min(int(BUNDLE_MAX_WORKERS), len(bundle_dirs))
+            else:
+                workers = min(max(1, cpu - 1), len(bundle_dirs))
+
+            print(f"[INFO] bundle parallel: workers={workers}")
+
+            futures = []
+            with ProcessPoolExecutor(max_workers=workers) as ex:
+                for bdir in bundle_dirs:
+                    futures.append(ex.submit(_process_one_bundle_dir, str(bdir), str(OUT_DIR)))
+
+                for f in as_completed(futures):
+                    bname, stats = f.result()
+                    if stats.get("skipped"):
+                        print(f"[SKIP] {bname}: {stats.get('reason')}")
+                    else:
+                        print(f"[OK] {bname}: curves={stats['curves']} passes={stats['passes']} "
+                              f"pass_polys={stats['pass_total_polys']} time={stats['time_sec']}s")
+        else:
+            for bdir in bundle_dirs:
+                bname, stats = _process_one_bundle_dir(str(bdir), str(OUT_DIR))
+                if stats.get("skipped"):
+                    print(f"[SKIP] {bname}: {stats.get('reason')}")
+                else:
+                    print(f"[OK] {bname}: curves={stats['curves']} passes={stats['passes']} "
+                          f"pass_polys={stats['pass_total_polys']} time={stats['time_sec']}s")
+
+    # ---- 2) legacy flat images exactly as before ----
+    for p in flat_imgs:
         src, meta = _process_single(p, OUT_DIR)
         print(f"[OK] {Path(src).name}: strokes={len(meta['strokes'])}, "
               f"time={meta['stats']['time_sec']}s")
 
+def _process_edges_mask_to_polylines(edges_u8: np.ndarray) -> Tuple[int, int, List[np.ndarray]]:
+    """
+    edges_u8: 0/255 (or 0/1) skeleton/edges mask.
+    Returns (W, H, polys_final) with the SAME pipeline as _process_single_to_polylines().
+    """
+    m = (edges_u8 > 0).astype(np.uint8)
+    H, W = m.shape[:2]
+    diag = math.hypot(W, H)
+
+    polys_raw = _trace_strokes_graph(m)
+
+    polys_simpl: List[np.ndarray] = []
+    for p in polys_raw:
+        if p.shape[0] < 2:
+            continue
+        segments = _segment_polyline_on_corners(p)
+        for seg in segments:
+            if seg.shape[0] < CURV_MIN_SEG_POINTS:
+                continue
+            simp = _simplify_poly_conservative(seg)
+            polys_simpl.append(simp if simp.shape[0] >= 2 else seg)
+
+    polys_merged = _merge_small_strokes(polys_simpl, diag)
+
+    if SEG_STRIDE > 1:
+        polys_final = [
+            p[::SEG_STRIDE] if p.shape[0] > SEG_STRIDE else p
+            for p in polys_merged
+        ]
+    else:
+        polys_final = polys_merged
+
+    polys_final = _coverage_safety_pass(m, polys_final)
+
+    return W, H, polys_final
+
+
+def _vectorize_worker_payload(payload: tuple[int, dict, bool]) -> tuple[int, dict]:
+    idx, item, save_outputs = payload
+    try:
+        cv2.setNumThreads(int(CV2_THREADS_PER_PROCESS))
+    except Exception:
+        pass
+
+    skeletons = item["skeletons"]
+    H, W = item["size"]
+
+    collections: list[tuple[str, List[np.ndarray]]] = []
+    base_W = None
+    base_H = None
+
+    for gname, skel_u8 in skeletons.items():
+        w2, h2, polys = _process_edges_mask_to_polylines(skel_u8)
+        collections.append((str(gname), polys))
+        if base_W is None:
+            base_W = w2
+            base_H = h2
+
+    use_W = int(base_W if base_W is not None else W)
+    use_H = int(base_H if base_H is not None else H)
+
+    merged_items = merge_polyline_collections(collections, width=use_W, height=use_H)
+
+    strokes: list[dict] = []
+    for poly, gid in merged_items:
+        if poly is None or getattr(poly, "shape", None) is None or poly.shape[0] < 2:
+            continue
+
+        beziers = _catmull_rom_to_beziers(poly, alpha=CATMULL_ALPHA)
+        if not beziers:
+            q = poly.astype(float)
+            segs = []
+            for i in range(q.shape[0] - 1):
+                a = q[i]
+                b = q[i + 1]
+                c1 = a + (b - a) / 3.0
+                c2 = a + 2.0 * (b - a) / 3.0
+                seg = [
+                    float(a[0]), float(a[1]),
+                    float(c1[0]), float(c1[1]),
+                    float(c2[0]), float(c2[1]),
+                    float(b[0]), float(b[1]),
+                ]
+                if finite_seq(seg):
+                    segs.append(seg)
+            beziers = segs
+
+        if beziers:
+            strokes.append({"segments": beziers, "color_group_id": int(gid)})
+
+    meta = {
+        "version": 15,
+        "source_image": f"in_memory:{idx}",
+        "width": use_W,
+        "height": use_H,
+        "vector_format": "bezier_cubic",
+        "strokes": strokes,
+    }
+
+    if save_outputs:
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        p = OUT_DIR / f"processed_{idx}.json"
+        if not p.exists():
+            p.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+    return idx, meta
+
+
+
+def vectorize_in_memory(
+    skel_by_idx: dict[int, dict],
+    *,
+    save_outputs: bool = False,
+    parallel: bool = False,
+) -> dict[int, dict]:
+    """
+    Input: skel_by_idx[idx]["skeletons"][gname] is 0/255 mask
+           skel_by_idx[idx]["size"] is (H, W)
+    Output: same shape as your JSON style: strokes with flat cubic segments.
+    """
+    out: dict[int, dict] = {}
+
+    def _one(idx: int, item: dict) -> tuple[int, dict]:
+        skeletons = item["skeletons"]
+        H, W = item["size"]
+
+        collections: list[tuple[str, List[np.ndarray]]] = []
+
+        base_W = None
+        base_H = None
+
+        for gname, skel_u8 in skeletons.items():
+            w2, h2, polys = _process_edges_mask_to_polylines(skel_u8)
+            collections.append((str(gname), polys))
+
+            if base_W is None:
+                base_W = w2
+                base_H = h2
+
+        # If size metadata disagrees with mask size, trust the mask.
+        use_W = int(base_W if base_W is not None else W)
+        use_H = int(base_H if base_H is not None else H)
+
+        merged_items = merge_polyline_collections(collections, width=use_W, height=use_H)
+
+        strokes: list[dict] = []
+        for poly, gid in merged_items:
+            if poly is None or getattr(poly, "shape", None) is None or poly.shape[0] < 2:
+                continue
+
+            beziers = _catmull_rom_to_beziers(poly, alpha=CATMULL_ALPHA)
+            if not beziers:
+                # keep the exact fallback behavior you use in _process_single_to_data
+                q = poly.astype(float)
+                segs = []
+                for i in range(q.shape[0] - 1):
+                    a = q[i]
+                    b = q[i + 1]
+                    c1 = a + (b - a) / 3.0
+                    c2 = a + 2.0 * (b - a) / 3.0
+                    seg = [
+                        float(a[0]), float(a[1]),
+                        float(c1[0]), float(c1[1]),
+                        float(c2[0]), float(c2[1]),
+                        float(b[0]), float(b[1]),
+                    ]
+                    if finite_seq(seg):
+                        segs.append(seg)
+                beziers = segs
+
+            if beziers:
+                strokes.append({"segments": beziers, "color_group_id": int(gid)})
+
+        meta = {
+            "version": 15,
+            "source_image": f"in_memory:{idx}",
+            "width": use_W,
+            "height": use_H,
+            "vector_format": "bezier_cubic",
+            "strokes": strokes,
+        }
+
+        if save_outputs:
+            OUT_DIR.mkdir(parents=True, exist_ok=True)
+            p = OUT_DIR / f"processed_{idx}.json"
+            p.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        return idx, meta
+
+    if parallel:
+        cpu = os.cpu_count() or 2
+        workers = max(1, cpu - 1)
+        ctx = mp.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as ex:
+            futs = []
+            for idx, item in skel_by_idx.items():
+                futs.append(ex.submit(_vectorize_worker_payload, (int(idx), item, bool(save_outputs))))
+            for f in as_completed(futs):
+                idx, meta = f.result()
+                out[idx] = meta
+    else:
+        for idx, item in skel_by_idx.items():
+            idx, meta = _one(idx, item)
+            out[idx] = meta
+
+    return out
 
 
 
 
-
-
-
-
-
-
-
+if __name__ == "__main__":
+    mp.freeze_support()  # Windows-safe for ProcessPool
+    try:
+        cv2.setNumThreads(int(CV2_THREADS_PER_PROCESS))
+    except Exception:
+        pass
+    vectorize_images()

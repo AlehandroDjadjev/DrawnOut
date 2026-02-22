@@ -56,18 +56,26 @@ def download_image(url: str, dest_path: Path, timeout: int = 30) -> bool:
         return False
 
 
-def generate_audio(text: str, output_path: Path) -> bool:
+def generate_audio(text: str, output_path: Path, use_elevenlabs: bool = False) -> bool:
+    """Generate audio using Google Cloud TTS or ElevenLabs API.
+    use_elevenlabs: If True, use ElevenLabs (Netanyahu + voice_id env vars); else Google Cloud.
+    """
+    if use_elevenlabs:
+        return _generate_audio_elevenlabs(text, output_path)
+    return _generate_audio_google(text, output_path)
+
+
+def _generate_audio_google(text: str, output_path: Path) -> bool:
     """Generate audio using Google Cloud TTS."""
     try:
         from google.cloud import texttospeech
-        
+
         client = texttospeech.TextToSpeechClient()
-        
-        # Split text into chunks if too long (5000 char limit)
+
         max_chars = 4500
         chunks = []
         current_chunk = ""
-        
+
         sentences = text.replace('\n', ' ').split('. ')
         for sentence in sentences:
             if len(current_chunk) + len(sentence) < max_chars:
@@ -78,38 +86,84 @@ def generate_audio(text: str, output_path: Path) -> bool:
                 current_chunk = sentence + '. '
         if current_chunk:
             chunks.append(current_chunk.strip())
-        
-        # Generate audio for each chunk
+
         all_audio = b''
         for i, chunk in enumerate(chunks):
             print(f"  🎙️ Generating audio chunk {i+1}/{len(chunks)}...")
-            
             synthesis_input = texttospeech.SynthesisInput(text=chunk)
             voice = texttospeech.VoiceSelectionParams(
                 language_code="en-US",
-                name="en-US-Studio-O"  # High quality voice
+                name="en-US-Studio-O",
             )
             audio_config = texttospeech.AudioConfig(
                 audio_encoding=texttospeech.AudioEncoding.MP3,
                 speaking_rate=1.0,
-                pitch=0.0
+                pitch=0.0,
             )
-            
             response = client.synthesize_speech(
                 input=synthesis_input,
                 voice=voice,
-                audio_config=audio_config
+                audio_config=audio_config,
             )
             all_audio += response.audio_content
-        
-        # Save combined audio
+
         with open(output_path, 'wb') as f:
             f.write(all_audio)
-        
         return True
-        
+
     except ImportError:
         print("  ⚠️ Google Cloud TTS not available. Skipping audio generation.")
+        return False
+    except Exception as e:
+        print(f"  ❌ Failed to generate audio: {e}")
+        return False
+
+
+def _generate_audio_elevenlabs(text: str, output_path: Path) -> bool:
+    """Generate audio using ElevenLabs API (Netanyahu + voice_id env vars)."""
+    api_key = os.getenv('Netanyahu', '')
+    voice_id = os.getenv('voice_id', '')
+    if not api_key or not voice_id:
+        print("  ⚠️ ElevenLabs not configured: set Netanyahu and voice_id env vars.")
+        return False
+
+    try:
+        from elevenlabs.client import ElevenLabs
+
+        client = ElevenLabs(api_key=api_key)
+        max_chars = 4500
+        chunks = []
+        current_chunk = ""
+
+        sentences = text.replace('\n', ' ').split('. ')
+        for sentence in sentences:
+            if len(current_chunk) + len(sentence) < max_chars:
+                current_chunk += sentence + '. '
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = sentence + '. '
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+
+        all_audio = b''
+        for i, chunk in enumerate(chunks):
+            print(f"  🎙️ Generating audio chunk {i+1}/{len(chunks)}...")
+            audio_iter = client.text_to_speech.convert(
+                text=chunk,
+                voice_id=voice_id,
+                model_id="eleven_multilingual_v2",
+                output_format="mp3_44100_128",
+            )
+            audio_content = b"".join(audio_iter) if hasattr(audio_iter, "__iter__") else bytes(audio_iter)
+            all_audio += audio_content
+
+        with open(output_path, 'wb') as f:
+            f.write(all_audio)
+        return True
+
+    except ImportError:
+        print("  ⚠️ ElevenLabs not available. pip install elevenlabs")
         return False
     except Exception as e:
         print(f"  ❌ Failed to generate audio: {e}")
@@ -132,8 +186,9 @@ def extract_speech_text(content: str) -> str:
     return text
 
 
-def save_lesson(prompt: str, subject: str = "General", duration: float = 60.0, 
-                output_dir: str = None, api_url: str = "http://127.0.0.1:8000"):
+def save_lesson(prompt: str, subject: str = "General", duration: float = 60.0,
+                output_dir: str = None, api_url: str = "http://127.0.0.1:8000",
+                tts: str = "google"):
     """
     Call the lesson API and save all outputs to a folder.
     """
@@ -264,9 +319,10 @@ def save_lesson(prompt: str, subject: str = "General", duration: float = 60.0,
         f.write(speech_text)
     print(f"  ✅ Saved narration.txt ({len(speech_text)} characters)")
     
-    # Try to generate audio
+    # Try to generate audio (use --tts flag: google or elevenlabs)
+    use_elevenlabs = tts == 'elevenlabs'
     audio_path = output_path / "narration.mp3"
-    if generate_audio(speech_text, audio_path):
+    if generate_audio(speech_text, audio_path, use_elevenlabs=use_elevenlabs):
         print(f"  ✅ Saved narration.mp3")
     else:
         print(f"  ⚠️ Audio generation skipped (see above)")
@@ -319,14 +375,17 @@ if __name__ == "__main__":
     parser.add_argument("--duration", "-d", type=float, default=60.0, help="Target duration in seconds (default: 60)")
     parser.add_argument("--output", "-o", help="Output directory (default: ./lesson_outputs/)")
     parser.add_argument("--api", default="http://127.0.0.1:8000", help="API base URL")
-    
+    parser.add_argument("--tts", choices=["google", "elevenlabs"], default="google",
+                        help="TTS provider: google or elevenlabs (default: google)")
+
     args = parser.parse_args()
-    
+
     save_lesson(
         prompt=args.prompt,
         subject=args.subject,
         duration=args.duration,
         output_dir=args.output,
-        api_url=args.api
+        api_url=args.api,
+        tts=args.tts,
     )
 

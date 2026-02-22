@@ -16,7 +16,7 @@ from lesson_pipeline.pipelines.orchestrator import generate_lesson_json
 logger = logging.getLogger(__name__)
 
 
-def _get_images_from_lesson_pipeline(topic: str, subject: str = "General") -> dict:
+def _get_images_from_lesson_pipeline(topic: str, subject: str = "General", use_existing_images: bool = False) -> dict:
     """
     Get images using the lesson pipeline - EXACT same approach as save_lesson_output.py
     
@@ -35,6 +35,7 @@ def _get_images_from_lesson_pipeline(topic: str, subject: str = "General") -> di
         prompt_text=topic,
         subject=subject,
         duration_target=60.0,  # Duration doesn't matter for images
+        use_existing_images=use_existing_images,
     )
     
     # Extract images - same structure as save_lesson_output.py reads
@@ -69,7 +70,7 @@ def _get_images_from_lesson_pipeline(topic: str, subject: str = "General") -> di
     return image_lookup
 
 
-def _research_images_for_timeline(timeline_data: dict, topic: str) -> dict:
+def _research_images_for_timeline(timeline_data: dict, topic: str, use_existing_images: bool = False) -> dict:
     """
     Get images for timeline using the lesson pipeline.
     
@@ -104,7 +105,7 @@ def _research_images_for_timeline(timeline_data: dict, topic: str) -> dict:
     logger.info(f"Getting {len(image_requests)} images via lesson_pipeline...")
     
     # Get images from lesson pipeline - same as save_lesson_output.py
-    image_lookup = _get_images_from_lesson_pipeline(topic, "General")
+    image_lookup = _get_images_from_lesson_pipeline(topic, "General", use_existing_images)
     
     # Map lesson pipeline images to timeline image requests
     # The lesson pipeline generates its own image IDs, so we match by position
@@ -149,6 +150,12 @@ class GenerateTimelineView(APIView):
             return Response({"error": "Session not found"}, status=404)
         
         regenerate = request.data.get('regenerate', False)
+        # Use request override, else session preference set at lesson start
+        use_existing_images = request.data.get('use_existing_images')
+        if use_existing_images is None:
+            use_existing_images = getattr(session, 'use_existing_images', False)
+        else:
+            use_existing_images = use_existing_images in (True, 'true', '1')
         if not regenerate:
             existing = Timeline.objects.filter(session=session).order_by('-created_at').first()
             if existing:
@@ -188,17 +195,20 @@ class GenerateTimelineView(APIView):
                 if act.get('type') == 'sketch_image'
             )
             logger.info(f"Found {img_count} sketch_image actions needing URLs")
-            
-            # STEP 2: Research images for all sketch_image actions
-            researched_images = _research_images_for_timeline(timeline_data, session.topic)
+
+            # STEP 2: Research images for all sketch_image actions (or use existing DB images)
+            researched_images = _research_images_for_timeline(
+                timeline_data, session.topic, use_existing_images=use_existing_images
+            )
             
             # STEP 3: Second pass - inject researched URLs into sketch_image actions
             if researched_images:
                 logger.info(f"Injecting {len(researched_images)} image URLs...")
                 timeline_data = generator._inject_sketch_image_actions(timeline_data, researched_images)
             
-            # Synthesize audio
-            audio_pipeline = AudioSynthesisPipeline()
+            # Synthesize audio (use session TTS preference)
+            use_elevenlabs_tts = getattr(session, 'use_elevenlabs_tts', False)
+            audio_pipeline = AudioSynthesisPipeline(use_elevenlabs_tts=use_elevenlabs_tts)
             timeline_data = audio_pipeline.synthesize_segments(timeline_data)
             audio_contents = timeline_data.pop('_audio_contents', {})
             

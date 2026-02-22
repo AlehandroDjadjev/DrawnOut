@@ -28,10 +28,11 @@ class AppConfig:
     
     # API timeouts (seconds)
     image_research_timeout: int = 120
-    embedding_timeout: int = 60
+    embedding_timeout: int = 60  # Model inference
+    embedding_fetch_timeout: int = 15  # HTTP fetch for images - fail fast on bad URLs
     pinecone_timeout: int = 30
-    
-    # Retry configuration
+
+    # Retry configuration (embeddings: minimal retries to skip failed embeds faster)
     max_retries: int = 3
     retry_backoff_seconds: float = 2.0
     
@@ -60,6 +61,7 @@ def load_config() -> AppConfig:
         # Timeouts
         image_research_timeout=int(os.getenv('IMAGE_RESEARCH_TIMEOUT', '120')),
         embedding_timeout=int(os.getenv('EMBEDDING_TIMEOUT', '60')),
+        embedding_fetch_timeout=int(os.getenv('EMBEDDING_FETCH_TIMEOUT', '15')),
         pinecone_timeout=int(os.getenv('PINECONE_TIMEOUT', '30')),
         # Retry
         max_retries=int(os.getenv('MAX_RETRIES', '3')),

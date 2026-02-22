@@ -123,12 +123,28 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
     
     int? sessionId = lessonCtx.sessionId;
     
-    // If we have a topic but no sessionId, start a new lesson
+    // If we have a topic but no sessionId, show image source then TTS popup, then start a new lesson
     if (sessionId == null && lessonCtx.topic != null) {
+      final useExistingImages = await _showImageSourceDialog();
+      if (!mounted) return;
+      if (useExistingImages == null) {
+        if (mounted) Navigator.of(context).pop();
+        return;
+      }
+      final useElevenlabsTts = await _showTtsDialog();
+      if (!mounted) return;
+      if (useElevenlabsTts == null) {
+        if (mounted) Navigator.of(context).pop();
+        return;
+      }
       try {
-        debugPrint('Starting new lesson for topic: ${lessonCtx.topic}');
+        debugPrint('Starting new lesson for topic: ${lessonCtx.topic}, useExistingImages: $useExistingImages, useElevenlabsTts: $useElevenlabsTts');
         final lessonApi = LessonApiService(baseUrl: baseUrl);
-        final session = await lessonApi.startLesson(topic: lessonCtx.topic!);
+        final session = await lessonApi.startLesson(
+          topic: lessonCtx.topic!,
+          useExistingImages: useExistingImages,
+          useElevenlabsTts: useElevenlabsTts,
+        );
         if (!mounted) return;
         sessionId = session.id;
         debugPrint('Lesson started with session ID: $sessionId');
@@ -183,6 +199,122 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
 
   void _onLessonComplete() {
     widget.onLessonComplete?.call();
+  }
+
+  /// Shows a dialog at lesson start: use existing DB images vs start research.
+  /// Returns true = use existing, false = start research, null = cancelled.
+  Future<bool?> _showImageSourceDialog() async {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.image_search, size: 28),
+            SizedBox(width: 12),
+            Text('Image Source'),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Choose how to get images for this lesson:',
+              style: TextStyle(fontSize: 15),
+            ),
+            SizedBox(height: 16),
+            Text(
+              '• Use existing images – Faster, uses images already in the database (if available).',
+              style: TextStyle(fontSize: 13),
+            ),
+            SizedBox(height: 8),
+            Text(
+              '• Start research – Searches and indexes new images (slower, but fresh results).',
+              style: TextStyle(fontSize: 13),
+            ),
+          ],
+        ),
+        backgroundColor: isDark ? Colors.grey[900] : Colors.white,
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            icon: const Icon(Icons.storage, size: 18),
+            label: const Text('Use existing images'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            icon: const Icon(Icons.search, size: 18),
+            label: const Text('Start research'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Shows a dialog at lesson start: Google TTS or ElevenLabs TTS.
+  /// Returns true = ElevenLabs, false = Google, null = cancelled.
+  Future<bool?> _showTtsDialog() async {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.record_voice_over, size: 28),
+            SizedBox(width: 12),
+            Text('Voice (TTS)'),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Choose text-to-speech provider:',
+              style: TextStyle(fontSize: 15),
+            ),
+            SizedBox(height: 16),
+            Text(
+              '• Google Cloud TTS – Uses Google voices (requires GOOGLE_APPLICATION_CREDENTIALS).',
+              style: TextStyle(fontSize: 13),
+            ),
+            SizedBox(height: 8),
+            Text(
+              '• ElevenLabs – Uses your voice (Netanyahu + voice_id env vars).',
+              style: TextStyle(fontSize: 13),
+            ),
+          ],
+        ),
+        backgroundColor: isDark ? Colors.grey[900] : Colors.white,
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            icon: const Icon(Icons.cloud, size: 18),
+            label: const Text('Google TTS'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            icon: const Icon(Icons.voice_chat, size: 18),
+            label: const Text('ElevenLabs'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override

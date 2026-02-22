@@ -19,6 +19,9 @@ aiohttp_socks==0.10.1
 # OpenAI
 openai==1.99.9
 
+# ElevenLabs TTS
+elevenlabs>=1.0.0
+
 # Google Cloud & APIs
 google-cloud-storage
 google-cloud-texttospeech==2.27.0
@@ -57,6 +60,11 @@ reportlab==4.4.9   # PDF/image generation
                    # Linux: apt install libcairo2-dev
                    # macOS: brew install cairo
 
+# OCR (for ImageText.py vectorization pipeline)
+rapidocr-onnxruntime       # Primary OCR engine (CPU via ONNXRuntime)
+# pytesseract              # Optional fallback OCR (needs Tesseract binary installed)
+# onnxruntime-gpu          # Optional: GPU acceleration for RapidOCR
+
 # Audio Processing
 pydub==0.25.1
 mutagen==1.47.0
@@ -68,6 +76,7 @@ lxml==6.0.2
 duckduckgo_search==8.1.1
 tldextract==5.3.0
 requests-html==0.10.0
+playwright                 # Optional: JS-rendered page scraping in Imageresearcher
 
 # NLP
 nltk==3.9.2

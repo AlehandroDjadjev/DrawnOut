@@ -6,15 +6,3 @@ app_name = "wb_preprocess"
 urlpatterns = [
     path("run/", views.run_preprocess, name="run"),
 ]
-
-
-
-
-
-
-
-
-
-
-
-

@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import '../vectorizer.dart';
+import '../services/backend_vectorizer.dart';
 import '../assistant_api.dart';
 import '../services/timeline_api.dart';
 import '../services/lesson_pipeline_api.dart';
@@ -446,8 +447,11 @@ class WhiteboardOrchestrator extends ChangeNotifier {
   // Vectorization
   // ============================================================
 
-  /// Vectorize image bytes with current config.
+  /// Vectorize image bytes. Uses backend API when baseUrl is set.
   Future<List<List<Offset>>> vectorize(Uint8List bytes) async {
+    if (baseUrl.isNotEmpty) {
+      return BackendVectorizer.vectorize(baseUrl: baseUrl, bytes: bytes);
+    }
     return Vectorizer.vectorize(
       bytes: bytes,
       worldScale: vectorConfig.worldScale,
@@ -556,28 +560,30 @@ class WhiteboardOrchestrator extends ChangeNotifier {
           ? (actualFont * centerlineParams.mergeFactor).clamp(centerlineParams.mergeMin, centerlineParams.mergeMax)
           : 10.0;
 
-      final strokes = await Vectorizer.vectorize(
-        bytes: png,
-        worldScale: vectorConfig.worldScale,
-        edgeMode: 'Canny',
-        blurK: 3,
-        cannyLo: 30.0,
-        cannyHi: 120.0,
-        dogSigma: vectorConfig.dogSigma,
-        dogK: vectorConfig.dogK,
-        dogThresh: vectorConfig.dogThresh,
-        epsilon: centerlineMode ? centerlineParams.epsilon : 0.8,
-        resampleSpacing: centerlineMode ? centerlineParams.resample : 1.0,
-        minPerimeter: (vectorConfig.minPerim * 0.6).clamp(6.0, 1e9),
-        retrExternalOnly: false,
-        angleThresholdDeg: 85.0,
-        angleWindow: 3,
-        smoothPasses: centerlineMode ? centerlineParams.smoothPasses.round() : 1,
-        mergeParallel: true,
-        mergeMaxDist: mergeDist,
-        minStrokeLen: 4.0,
-        minStrokePoints: 3,
-      );
+      final strokes = baseUrl.isNotEmpty
+          ? await BackendVectorizer.vectorize(baseUrl: baseUrl, bytes: png)
+          : await Vectorizer.vectorize(
+              bytes: png,
+              worldScale: vectorConfig.worldScale,
+              edgeMode: 'Canny',
+              blurK: 3,
+              cannyLo: 30.0,
+              cannyHi: 120.0,
+              dogSigma: vectorConfig.dogSigma,
+              dogK: vectorConfig.dogK,
+              dogThresh: vectorConfig.dogThresh,
+              epsilon: centerlineMode ? centerlineParams.epsilon : 0.8,
+              resampleSpacing: centerlineMode ? centerlineParams.resample : 1.0,
+              minPerimeter: (vectorConfig.minPerim * 0.6).clamp(6.0, 1e9),
+              retrExternalOnly: false,
+              angleThresholdDeg: 85.0,
+              angleWindow: 3,
+              smoothPasses: centerlineMode ? centerlineParams.smoothPasses.round() : 1,
+              mergeParallel: true,
+              mergeMaxDist: mergeDist,
+              minStrokeLen: 4.0,
+              minStrokePoints: 3,
+            );
 
       // Normalize direction and order by x
       final normalized = strokes.map((s) {
@@ -782,25 +788,27 @@ class WhiteboardOrchestrator extends ChangeNotifier {
           ? (fontSize * centerlineParams.mergeFactor).clamp(centerlineParams.mergeMin, centerlineParams.mergeMax)
           : 10.0;
 
-      final strokes = await Vectorizer.vectorize(
-        bytes: renderedLine.bytes,
-        worldScale: vectorConfig.worldScale / scaleUp,
-        edgeMode: 'Canny',
-        blurK: 3,
-        cannyLo: 30.0,
-        cannyHi: 120.0,
-        epsilon: centerlineMode ? centerlineParams.epsilon : 0.8,
-        resampleSpacing: centerlineMode ? centerlineParams.resample : 1.0,
-        minPerimeter: 6.0,
-        retrExternalOnly: false,
-        angleThresholdDeg: 85.0,
-        angleWindow: 3,
-        smoothPasses: centerlineMode ? centerlineParams.smoothPasses.round() : 1,
-        mergeParallel: true,
-        mergeMaxDist: mergeDist,
-        minStrokeLen: 4.0,
-        minStrokePoints: 3,
-      );
+      final strokes = baseUrl.isNotEmpty
+          ? await BackendVectorizer.vectorize(baseUrl: baseUrl, bytes: renderedLine.bytes)
+          : await Vectorizer.vectorize(
+              bytes: renderedLine.bytes,
+              worldScale: vectorConfig.worldScale / scaleUp,
+              edgeMode: 'Canny',
+              blurK: 3,
+              cannyLo: 30.0,
+              cannyHi: 120.0,
+              epsilon: centerlineMode ? centerlineParams.epsilon : 0.8,
+              resampleSpacing: centerlineMode ? centerlineParams.resample : 1.0,
+              minPerimeter: 6.0,
+              retrExternalOnly: false,
+              angleThresholdDeg: 85.0,
+              angleWindow: 3,
+              smoothPasses: centerlineMode ? centerlineParams.smoothPasses.round() : 1,
+              mergeParallel: true,
+              mergeMaxDist: mergeDist,
+              minStrokeLen: 4.0,
+              minStrokePoints: 3,
+            );
 
       // Normalize and stitch
       final normalized = strokes.map((s) {

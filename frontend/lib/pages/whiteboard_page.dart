@@ -120,9 +120,9 @@ class _WhiteboardPageState extends State<WhiteboardPage>
   Future<void> _initializeLesson(LessonContext context) async {
     final configService = Provider.of<AppConfigService>(this.context, listen: false);
     final baseUrl = configService.backendUrl;
-    
+
     int? sessionId = context.sessionId;
-    
+
     // If we have a topic but no sessionId, start a new lesson
     if (sessionId == null && context.topic != null) {
       try {
