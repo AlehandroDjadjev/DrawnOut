@@ -33,24 +33,17 @@ try:
 except Exception:
     pass
 
-from . import ImageText
-from wb_preprocess import ImagePreprocessor
-from . import ImageSkeletonizer
-from . import ImageVectorizer
-from . import ImageClusters
-from . import ImageColours
+import ImageText
+import ImagePreprocessor
+import ImageSkeletonizer
+import ImageVectorizer
+import ImageClusters
+import ImageColours
 
-try:
-    from . import PineconeSave
-    from . import PineconeFetch
-except ImportError:
-    PineconeSave = None
-    PineconeFetch = None
+import PineconeSave
+import PineconeFetch
 
-try:
-    from wb_research import Imageresearcher as ImageResearcher
-except ImportError:
-    ImageResearcher = None
+import ImageResearcher
 
 
 IN_DIR_ROOT = Path("ResearchImages\\UniqueImages")
@@ -178,7 +171,7 @@ def ensure_hot_models(
         if _HOT_QWEN is None or _HOT_QWEN.model_id != qwen_model_id or _HOT_QWEN.gpu_index != gpu_index:
             _log(f"Loading Qwen (one-time): {qwen_model_id} gpu_index={gpu_index}")
             try:
-                from . import qwentest  # local module
+                import qwentest  # local module
                 model, processor, device = qwentest.preload_qwen_cpu_only(qwen_model_id)
 
                 # Move ONCE to CUDA if available and keep it there
@@ -284,8 +277,8 @@ def ensure_hot_models(
 
         # ---- wire hot SigLIP/MiniLM into PineconeFetch (same process) ----
         try:
-            if PineconeFetch is not None:
-                PineconeFetch.configure_hot_models(siglip_bundle=_HOT_SIGLIP, minilm_bundle=_HOT_MINILM)
+            import PineconeFetch
+            PineconeFetch.configure_hot_models(siglip_bundle=_HOT_SIGLIP, minilm_bundle=_HOT_MINILM)
         except Exception:
             pass
 
@@ -691,7 +684,7 @@ def _pipeline_worker(
         # Qwen selection step (HOT model, GPU stays loaded)
         # =========================
         print("[5/10] qwentest selection (processed images, hot GPU, per-prompt)...")
-        from . import qwentest
+        import qwentest
 
         qb = get_hot_qwen()
         qwen_model = qb.model if qb else None

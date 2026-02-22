@@ -13,6 +13,9 @@ class BackendVectorizer {
   static Future<List<List<Offset>>> vectorize({
     required String baseUrl,
     required Uint8List bytes,
+    double worldScale = 1.0,
+    double? sourceWidth,
+    double? sourceHeight,
   }) async {
     final base = baseUrl.replaceAll(RegExp(r'/+$'), '');
     final uri = Uri.parse('$base/api/wb/vectorize/vectorize/');
@@ -45,16 +48,26 @@ class BackendVectorizer {
       throw StateError('Backend did not return stroke result');
     }
 
-    return _decodeToPolylines(Map<String, dynamic>.from(result));
+    return _decodeToPolylines(
+      Map<String, dynamic>.from(result),
+      worldScale: worldScale,
+      sourceWidth: sourceWidth,
+      sourceHeight: sourceHeight,
+    );
   }
 
   /// Convert backend stroke JSON to List<List<Offset>>.
-  static List<List<Offset>> _decodeToPolylines(Map<String, dynamic> data) {
+  static List<List<Offset>> _decodeToPolylines(
+    Map<String, dynamic> data, {
+    double worldScale = 1.0,
+    double? sourceWidth,
+    double? sourceHeight,
+  }) {
     final strokesJson = data['strokes'];
     if (strokesJson is! List) return [];
 
     final format = (data['vector_format'] as String?)?.toLowerCase() ?? 'polyline';
-    final out = <List<Offset>>[];
+    final raw = <List<Offset>>[];
 
     if (format == 'bezier_cubic') {
       for (final s in strokesJson) {
@@ -77,7 +90,7 @@ class BackendVectorizer {
             }
           }
         }
-        if (pts.length >= 2) out.add(pts);
+        if (pts.length >= 2) raw.add(pts);
       }
     } else {
       for (final s in strokesJson) {
@@ -89,10 +102,16 @@ class BackendVectorizer {
             pts.add(Offset((p[0] as num).toDouble(), (p[1] as num).toDouble()));
           }
         }
-        if (pts.length >= 2) out.add(pts);
+        if (pts.length >= 2) raw.add(pts);
       }
     }
-    return out;
+    return _toWorldSpace(
+      raw,
+      data: data,
+      worldScale: worldScale,
+      sourceWidth: sourceWidth,
+      sourceHeight: sourceHeight,
+    );
   }
 
   /// Sample cubic Bézier at n points (including start, excluding duplicate end of prev).
@@ -110,5 +129,60 @@ class BackendVectorizer {
       pts.add(Offset(x, y));
     }
     return pts;
+  }
+
+  /// Match local vectorizer semantics:
+  /// convert image-space coordinates to world-space centered at (0, 0).
+  static List<List<Offset>> _toWorldSpace(
+    List<List<Offset>> raw, {
+    required Map<String, dynamic> data,
+    double worldScale = 1.0,
+    double? sourceWidth,
+    double? sourceHeight,
+  }) {
+    if (raw.isEmpty) return raw;
+
+    double? width = (data['width'] as num?)?.toDouble();
+    double? height = (data['height'] as num?)?.toDouble();
+    double cx;
+    double cy;
+    double sx = 1.0;
+    double sy = 1.0;
+
+    if (width != null && height != null && width > 0 && height > 0) {
+      cx = width / 2.0;
+      cy = height / 2.0;
+      if (sourceWidth != null && sourceWidth > 0) {
+        sx = sourceWidth / width;
+      }
+      if (sourceHeight != null && sourceHeight > 0) {
+        sy = sourceHeight / height;
+      }
+    } else {
+      // Fallback if metadata is missing: derive center from stroke bounds.
+      double minX = double.infinity, maxX = -double.infinity;
+      double minY = double.infinity, maxY = -double.infinity;
+      for (final stroke in raw) {
+        for (final p in stroke) {
+          if (p.dx < minX) minX = p.dx;
+          if (p.dx > maxX) maxX = p.dx;
+          if (p.dy < minY) minY = p.dy;
+          if (p.dy > maxY) maxY = p.dy;
+        }
+      }
+      cx = (minX + maxX) / 2.0;
+      cy = (minY + maxY) / 2.0;
+    }
+
+    return raw
+        .map(
+          (stroke) => stroke
+              .map((p) => Offset(
+                    (p.dx - cx) * sx * worldScale,
+                    (p.dy - cy) * sy * worldScale,
+                  ))
+              .toList(),
+        )
+        .toList();
   }
 }

@@ -199,6 +199,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   static const double canvasW = 1600; // fallback/default
   static const double canvasH = 1000; // fallback/default
   Size? _canvasSize; // live size from LayoutBuilder
+  Size? _pendingCanvasSize;
+  bool _canvasSizeUpdateScheduled = false;
 
   // Orchestrator for whiteboard business logic
   late final WhiteboardOrchestrator _orchestrator;
@@ -1642,6 +1644,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         ? await BackendVectorizer.vectorize(
             baseUrl: base,
             bytes: Uint8List.fromList(bytes),
+            worldScale: _worldScale,
+            sourceWidth: img.width.toDouble(),
+            sourceHeight: img.height.toDouble(),
           )
         : await Vectorizer.vectorize(
             bytes: Uint8List.fromList(bytes),
@@ -1807,12 +1812,50 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     double x, y;
 
     if (hasExplicitPlacement) {
-      // Use explicit placement from action
-      x = (p['x'] as num?)?.toDouble() ?? contentX0;
-      y = (p['y'] as num?)?.toDouble() ?? st.cursorY;
-      targetW = (p['width'] as num?)?.toDouble() ?? (cw * 0.4);
-      targetH = (p['height'] as num?)?.toDouble() ??
-          (targetW * (img.height / math.max(1, img.width)));
+      // Use explicit placement from action. Support:
+      // 1) normalized ratios (0..1), 2) pixel values authored for 1920x1080,
+      // 3) direct pixel values in current canvas space.
+      double px = (p['x'] as num?)?.toDouble() ?? contentX0;
+      double py = (p['y'] as num?)?.toDouble() ?? st.cursorY;
+      double pw = (p['width'] as num?)?.toDouble() ?? (cw * 0.4);
+      double ph = (p['height'] as num?)?.toDouble() ??
+          (pw * (img.height / math.max(1, img.width)));
+
+      final isNormalized = px >= 0 &&
+          px <= 1 &&
+          py >= 0 &&
+          py <= 1 &&
+          pw > 0 &&
+          pw <= 1.2 &&
+          ph > 0 &&
+          ph <= 1.2;
+      if (isNormalized) {
+        px *= cfg.page.width;
+        py *= cfg.page.height;
+        pw *= cfg.page.width;
+        ph *= cfg.page.height;
+      } else {
+        final looksLike1920Space = px >= 0 &&
+            py >= 0 &&
+            pw > 0 &&
+            ph > 0 &&
+            px <= 1920 &&
+            py <= 1080 &&
+            pw <= 1920 &&
+            ph <= 1080;
+        if (looksLike1920Space &&
+            (cfg.page.width != 1920 || cfg.page.height != 1080)) {
+          px = (px / 1920.0) * cfg.page.width;
+          py = (py / 1080.0) * cfg.page.height;
+          pw = (pw / 1920.0) * cfg.page.width;
+          ph = (ph / 1080.0) * cfg.page.height;
+        }
+      }
+
+      x = px;
+      y = py;
+      targetW = pw;
+      targetH = ph;
 
       // Apply scale if specified
       final scale = (p['scale'] as num?)?.toDouble();
@@ -1820,6 +1863,14 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         targetW *= scale;
         targetH *= scale;
       }
+
+      // Keep explicit placement inside drawable page bounds.
+      final maxW = math.max(80.0, cfg.page.width - cfg.page.left - cfg.page.right);
+      final maxH = math.max(80.0, cfg.page.height - cfg.page.top - cfg.page.bottom);
+      targetW = targetW.clamp(80.0, maxW).toDouble();
+      targetH = targetH.clamp(80.0, maxH).toDouble();
+      x = x.clamp(cfg.page.left, cfg.page.width - cfg.page.right - targetW).toDouble();
+      y = y.clamp(cfg.page.top, cfg.page.height - cfg.page.bottom - targetH).toDouble();
     } else {
       // Auto-place: similar to _sketchDiagramAuto logic
       double maxW = cw * 0.4; // 40% of column width for images
@@ -1865,6 +1916,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           ? await BackendVectorizer.vectorize(
               baseUrl: base,
               bytes: imageBytes,
+              worldScale: _worldScale,
+              sourceWidth: img.width.toDouble(),
+              sourceHeight: img.height.toDouble(),
             )
           : await Vectorizer.vectorize(
               bytes: imageBytes,
@@ -2169,6 +2223,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           ? await BackendVectorizer.vectorize(
               baseUrl: base,
               bytes: rl.bytes,
+              worldScale: _worldScale,
+              sourceWidth: rl.w,
+              sourceHeight: rl.h,
             )
           : await Vectorizer.vectorize(
               bytes: rl.bytes,
@@ -2661,27 +2718,49 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   }
 
   void _maybeUpdateCanvasSize(Size size) {
-    final prev = _canvasSize;
-    if (prev != null &&
-        (prev.width - size.width).abs() < 1 &&
-        (prev.height - size.height).abs() < 1) {
+    final baseline = _pendingCanvasSize ?? _canvasSize;
+    if (!_isMeaningfulSizeChange(baseline, size)) {
       return;
     }
-    _canvasSize = size;
-    _orchestrator.setCanvasSize(size);
-    // rebuild layout config for new page size while preserving cursor/blocks
-    if (_layout == null) return;
-    final newCfg = _buildLayoutConfigForSize(size.width, size.height);
-    setState(() {
-      _layout = LayoutState(
-        config: newCfg,
-        cursorY: _layout!.cursorY
-            .clamp(newCfg.page.top, newCfg.page.height - newCfg.page.bottom),
-        columnIndex: 0,
-        blocks: _layout!.blocks, // keep drawn blocks references
-        sectionCount: _layout!.sectionCount,
-      );
+    _pendingCanvasSize = size;
+    if (_canvasSizeUpdateScheduled) return;
+
+    _canvasSizeUpdateScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _canvasSizeUpdateScheduled = false;
+      if (!mounted) return;
+
+      final pending = _pendingCanvasSize;
+      _pendingCanvasSize = null;
+      if (pending == null || !_isMeaningfulSizeChange(_canvasSize, pending)) {
+        return;
+      }
+
+      _canvasSize = pending;
+      _orchestrator.setCanvasSize(pending);
+
+      // Rebuild layout config for new page size while preserving cursor/blocks.
+      final currentLayout = _layout;
+      if (currentLayout == null) return;
+
+      final newCfg = _buildLayoutConfigForSize(pending.width, pending.height);
+      setState(() {
+        _layout = LayoutState(
+          config: newCfg,
+          cursorY: currentLayout.cursorY
+              .clamp(newCfg.page.top, newCfg.page.height - newCfg.page.bottom),
+          columnIndex: 0,
+          blocks: currentLayout.blocks, // keep drawn blocks references
+          sectionCount: currentLayout.sectionCount,
+        );
+      });
     });
+  }
+
+  bool _isMeaningfulSizeChange(Size? prev, Size next) {
+    if (prev == null) return true;
+    return (prev.width - next.width).abs() >= 1 ||
+        (prev.height - next.height).abs() >= 1;
   }
 
   Widget _buildRightPanel(BuildContext context) {

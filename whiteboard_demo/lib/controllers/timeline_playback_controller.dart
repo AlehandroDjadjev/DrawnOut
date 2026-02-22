@@ -41,6 +41,12 @@ class TimelinePlaybackController extends ChangeNotifier {
           ? _timeline!.segments[_currentSegmentIndex]
           : null;
 
+  void _safeNotifyListeners() {
+    if (!_isDisposed) {
+      notifyListeners();
+    }
+  }
+
   void setBaseUrl(String url) {
     _baseUrl = url.trim();
     if (_baseUrl.endsWith('/')) {
@@ -49,8 +55,10 @@ class TimelinePlaybackController extends ChangeNotifier {
   }
 
   Future<void> loadTimeline(SyncedTimeline timeline) async {
+    if (_isDisposed) return;
     _playbackGeneration++;
     await _audioPlayer.stop();
+    if (_isDisposed) return;
     _stopProgressTimer();
 
     _timeline = timeline;
@@ -58,10 +66,11 @@ class TimelinePlaybackController extends ChangeNotifier {
     _currentTime = 0.0;
     _isPlaying = false;
     _isPaused = false;
-    notifyListeners();
+    _safeNotifyListeners();
   }
 
   Future<void> play() async {
+    if (_isDisposed) return;
     if (_timeline == null || _timeline!.segments.isEmpty) {
       debugPrint('Cannot play: no timeline loaded');
       return;
@@ -75,7 +84,7 @@ class TimelinePlaybackController extends ChangeNotifier {
       // the completion event when the audio finishes.
       _audioPlayer.play();
       _startProgressTimer();
-      notifyListeners();
+      _safeNotifyListeners();
       return;
     }
 
@@ -88,21 +97,24 @@ class TimelinePlaybackController extends ChangeNotifier {
     _isPlaying = true;
     _isPaused = false;
     _playbackGeneration++;
-    notifyListeners();
+    _safeNotifyListeners();
 
     await _playSegment(_currentSegmentIndex, _playbackGeneration);
   }
 
   Future<void> _playSegment(int index, int generation) async {
+    if (_isDisposed) return;
     if (_timeline == null || index >= _timeline!.segments.length) {
       debugPrint('Timeline playback completed');
       _stopPlaybackState();
-      onTimelineCompleted?.call();
+      if (!_isDisposed) {
+        onTimelineCompleted?.call();
+      }
       return;
     }
 
     // Check if this loop has been superseded
-    if (generation != _playbackGeneration) return;
+    if (_isDisposed || generation != _playbackGeneration) return;
 
     _currentSegmentIndex = index;
     final segment = _timeline!.segments[index];
@@ -118,7 +130,7 @@ class TimelinePlaybackController extends ChangeNotifier {
 
       // Load audio
       await _audioPlayer.setUrl(audioUrl);
-      if (generation != _playbackGeneration) return;
+      if (_isDisposed || generation != _playbackGeneration) return;
 
       // Fire drawing actions in parallel (don't await)
       debugPrint('   Triggering drawing actions...');
@@ -142,23 +154,23 @@ class TimelinePlaybackController extends ChangeNotifier {
       _stopProgressTimer();
 
       // If superseded by a new seek/stop/restart, exit silently
-      if (generation != _playbackGeneration) return;
+      if (_isDisposed || generation != _playbackGeneration) return;
 
       debugPrint('   Segment $index audio completed');
       onSegmentChangedCompleted?.call();
 
       // Brief pause between segments
       await Future.delayed(const Duration(milliseconds: 500));
-      if (generation != _playbackGeneration) return;
+      if (_isDisposed || generation != _playbackGeneration) return;
 
       // Advance to next segment
       await _playSegment(index + 1, generation);
     } catch (e, st) {
       debugPrint('Error playing segment $index: $e');
       debugPrint('Stack: $st');
-      if (generation != _playbackGeneration) return;
+      if (_isDisposed || generation != _playbackGeneration) return;
       await Future.delayed(const Duration(milliseconds: 500));
-      if (generation != _playbackGeneration) return;
+      if (_isDisposed || generation != _playbackGeneration) return;
       await _playSegment(index + 1, generation);
     }
   }
@@ -174,7 +186,7 @@ class TimelinePlaybackController extends ChangeNotifier {
       final segmentStart = currentSegment?.startTime ?? 0.0;
       _currentTime =
           segmentStart + (_audioPlayer.position.inMilliseconds / 1000.0);
-      notifyListeners();
+      _safeNotifyListeners();
     });
   }
 
@@ -184,6 +196,7 @@ class TimelinePlaybackController extends ChangeNotifier {
   }
 
   Future<void> pause() async {
+    if (_isDisposed) return;
     if (!_isPlaying || _isPaused) return;
 
     debugPrint('Pausing playback');
@@ -192,20 +205,22 @@ class TimelinePlaybackController extends ChangeNotifier {
     _isPaused = true;
     // Keep _isPlaying = true so the _playSegment loop stays alive and
     // resumes properly when play() is called again.
-    notifyListeners();
+    _safeNotifyListeners();
   }
 
   /// Stop everything and reset to the beginning.
   Future<void> stop() async {
+    if (_isDisposed) return;
     debugPrint('Stopping playback');
     _playbackGeneration++; // Invalidate any active _playSegment loop
     await _audioPlayer.stop();
+    if (_isDisposed) return;
     _stopProgressTimer();
     _currentSegmentIndex = 0;
     _currentTime = 0.0;
     _isPlaying = false;
     _isPaused = false;
-    notifyListeners();
+    _safeNotifyListeners();
   }
 
   /// Helper to stop playback state without resetting position
@@ -214,7 +229,7 @@ class TimelinePlaybackController extends ChangeNotifier {
     _stopProgressTimer();
     _isPlaying = false;
     _isPaused = false;
-    notifyListeners();
+    _safeNotifyListeners();
   }
 
   Future<void> restart() async {
@@ -223,6 +238,7 @@ class TimelinePlaybackController extends ChangeNotifier {
   }
 
   Future<void> seekToSegment(int index) async {
+    if (_isDisposed) return;
     if (_timeline == null ||
         index < 0 ||
         index >= _timeline!.segments.length) {
@@ -235,13 +251,14 @@ class TimelinePlaybackController extends ChangeNotifier {
     _playbackGeneration++;
     final gen = _playbackGeneration;
     await _audioPlayer.stop();
+    if (_isDisposed) return;
     _stopProgressTimer();
 
     _currentSegmentIndex = index;
     _currentTime = _timeline!.segments[index].startTime;
     _isPlaying = true;
     _isPaused = false;
-    notifyListeners();
+    _safeNotifyListeners();
 
     // Start a fresh playback loop from the new segment
     await _playSegment(index, gen);

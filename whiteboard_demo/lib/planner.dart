@@ -310,16 +310,4 @@ Additionally, decide whether a single simple diagram would help. If YES, include
     return out;
   }
 
-  String _trimSentencesAndWords(String s, int maxSentences, int maxWords) {
-    final text = s.trim();
-    if (text.isEmpty) return text;
-    final sentences = text.split(RegExp(r'(?<=[.!?])\s+'));
-    final takeS = sentences.take(maxSentences);
-    final trimmedSentences = takeS.map((sent) {
-      final words = sent.trim().split(RegExp(r'\s+'));
-      final kept = words.take(maxWords).join(' ');
-      return kept;
-    }).toList();
-    return trimmedSentences.join(' ');
-  }
 }

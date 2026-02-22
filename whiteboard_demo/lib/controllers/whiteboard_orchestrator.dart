@@ -452,7 +452,13 @@ class WhiteboardOrchestrator extends ChangeNotifier {
   /// Vectorize image bytes. Uses backend API when baseUrl is set.
   Future<List<List<Offset>>> vectorize(Uint8List bytes) async {
     if (baseUrl.isNotEmpty) {
-      return BackendVectorizer.vectorize(baseUrl: baseUrl, bytes: bytes);
+      return BackendVectorizer.vectorize(
+        baseUrl: baseUrl,
+        bytes: bytes,
+        worldScale: vectorConfig.worldScale,
+        sourceWidth: uploadedImage?.width.toDouble(),
+        sourceHeight: uploadedImage?.height.toDouble(),
+      );
     }
     return Vectorizer.vectorize(
       bytes: bytes,
@@ -563,7 +569,11 @@ class WhiteboardOrchestrator extends ChangeNotifier {
           : 10.0;
 
       final strokes = baseUrl.isNotEmpty
-          ? await BackendVectorizer.vectorize(baseUrl: baseUrl, bytes: png)
+          ? await BackendVectorizer.vectorize(
+              baseUrl: baseUrl,
+              bytes: png,
+              worldScale: vectorConfig.worldScale,
+            )
           : await Vectorizer.vectorize(
               bytes: png,
               worldScale: vectorConfig.worldScale,
@@ -655,9 +665,42 @@ class WhiteboardOrchestrator extends ChangeNotifier {
       await loadImageBytes(bytes);
 
       // Determine placement
-      final targetX = x ?? (canvasSize?.width ?? defaultCanvasW) / 2;
-      final targetY = y ?? (canvasSize?.height ?? defaultCanvasH) / 2;
-      final targetW = width ?? 400.0;
+      final pageW = canvasSize?.width ?? defaultCanvasW;
+      final pageH = canvasSize?.height ?? defaultCanvasH;
+      var targetX = x ?? pageW / 2;
+      var targetY = y ?? pageH / 2;
+      var targetW = width ?? 400.0;
+
+      final hasExplicitPlacement = x != null || y != null || width != null;
+      if (hasExplicitPlacement) {
+        final isNormalized = targetX >= 0 &&
+            targetX <= 1 &&
+            targetY >= 0 &&
+            targetY <= 1 &&
+            targetW > 0 &&
+            targetW <= 1.2;
+        if (isNormalized) {
+          targetX *= pageW;
+          targetY *= pageH;
+          targetW *= pageW;
+        } else {
+          final looksLike1920Space = targetX >= 0 &&
+              targetY >= 0 &&
+              targetW > 0 &&
+              targetX <= 1920 &&
+              targetY <= 1080 &&
+              targetW <= 1920;
+          if (looksLike1920Space && (pageW != 1920 || pageH != 1080)) {
+            targetX = (targetX / 1920.0) * pageW;
+            targetY = (targetY / 1080.0) * pageH;
+            targetW = (targetW / 1920.0) * pageW;
+          }
+        }
+      }
+
+      targetW = targetW.clamp(80.0, pageW * 0.9).toDouble();
+      targetX = targetX.clamp(targetW / 2.0, pageW - targetW / 2.0).toDouble();
+      targetY = targetY.clamp(40.0, pageH - 40.0).toDouble();
 
       await vectorizeAndSketch(x: targetX, y: targetY, targetWidth: targetW);
 
@@ -791,7 +834,13 @@ class WhiteboardOrchestrator extends ChangeNotifier {
           : 10.0;
 
       final strokes = baseUrl.isNotEmpty
-          ? await BackendVectorizer.vectorize(baseUrl: baseUrl, bytes: renderedLine.bytes)
+          ? await BackendVectorizer.vectorize(
+              baseUrl: baseUrl,
+              bytes: renderedLine.bytes,
+              worldScale: vectorConfig.worldScale / scaleUp,
+              sourceWidth: renderedLine.w,
+              sourceHeight: renderedLine.h,
+            )
           : await Vectorizer.vectorize(
               bytes: renderedLine.bytes,
               worldScale: vectorConfig.worldScale / scaleUp,
@@ -874,13 +923,14 @@ class WhiteboardOrchestrator extends ChangeNotifier {
         final imageUrl = action['image_url'] as String? ??
             action['url'] as String? ??
             action['imageUrl'] as String?;
+        final placement = action['placement'] as Map<String, dynamic>?;
         if (imageUrl != null && imageUrl.isNotEmpty) {
           await sketchImageFromUrl(
             url: imageUrl,
-            x: (action['x'] as num?)?.toDouble(),
-            y: (action['y'] as num?)?.toDouble(),
-            width: (action['width'] as num?)?.toDouble(),
-            height: (action['height'] as num?)?.toDouble(),
+            x: ((action['x'] as num?) ?? (placement?['x'] as num?))?.toDouble(),
+            y: ((action['y'] as num?) ?? (placement?['y'] as num?))?.toDouble(),
+            width: ((action['width'] as num?) ?? (placement?['width'] as num?))?.toDouble(),
+            height: ((action['height'] as num?) ?? (placement?['height'] as num?))?.toDouble(),
             name: action['name'] as String?,
           );
         }
