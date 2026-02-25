@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'whiteboard_page.dart';
+import '../ui/apple_ui.dart';
 
 /// Available lesson data
 class Lesson {
@@ -25,11 +26,14 @@ class Lesson {
 }
 
 /// Page displaying available lessons for selection
-class LessonsPage extends StatelessWidget {
+class LessonsPage extends StatefulWidget {
   const LessonsPage({super.key});
 
+  @override
+  State<LessonsPage> createState() => _LessonsPageState();
+
   // Sample lessons - in production these would come from backend
-  static const List<Lesson> _lessons = [
+  static const List<Lesson> sampleLessons = [
     Lesson(
       id: 1,
       title: 'Pythagoras Theorem',
@@ -71,54 +75,145 @@ class LessonsPage extends StatelessWidget {
       icon: Icons.eco,
     ),
   ];
+}
+
+class _LessonsPageState extends State<LessonsPage> {
+  static const String _all = 'All';
+
+  String _subject = _all;
+  String _difficulty = _all;
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
 
-    // Group lessons by topic
+    final allLessons = LessonsPage.sampleLessons;
+    final subjects = <String>{_all, ...allLessons.map((l) => l.topic)}.toList()..sort();
+    final difficulties = <String>{_all, ...allLessons.map((l) => l.difficulty)}.toList()..sort();
+
+    final filtered = allLessons.where((l) {
+      final subjectOk = _subject == _all || l.topic == _subject;
+      final difficultyOk = _difficulty == _all || l.difficulty == _difficulty;
+      return subjectOk && difficultyOk;
+    }).toList();
+
+    // Group lessons by topic (after filtering)
     final lessonsByTopic = <String, List<Lesson>>{};
-    for (final lesson in _lessons) {
+    for (final lesson in filtered) {
       lessonsByTopic.putIfAbsent(lesson.topic, () => []).add(lesson);
     }
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Lessons'),
-        backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-        foregroundColor: colorScheme.primary,
-        elevation: 1,
+        centerTitle: true,
       ),
-      body: ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: lessonsByTopic.length,
-        itemBuilder: (context, index) {
-          final topic = lessonsByTopic.keys.elementAt(index);
-          final lessons = lessonsByTopic[topic]!;
-
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Text(
-                  topic,
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: colorScheme.primary,
+      body: AppleBackground(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+          children: [
+            const AppleHeader(
+              title: 'Choose a lesson',
+              subtitle: 'Filter by subject and difficulty, then jump in.',
+            ),
+            const SizedBox(height: 14),
+            AppleCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const AppleSectionTitle(title: 'Filters'),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: _subject,
+                          decoration: appleFieldDecoration(
+                            context,
+                            hintText: 'Subject',
+                            icon: Icons.category_outlined,
+                          ),
+                          items: subjects
+                              .map(
+                                (s) => DropdownMenuItem(
+                                  value: s,
+                                  child: Text(s),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: (v) => setState(() => _subject = v ?? _all),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: _difficulty,
+                          decoration: appleFieldDecoration(
+                            context,
+                            hintText: 'Difficulty',
+                            icon: Icons.tune,
+                          ),
+                          items: difficulties
+                              .map(
+                                (d) => DropdownMenuItem(
+                                  value: d,
+                                  child: Text(d),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: (v) => setState(() => _difficulty = v ?? _all),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
+                  const SizedBox(height: 10),
+                  if (_subject != _all || _difficulty != _all)
+                    TextButton(
+                      onPressed: () => setState(() {
+                        _subject = _all;
+                        _difficulty = _all;
+                      }),
+                      child: const Text('Clear filters'),
+                    ),
+                ],
               ),
-              ...lessons.map((lesson) => _LessonCard(
-                lesson: lesson,
-                onTap: () => _startLesson(context, lesson),
-              )),
-              const SizedBox(height: 8),
-            ],
-          );
-        },
+            ),
+            const SizedBox(height: 16),
+
+            if (filtered.isEmpty)
+              AppleCard(
+                child: Text(
+                  'No lessons match your filters.',
+                  style: theme.textTheme.bodyMedium,
+                ),
+              )
+            else
+              ...lessonsByTopic.entries.expand((entry) {
+                final topic = entry.key;
+                final lessons = entry.value;
+                return [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: Text(
+                      topic,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: colorScheme.primary,
+                      ),
+                    ),
+                  ),
+                  ...lessons.map(
+                    (lesson) => _LessonCard(
+                      lesson: lesson,
+                      onTap: () => _startLesson(context, lesson),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                ];
+              }),
+          ],
+        ),
       ),
     );
   }

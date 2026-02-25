@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import '../providers/developer_mode_provider.dart';
 import '../services/app_config_service.dart';
@@ -15,6 +16,7 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   final _backendUrlController = TextEditingController();
   bool _urlModified = false;
+  bool _testingBackend = false;
 
   @override
   void initState() {
@@ -49,6 +51,88 @@ class _SettingsPageState extends State<SettingsPage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          // Backend Section (needed for running on emulators/phones)
+          _buildSectionHeader('Backend'),
+          Card(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ListTile(
+                  leading: Icon(Icons.cloud, color: colorScheme.primary),
+                  title: const Text('Backend URL'),
+                  subtitle: Text(config.backendUrl),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: Text(
+                    'Android emulator: use http://10.0.2.2:8001.\nPhysical phone: use your PC LAN IP (example: http://192.168.1.50:8001).',
+                    style: TextStyle(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withOpacity(0.65),
+                      height: 1.25,
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: TextField(
+                    controller: _backendUrlController,
+                    decoration: InputDecoration(
+                      hintText: AppConfigService.defaultUrl,
+                      border: const OutlineInputBorder(),
+                      suffixIcon: _urlModified
+                          ? IconButton(
+                              icon: const Icon(Icons.check,
+                                  color: Colors.green),
+                              onPressed: _saveBackendUrl,
+                            )
+                          : null,
+                    ),
+                    onChanged: (value) {
+                      setState(() {
+                        _urlModified = value != config.backendUrl;
+                      });
+                    },
+                    onSubmitted: (_) => _saveBackendUrl(),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: Row(
+                    children: [
+                      TextButton.icon(
+                        onPressed: () {
+                          config.resetToDefault();
+                          _backendUrlController.text = AppConfigService.defaultUrl;
+                          setState(() => _urlModified = false);
+                        },
+                        icon: const Icon(Icons.restore, size: 18),
+                        label: const Text('Reset to Default'),
+                      ),
+                      const Spacer(),
+                      FilledButton.icon(
+                        onPressed: _testingBackend ? null : _testBackend,
+                        icon: _testingBackend
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.wifi_tethering, size: 18),
+                        label: Text(_testingBackend ? 'Testing…' : 'Test'),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
           // Appearance Section
           _buildSectionHeader('Appearance'),
           Card(
@@ -87,48 +171,12 @@ class _SettingsPageState extends State<SettingsPage> {
             Card(
               child: Column(
                 children: [
-                  ListTile(
-                    leading: const Icon(Icons.cloud, color: Colors.orange),
-                    title: const Text('Backend URL'),
-                    subtitle: Text(config.backendUrl),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                    child: TextField(
-                      controller: _backendUrlController,
-                      decoration: InputDecoration(
-                        hintText: 'http://127.0.0.1:8001',
-                        border: const OutlineInputBorder(),
-                        suffixIcon: _urlModified
-                            ? IconButton(
-                                icon: const Icon(Icons.check, color: Colors.green),
-                                onPressed: _saveBackendUrl,
-                              )
-                            : null,
-                      ),
-                      onChanged: (value) {
-                        setState(() {
-                          _urlModified = value != config.backendUrl;
-                        });
-                      },
-                      onSubmitted: (_) => _saveBackendUrl(),
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                    child: Row(
-                      children: [
-                        TextButton.icon(
-                          onPressed: () {
-                            config.resetToDefault();
-                            _backendUrlController.text = AppConfigService.defaultUrl;
-                            setState(() => _urlModified = false);
-                          },
-                          icon: const Icon(Icons.restore, size: 18),
-                          label: const Text('Reset to Default'),
-                        ),
-                      ],
-                    ),
+                  const ListTile(
+                    leading: Icon(Icons.developer_mode_outlined,
+                        color: Colors.orange),
+                    title: Text('Developer mode enabled'),
+                    subtitle: Text('Extra debug features enabled'),
+                    trailing: Icon(Icons.check_circle, color: Colors.green),
                   ),
                 ],
               ),
@@ -198,5 +246,45 @@ class _SettingsPageState extends State<SettingsPage> {
         behavior: SnackBarBehavior.floating,
       ),
     );
+  }
+
+  Future<void> _testBackend() async {
+    final config = Provider.of<AppConfigService>(context, listen: false);
+    final base = config.backendUrl.trim().replaceFirst(RegExp(r'/+$'), '');
+    final url = '$base/api/lessons/list/';
+
+    setState(() => _testingBackend = true);
+    try {
+      final resp = await http
+          .get(Uri.parse(url), headers: const {'Accept': 'application/json'})
+          .timeout(const Duration(seconds: 6));
+
+      if (!mounted) return;
+      final ok = resp.statusCode >= 200 && resp.statusCode < 300;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ok
+                ? '✅ Connected (${resp.statusCode})\n$url'
+                : '❌ Backend error (${resp.statusCode})\n$url',
+          ),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: ok ? Colors.green : Colors.red,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Can\'t connect\n$url\n$e'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _testingBackend = false);
+    }
   }
 }

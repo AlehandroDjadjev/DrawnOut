@@ -7,7 +7,7 @@ class LessonPipelineApi {
   final String baseUrl;
   final AuthService _authService;
 
-  LessonPipelineApi({this.baseUrl = 'http://localhost:8000'})
+  LessonPipelineApi({this.baseUrl = 'http://127.0.0.1:8001'})
       : _authService = AuthService(baseUrl: baseUrl);
 
   /// Set callback for when session expires (refresh failed).

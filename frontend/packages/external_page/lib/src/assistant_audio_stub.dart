@@ -1,6 +1,7 @@
 // Non-web fallback using just_audio (already in pubspec) to play direct URLs.
 import 'package:just_audio/just_audio.dart';
 
+// ignore: unused_element
 String _apiBaseUrl = '';
 final _player = AudioPlayer();
 

@@ -1,4 +1,4 @@
-import 'dart:ui' show Offset, Rect;
+import 'dart:ui' show Offset;
 
 // Native implementation stub - uses opencv_dart if available
 // For web, the vectorizer_web.dart is used instead

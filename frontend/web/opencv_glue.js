@@ -56,8 +56,10 @@
     });
   }
 
-  async function vectorizeContours(imageData, opts) {
+  async function vectorizeContours(pixels, width, height, opts) {
+    if (typeof opts === 'string') opts = JSON.parse(opts);
     await waitForCVReady();
+    const imageData = new ImageData(new Uint8ClampedArray(pixels), width, height);
 
     const blurK = ensureOdd(opts.blurK || 5);
     const edgeMode = opts.edgeMode || 'Canny';

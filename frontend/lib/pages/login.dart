@@ -279,13 +279,13 @@ class _AppleLoginCard extends StatelessWidget {
             TextFormField(
               decoration: appleFieldDecoration(
                 context,
-                hintText: 'Username',
+                hintText: 'Username or email',
                 icon: Icons.person_outline,
               ),
               textInputAction: TextInputAction.next,
               onChanged: onUserChange,
               validator: (v) => (v == null || v.trim().isEmpty)
-                  ? 'Enter a username'
+                  ? 'Enter a username or email'
                   : null,
             ),
             _gap(),

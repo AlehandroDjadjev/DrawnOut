@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'dart:math' as math;
 import 'dart:ui' show Offset;
+import 'package:flutter/foundation.dart' show debugPrint;
 
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as html;
@@ -63,15 +64,24 @@ class Vectorizer {
 
     // 3) Convert to world coords and apply Dart-side shaping (same knobs)
     final List<List<Offset>> rawStrokes = [];
-    // jsResult is a dartified LinkedHashMap<dynamic,dynamic>
-    final polylines = (jsResult as Map)['polylines'] as List;
-    for (final pl in polylines.cast<List>()) {
+    final polylines = _extractPolylines(jsResult);
+    if (polylines.isEmpty) {
+      debugPrint('⚠️ Vectorizer: JS returned no polylines');
+      return const [];
+    }
+
+    for (final pl in polylines) {
       var polyWorld = pl
+          .where((p) => p.length >= 2)
           .map((p) => Offset(
-              ((p as List)[0] as num).toDouble(), ((p)[1] as num).toDouble()))
+              (p[0] as num).toDouble(), (p[1] as num).toDouble()))
           .map(
               (p) => Offset((p.dx - cx) * worldScale, (p.dy - cy) * worldScale))
           .toList();
+
+      if (polyWorld.length < 2) {
+        continue;
+      }
 
       if (smoothPasses > 0) {
         polyWorld = _smoothPolyline(polyWorld, passes: smoothPasses);
@@ -109,6 +119,25 @@ class Vectorizer {
     return ordered;
   }
 
+  static List<List<List<dynamic>>> _extractPolylines(dynamic jsResult) {
+    if (jsResult == null) return const [];
+
+    dynamic candidate;
+    if (jsResult is Map) {
+      candidate = jsResult['polylines'] ?? jsResult['strokes'] ?? jsResult['lines'];
+    } else if (jsResult is List) {
+      candidate = jsResult;
+    }
+
+    if (candidate is! List) return const [];
+
+    return candidate
+        .whereType<List>()
+        .map((line) => line.whereType<List>().toList())
+        .where((line) => line.isNotEmpty)
+        .toList();
+  }
+
   static Future<html.ImageElement> _decodeToImageElement(
       Uint8List bytes) async {
     final blob = html.Blob([bytes]);
@@ -138,6 +167,8 @@ class Vectorizer {
       // If the JS function isn't present or options can't be marshaled, fail loudly.
       throw StateError('cvVectorizeContours JS glue not available');
     }
+
+    if (result == null) return null;
 
     if (result is Future) return await result;
 

@@ -225,7 +225,6 @@ class LayoutService {
   }) {
     double y = startY;
     final w = state.columnWidth();
-    final x2 = x + w;
     final maxIterations = 100;
     int iterations = 0;
 

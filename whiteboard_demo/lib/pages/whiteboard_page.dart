@@ -64,7 +64,7 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
   void initState() {
     super.initState();
   }
-  
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -73,21 +73,22 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
       _initializeControllers();
     }
   }
-  
+
   void _initializeControllers() {
     // Get config service for backend URL
     final configService = Provider.of<AppConfigService>(context, listen: false);
     final baseUrl = configService.backendUrl;
-    
+
     _controller = WhiteboardController(baseUrl: baseUrl);
     _controller.initAnimation(this);
-    
+
     _playbackController = TimelinePlaybackController();
     _playbackController.setBaseUrl(baseUrl);
-    
+
     // Set the drawing callback
-    _playbackController.onDrawingActionsTriggered = _controller.handleDrawingActions;
-    
+    _playbackController.onDrawingActionsTriggered =
+        _controller.handleDrawingActions;
+
     _playbackController.onTimelineCompleted = _onLessonComplete;
 
     _initialize();
@@ -100,29 +101,29 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
     } catch (e) {
       debugPrint('Backend load skipped: $e');
     }
-    
+
     // If we have a lesson context, start or load the lesson
     if (widget.lessonContext != null) {
       await _initializeLesson(widget.lessonContext!);
     }
-    
+
     if (mounted) {
       setState(() => _isLoading = false);
     }
   }
-  
+
   Future<void> _initializeLesson(LessonContext lessonCtx) async {
     if (!mounted) return;
-    
+
     final configService = Provider.of<AppConfigService>(context, listen: false);
     final baseUrl = configService.backendUrl;
-    
+
     // Reset whiteboard layout for new lesson
     _controller.resetLayout();
     _controller.clear();
-    
+
     int? sessionId = lessonCtx.sessionId;
-    
+
     // If we have a topic but no sessionId, start a new lesson
     if (sessionId == null && lessonCtx.topic != null) {
       try {
@@ -146,7 +147,7 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
         return;
       }
     }
-    
+
     // Now load the timeline if we have a session
     if (sessionId != null && mounted) {
       await _loadTimeline(sessionId);
@@ -155,16 +156,17 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
 
   Future<void> _loadTimeline(int sessionId) async {
     try {
-      final configService = Provider.of<AppConfigService>(context, listen: false);
+      final configService =
+          Provider.of<AppConfigService>(context, listen: false);
       final api = TimelineApiService(baseUrl: configService.backendUrl);
-      
+
       // Use generateTimeline instead of getSessionTimeline
       // generateTimeline will return cached timeline if exists, or generate a new one
       debugPrint('Generating/loading timeline for session $sessionId...');
       final timeline = await api.generateTimeline(sessionId);
       debugPrint('Timeline loaded: ${timeline.segments.length} segments');
       await _playbackController.loadTimeline(timeline);
-      
+
       // Auto-start playback after loading
       debugPrint('Auto-starting lesson playback...');
       await _playbackController.play();
@@ -288,7 +290,8 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
                 // Status bar
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   color: isDark ? Colors.grey[850] : Colors.grey[200],
                   child: Text(
                     _controller.status,
@@ -352,7 +355,9 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
             label: 'Text',
           ),
           NavigationDestination(
-            icon: Icon(devMode.isEnabled ? Icons.image_outlined : Icons.replay_outlined),
+            icon: Icon(devMode.isEnabled
+                ? Icons.image_outlined
+                : Icons.replay_outlined),
             label: devMode.isEnabled ? 'Image' : 'Replay',
           ),
           const NavigationDestination(
@@ -485,7 +490,7 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
 
   void _showEraseBottomSheet(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    
+
     showModalBottomSheet(
       context: context,
       backgroundColor: isDark ? Colors.grey[900] : Colors.white,
@@ -494,7 +499,7 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
       ),
       builder: (ctx) {
         final names = _controller.drawnObjectNames;
-        
+
         return Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -513,15 +518,15 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
                 )
               else
                 ...names.map((name) => ListTile(
-                  title: Text(name),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete, color: Colors.red),
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      _controller.eraseObject(name);
-                    },
-                  ),
-                )),
+                      title: Text(name),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          _controller.eraseObject(name);
+                        },
+                      ),
+                    )),
               const SizedBox(height: 8),
               SizedBox(
                 width: double.infinity,
@@ -562,7 +567,8 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
             children: [
               Row(
                 children: [
-                  const Icon(Icons.developer_mode, color: Colors.orange, size: 20),
+                  const Icon(Icons.developer_mode,
+                      color: Colors.orange, size: 20),
                   const SizedBox(width: 8),
                   Text(
                     'Load Vector Image (Dev)',
@@ -589,7 +595,8 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
                         labelText: 'X',
                         border: OutlineInputBorder(),
                       ),
-                      keyboardType: const TextInputType.numberWithOptions(signed: true),
+                      keyboardType:
+                          const TextInputType.numberWithOptions(signed: true),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -600,7 +607,8 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
                         labelText: 'Y',
                         border: OutlineInputBorder(),
                       ),
-                      keyboardType: const TextInputType.numberWithOptions(signed: true),
+                      keyboardType:
+                          const TextInputType.numberWithOptions(signed: true),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -611,7 +619,8 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
                         labelText: 'Scale',
                         border: OutlineInputBorder(),
                       ),
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
                     ),
                   ),
                 ],
@@ -720,7 +729,6 @@ class _DeveloperPanelState extends State<_DeveloperPanel> {
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
           ),
           const Divider(),
-          
           _buildSlider(
             'Global Speed',
             _config.globalSpeedMultiplier,
@@ -731,10 +739,9 @@ class _DeveloperPanelState extends State<_DeveloperPanel> {
               _updateConfig();
             }),
           ),
-          
           const SizedBox(height: 16),
-          const Text('Stroke Timing', style: TextStyle(fontWeight: FontWeight.bold)),
-          
+          const Text('Stroke Timing',
+              style: TextStyle(fontWeight: FontWeight.bold)),
           _buildSlider(
             'Min Stroke Time (s)',
             _config.minStrokeTimeSec,
@@ -745,7 +752,6 @@ class _DeveloperPanelState extends State<_DeveloperPanel> {
               _updateConfig();
             }),
           ),
-          
           _buildSlider(
             'Max Stroke Time (s)',
             _config.maxStrokeTimeSec,
@@ -756,7 +762,6 @@ class _DeveloperPanelState extends State<_DeveloperPanel> {
               _updateConfig();
             }),
           ),
-          
           _buildSlider(
             'Length Factor (s/1000px)',
             _config.lengthTimePerKPxSec,
@@ -767,7 +772,6 @@ class _DeveloperPanelState extends State<_DeveloperPanel> {
               _updateConfig();
             }),
           ),
-          
           _buildSlider(
             'Curvature Extra (s)',
             _config.curvatureExtraMaxSec,
@@ -778,10 +782,9 @@ class _DeveloperPanelState extends State<_DeveloperPanel> {
               _updateConfig();
             }),
           ),
-          
           const SizedBox(height: 16),
-          const Text('Travel Timing', style: TextStyle(fontWeight: FontWeight.bold)),
-          
+          const Text('Travel Timing',
+              style: TextStyle(fontWeight: FontWeight.bold)),
           _buildSlider(
             'Base Travel (s)',
             _config.baseTravelTimeSec,
@@ -792,7 +795,6 @@ class _DeveloperPanelState extends State<_DeveloperPanel> {
               _updateConfig();
             }),
           ),
-          
           _buildSlider(
             'Travel per 1000px (s)',
             _config.travelTimePerKPxSec,

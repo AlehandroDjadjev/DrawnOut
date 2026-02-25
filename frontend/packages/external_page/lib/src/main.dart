@@ -59,6 +59,7 @@ class StrokePlan {
   }
 
   // Remove strokes that are too short or have tiny extent; defined on state since it is used by diagram placement
+  // ignore: unused_element
   List<List<Offset>> _filterDiagramStrokes(List<List<Offset>> strokes,
       {double minLength = 24.0, double minExtent = 8.0}) {
     final filtered = <List<Offset>>[];
@@ -2778,6 +2779,7 @@ class _LayoutState {
     return columnIndex * cw + columnIndex * config.columns!.gutter;
   }
 
+  // ignore: unused_element
   double _columnResidual() {
     if (config.columns == null) return 0.0;
     final total = (config.columns!.count - 1) * config.columns!.gutter +
@@ -2798,6 +2800,7 @@ class _LayoutState {
     return usable / config.columns!.count;
   }
 
+  // ignore: unused_element
   static _LayoutState defaultConfig(double pageW, double pageH) {
     final cfg = _LayoutConfig(
       page: _Page(

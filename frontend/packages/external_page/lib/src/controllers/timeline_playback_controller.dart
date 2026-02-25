@@ -157,7 +157,7 @@ class TimelinePlaybackController extends ChangeNotifier {
     _progressTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
       final segmentStart = currentSegment?.startTime ?? 0.0;
       _currentTime =
-          segmentStart + (_audioPlayer.position!.inMilliseconds / 1000.0);
+          segmentStart + (_audioPlayer.position.inMilliseconds / 1000.0);
       notifyListeners();
     });
   }

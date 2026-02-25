@@ -85,6 +85,7 @@ class _EditUsernamePageState extends State<EditUsernamePage> {
 
   @override
   Widget build(BuildContext context) {
+    // ignore: unused_local_variable
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(title: const Text("Edit Username")),

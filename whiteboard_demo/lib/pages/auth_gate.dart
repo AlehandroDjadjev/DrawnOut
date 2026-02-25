@@ -30,7 +30,7 @@ class _AuthGateState extends State<AuthGate> {
     if (raw.isEmpty) {
       return const String.fromEnvironment(
         'BACKEND_URL',
-        defaultValue: 'http://127.0.0.1:8001',
+        defaultValue: 'http://10.0.2.2:8001',
       );
     }
     return raw.endsWith('/') ? raw.substring(0, raw.length - 1) : raw;

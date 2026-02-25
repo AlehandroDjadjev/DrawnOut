@@ -28,7 +28,6 @@ import 'theme_provider.dart';
 import 'pages/login.dart';
 import 'pages/signup.dart';
 import 'pages/home.dart';
-import 'pages/lessons_page.dart';
 import 'pages/settings_page.dart';
 import 'pages/auth_gate.dart';
 import 'pages/market_page.dart';
@@ -113,7 +112,7 @@ class DrawnOutApp extends StatelessWidget {
         '/login': (context) => const LoginPage(),
         '/signup': (context) => const SignupPage(),
         '/home': (context) => const HomePage(),
-        '/lessons': (context) => const LessonsPage(),
+        '/lessons': (context) => const HomePage(initialIndex: 1),
         '/settings': (context) => const SettingsPage(),
         '/market': (context) => const MarketPage(),
         '/history': (context) => const LessonHistoryPage(),
@@ -194,8 +193,6 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
   // Services
   final _strokeService = const StrokeService();
-  final _textSketchService = const TextSketchService();
-  late ImageSketchService _imageSketchService;
 
   // Delegate board/plan/raster/busy to orchestrator
   List<VectorObject> get _board => _orchestrator.board;
@@ -329,6 +326,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   /// Tracks the last-known pause state so we only call setState on transitions.
   bool _drawingPaused = false;
 
+  /// Incremented every time onSegmentChanged fires so in-flight drawing
+  /// futures can detect they've been superseded and exit cleanly.
+  int _drawingGeneration = 0;
+
   void _onTimelinePauseChanged() {
     final paused = _timelineController?.isPaused ?? false;
     if (paused != _drawingPaused && mounted) {
@@ -395,14 +396,6 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   void initState() {
     super.initState();
 
-    // Initialize image sketch service with default base URL
-    _imageSketchService = ImageSketchService(
-      baseUrl: const String.fromEnvironment(
-        'BACKEND_URL',
-        defaultValue: 'http://127.0.0.1:8001',
-      ),
-    );
-
     // Initialize whiteboard orchestrator with current backend URL
     final initialBaseUrl = _apiUrlCtrl.text.trim().isEmpty
         ? 'http://localhost:8000'
@@ -423,8 +416,14 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     };
     _timelineController!.onSegmentChanged = (index) {
       debugPrint('📍 Segment $index started');
-      // Clear the canvas so each segment starts fresh
+      // Invalidate any in-flight drawing future from the previous segment.
+      _drawingGeneration++;
+      // Clear the canvas AND reset the layout cursor so each segment starts
+      // fresh from the top of the whiteboard.
       _clearBoard();
+      // _clearBoard already nulls _layout via clearBoard(), so the next call
+      // to _ensureLayout() in _handleSyncedDrawingActions will create a fresh
+      // layout with cursorY = cfg.page.top.
     };
     _timelineController!.onTimelineCompleted = () {
       debugPrint('✅ Timeline completed!');
@@ -1266,8 +1265,13 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       return;
     }
 
+    // Snapshot generation at entry. If onSegmentChanged fires mid-execution
+    // it increments _drawingGeneration and nulls _layout, so we abort.
+    final myGen = _drawingGeneration;
+
     try {
       await _ensureLayout();
+      if (_drawingGeneration != myGen || _layout == null) return;
 
       // ── DEBUG: Log action breakdown from backend ─────────────────────────
       debugPrint('📥 Received ${actions.length} drawing actions from backend:');
@@ -1334,6 +1338,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       // Generate strokes
       final accum = <List<Offset>>[];
       for (final action in actions) {
+        // Abort if a new segment has started (layout was wiped by clearBoard)
+        if (_drawingGeneration != myGen || _layout == null) return;
+
         // ── Handle sketch_image actions ────────────────────────────────────
         if (action.isSketchImage) {
           debugPrint('🖼️ Processing sketch_image action (synced)');
@@ -1359,6 +1366,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         );
       }
 
+      // Abort if superseded during action processing
+      if (_drawingGeneration != myGen) return;
+
       if (accum.isEmpty) {
         debugPrint('⚠️ No strokes generated');
         return;
@@ -1373,22 +1383,24 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
             .add(Duration(milliseconds: (drawDuration * 1000).round()));
       });
 
-      // Wait for animation — pause-aware: the timer only counts down while
-      // playback is active, so pausing freezes both the SketchPlayer and this
-      // countdown.
+      // Wait for animation — pause-aware and generation-aware.
+      // Exits immediately if a new segment fires, so we never block the next
+      // segment's drawing from starting on time.
       final totalWaitMs = (drawDuration * 1000 * 0.95).round();
       var elapsedMs = 0;
       const tickMs = 100;
       while (elapsedMs < totalWaitMs) {
         await Future.delayed(const Duration(milliseconds: tickMs));
+        // Exit if a new segment started
+        if (_drawingGeneration != myGen) return;
         // Only count time when not paused
         if (!(_timelineController?.isPaused ?? false)) {
           elapsedMs += tickMs;
         }
       }
 
-      // Commit to board
-      if (_plan != null) {
+      // Commit to board (only if still the active segment)
+      if (_drawingGeneration == myGen && _plan != null) {
         _commitCurrentSketch();
         debugPrint('✅ Committed to board (total: ${_board.length})');
       }
@@ -1554,8 +1566,12 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     );
 
     // Drop tiny decorative strokes (dots/specks) to keep result simple
-    final filtered =
+    var filtered =
         _strokeService.filterStrokes(strokes, minLength: 24.0, minExtent: 8.0);
+    if (filtered.isEmpty) {
+      debugPrint('⚠️ Diagram vectorization returned no usable strokes, using fallback geometry');
+      filtered = _fallbackImageStrokes(img.width.toDouble(), img.height.toDouble());
+    }
 
     // Scale to fit targetW while preserving aspect; vectorizer uses image px→world, so scale proportionally
     // Convert top-left content-space → world center, then add center offset
@@ -1780,15 +1796,19 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     }
 
     if (strokes.isEmpty) {
-      debugPrint('⚠️ Vectorization produced no strokes');
-      return false;
+      debugPrint('⚠️ Vectorization produced no strokes, using fallback geometry');
+      strokes = _fallbackImageStrokes(img.width.toDouble(), img.height.toDouble());
     }
 
     debugPrint('   ✏️ Vectorized: ${strokes.length} strokes');
 
     // ── Step 6: Filter and transform strokes ───────────────────────────────
-    final filtered =
+    var filtered =
         _strokeService.filterStrokes(strokes, minLength: 24.0, minExtent: 8.0);
+    if (filtered.isEmpty) {
+      debugPrint('⚠️ Filter removed all image strokes, using fallback geometry');
+      filtered = _fallbackImageStrokes(img.width.toDouble(), img.height.toDouble());
+    }
 
     // Calculate scale factor for strokes (image px → target size)
     final effScale = targetW / math.max(1, img.width);
@@ -2172,6 +2192,25 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       y = maxBottom + st.config.gutterY;
       if (y > st.config.page.height - st.config.page.bottom) return y;
     }
+  }
+
+  List<List<Offset>> _fallbackImageStrokes(double imageWidth, double imageHeight) {
+    final w = math.max(20.0, imageWidth);
+    final h = math.max(20.0, imageHeight);
+    final hw = w / 2.0;
+    final hh = h / 2.0;
+
+    return [
+      [
+        Offset(-hw, -hh),
+        Offset(hw, -hh),
+        Offset(hw, hh),
+        Offset(-hw, hh),
+        Offset(-hw, -hh),
+      ],
+      [Offset(-hw, -hh), Offset(hw, hh)],
+      [Offset(-hw, hh), Offset(hw, -hh)],
+    ];
   }
 
   // Stroke filtering and stitching are now handled by _strokeService

@@ -234,6 +234,30 @@ class ImageSketchService {
         .toList();
   }
 
+  /// Fallback geometry when vectorization returns no usable strokes.
+  ///
+  /// Coordinates are centered around (0,0), matching vectorizer output space.
+  List<List<Offset>> _fallbackImageStrokes(int imageWidth, int imageHeight) {
+    final w = math.max(20, imageWidth).toDouble();
+    final h = math.max(20, imageHeight).toDouble();
+    final hw = w / 2.0;
+    final hh = h / 2.0;
+
+    return [
+      // border rectangle
+      [
+        Offset(-hw, -hh),
+        Offset(hw, -hh),
+        Offset(hw, hh),
+        Offset(-hw, hh),
+        Offset(-hw, -hh),
+      ],
+      // diagonals
+      [Offset(-hw, -hh), Offset(hw, hh)],
+      [Offset(-hw, hh), Offset(hw, -hh)],
+    ];
+  }
+
   /// Complete sketch_image pipeline: fetch, vectorize, place, and transform
   ///
   /// This is the main entry point for processing sketch_image actions.
@@ -301,17 +325,21 @@ class ImageSketchService {
         'size: ${placementResult.width}x${placementResult.height}');
 
     // ── Step 5: Vectorize the image ────────────────────────────────────────
-    final strokes = await vectorizeImage(imageBytes, config: vectorConfig);
+    var strokes = await vectorizeImage(imageBytes, config: vectorConfig);
 
     if (strokes.isEmpty) {
-      debugPrint('⚠️ Vectorization produced no strokes');
-      return ImageSketchResult.failure('Vectorization produced no strokes');
+      debugPrint('⚠️ Vectorization produced no strokes, using fallback geometry');
+      strokes = _fallbackImageStrokes(img.width, img.height);
     }
 
     debugPrint('   ✏️ Vectorized: ${strokes.length} strokes');
 
     // ── Step 6: Filter and transform strokes ───────────────────────────────
-    final filtered = filterStrokes(strokes);
+    var filtered = filterStrokes(strokes);
+    if (filtered.isEmpty) {
+      debugPrint('⚠️ Filter removed all strokes, using fallback geometry');
+      filtered = _fallbackImageStrokes(img.width, img.height);
+    }
     final transformed = transformStrokes(
       filtered,
       img.width,

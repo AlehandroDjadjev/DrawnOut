@@ -18,7 +18,7 @@ class AuthService {
   /// The UI should navigate to the login page.
   void Function()? onSessionExpired;
 
-  AuthService({String baseUrl = 'http://127.0.0.1:8000'})
+  AuthService({String baseUrl = 'http://127.0.0.1:8001'})
       : _baseUrl = baseUrl.endsWith('/')
             ? baseUrl.substring(0, baseUrl.length - 1)
             : baseUrl;

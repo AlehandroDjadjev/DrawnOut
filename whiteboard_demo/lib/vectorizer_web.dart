@@ -3,11 +3,16 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:math' as math;
 import 'dart:ui' show Offset;
+import 'package:flutter/foundation.dart' show debugPrint;
 
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as html;
-import 'dart:js' as js;
-import 'package:js/js.dart' show allowInterop;
+import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
+
+@JS('cvVectorizeContours')
+external JSPromise<JSAny?> _jsCvVectorizeContours(
+    JSUint8ClampedArray pixels, int width, int height, JSString optionsJson);
 
 class Vectorizer {
   static Future<List<List<Offset>>> vectorize({
@@ -66,15 +71,24 @@ class Vectorizer {
 
     // 3) Convert to world coords and apply Dart-side shaping (same knobs)
     final List<List<Offset>> rawStrokes = [];
-    // jsResult is a dartified LinkedHashMap<dynamic,dynamic>
-    final polylines = (jsResult as Map)['polylines'] as List;
-    for (final pl in polylines.cast<List>()) {
+    final polylines = _extractPolylines(jsResult);
+    if (polylines.isEmpty) {
+      debugPrint('⚠️ Vectorizer: JS returned no polylines');
+      return const [];
+    }
+
+    for (final pl in polylines) {
       var polyWorld = pl
+          .where((p) => p.length >= 2)
           .map((p) => Offset(
-              ((p as List)[0] as num).toDouble(), ((p)[1] as num).toDouble()))
+              (p[0] as num).toDouble(), (p[1] as num).toDouble()))
           .map(
               (p) => Offset((p.dx - cx) * worldScale, (p.dy - cy) * worldScale))
           .toList();
+
+      if (polyWorld.length < 2) {
+        continue;
+      }
 
       if (smoothPasses > 0) {
         polyWorld = _smoothPolyline(polyWorld, passes: smoothPasses);
@@ -112,6 +126,25 @@ class Vectorizer {
     return ordered;
   }
 
+  static List<List<List<dynamic>>> _extractPolylines(dynamic jsResult) {
+    if (jsResult == null) return const [];
+
+    dynamic candidate;
+    if (jsResult is Map) {
+      candidate = jsResult['polylines'] ?? jsResult['strokes'] ?? jsResult['lines'];
+    } else if (jsResult is List) {
+      candidate = jsResult;
+    }
+
+    if (candidate is! List) return const [];
+
+    return candidate
+        .whereType<List>()
+        .map((line) => line.whereType<List>().toList())
+        .where((line) => line.isNotEmpty)
+        .toList();
+  }
+
   static Future<html.ImageElement> _decodeToImageElement(
       Uint8List bytes) async {
     final blob = html.Blob([bytes]);
@@ -131,46 +164,28 @@ class Vectorizer {
 
   static Future<dynamic> _cvVectorizeContours(
       html.ImageData imageData, Map<String, dynamic> options) async {
-    // Call global cvVectorizeContours(imageData, opts) which returns a Promise.
-    final jsOpts = js.JsObject.jsify(options);
-    final promise = js.context.callMethod('cvVectorizeContours', [imageData, jsOpts]);
-
-    final jsObject = await _promiseToFuture<Object?>(promise);
-    if (jsObject == null) return null;
-
-    // Safest generic conversion: JSON.stringify in JS, then jsonDecode in Dart.
-    // The expected return shape is JSON-safe (polylines arrays of numbers).
     try {
-      final jsonStr = js.context['JSON'].callMethod('stringify', [jsObject]);
-      if (jsonStr is String && jsonStr.isNotEmpty) {
-        return jsonDecode(jsonStr);
+      final fn = globalContext['cvVectorizeContours'];
+      if (fn == null) {
+        debugPrint(
+            '⚠️ cvVectorizeContours not on window yet — is opencv_glue.js loaded?');
+        return null;
       }
-    } catch (_) {}
-
-    return jsObject;
-  }
-
-  static Future<T?> _promiseToFuture<T>(dynamic promise) {
-    if (promise is Future<T>) return promise;
-    if (promise is! js.JsObject) return Future<T?>.value(promise as T?);
-
-    final c = Completer<T?>();
-    try {
-      promise.callMethod('then', [
-        allowInterop((dynamic value) {
-          if (!c.isCompleted) c.complete(value as T?);
-        })
-      ]);
-      promise.callMethod('catch', [
-        allowInterop((dynamic _) {
-          if (!c.isCompleted) c.complete(null);
-        })
-      ]);
-    } catch (_) {
-      if (!c.isCompleted) c.complete(null);
+      final pixels = imageData.data.toJS;
+      final width = imageData.width;
+      final height = imageData.height;
+      final optionsJson = jsonEncode(options).toJS;
+      final result = await _jsCvVectorizeContours(
+              pixels, width, height, optionsJson)
+          .toDart;
+      return result?.dartify();
+    } catch (e) {
+      debugPrint('⚠️ Vectorizer JS bridge failed: $e');
+      return null;
     }
-    return c.future;
   }
+
+
 
   // --- Dart-side shaping helpers (same as native) ---
   static List<Offset> _smoothPolyline(List<Offset> pts, {int passes = 1}) {

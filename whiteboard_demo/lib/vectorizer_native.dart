@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
-import 'dart:ui' show Offset, Path, Rect;
+import 'dart:ui' show Offset, Rect;
 
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 

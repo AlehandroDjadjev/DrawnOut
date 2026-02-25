@@ -341,25 +341,35 @@ class WhiteboardController extends ChangeNotifier {
         : 10.0;
     
     // Vectorize the PNG using local OpenCV.js
-    final strokes = await Vectorizer.vectorize(
-      bytes: pngBytes,
-      worldScale: 1.0,
-      edgeMode: 'Canny',
-      blurK: 3,
-      cannyLo: 30,
-      cannyHi: 120,
-      epsilon: centerlineMode ? 0.6 : 0.8,
-      resampleSpacing: centerlineMode ? 0.8 : 1.0,
-      minPerimeter: 12.0,
-      retrExternalOnly: false,
-      angleThresholdDeg: 85,
-      angleWindow: 3,
-      smoothPasses: centerlineMode ? 2 : 1,
-      mergeParallel: true,
-      mergeMaxDist: mergeDist,
-      minStrokeLen: 4.0,
-      minStrokePoints: 3,
-    );
+    List<List<Offset>> strokes;
+    try {
+      strokes = await Vectorizer.vectorize(
+        bytes: pngBytes,
+        worldScale: 1.0,
+        edgeMode: 'Canny',
+        blurK: 3,
+        cannyLo: 30,
+        cannyHi: 120,
+        epsilon: centerlineMode ? 0.6 : 0.8,
+        resampleSpacing: centerlineMode ? 0.8 : 1.0,
+        minPerimeter: 12.0,
+        retrExternalOnly: false,
+        angleThresholdDeg: 85,
+        angleWindow: 3,
+        smoothPasses: centerlineMode ? 2 : 1,
+        mergeParallel: true,
+        mergeMaxDist: mergeDist,
+        minStrokeLen: 4.0,
+        minStrokePoints: 3,
+      );
+    } catch (e) {
+      debugPrint('⚠️ Text vectorization failed, using fallback strokes: $e');
+      strokes = const [];
+    }
+
+    if (strokes.isEmpty) {
+      strokes = _fallbackTextStrokes(text, fontSize);
+    }
 
     // Normalize stroke direction and order by x position
     final normalized = strokes.map((s) {
@@ -377,6 +387,51 @@ class WhiteboardController extends ChangeNotifier {
     
     // Apply world offset
     return stitched.map((s) => s.map((p) => p + worldOffset).toList()).toList();
+  }
+
+  /// Fallback stroke generator used when OpenCV vectorization is unavailable.
+  ///
+  /// Produces simple box/diagonal strokes per character so text still draws
+  /// instead of failing silently on web runtime interop issues.
+  List<List<Offset>> _fallbackTextStrokes(String text, double fontSize) {
+    final strokes = <List<Offset>>[];
+    final charWidth = fontSize * 0.55;
+    final charHeight = fontSize * 0.90;
+    final spacing = fontSize * 0.20;
+
+    double x = 0.0;
+    for (final codePoint in text.runes) {
+      final ch = String.fromCharCode(codePoint);
+      if (ch.trim().isEmpty) {
+        x += charWidth * 0.6;
+        continue;
+      }
+
+      final left = x;
+      final top = 0.0;
+      final right = left + charWidth;
+      final bottom = top + charHeight;
+
+      // Outer box
+      strokes.add([
+        Offset(left, top),
+        Offset(right, top),
+        Offset(right, bottom),
+        Offset(left, bottom),
+        Offset(left, top),
+      ]);
+
+      // Diagonal to improve legibility as hand-drawn glyph placeholder
+      strokes.add([
+        Offset(left, bottom),
+        Offset(right, top),
+      ]);
+
+      x += charWidth + spacing;
+    }
+
+    debugPrint('ℹ️ Using fallback text strokes: ${strokes.length} strokes');
+    return strokes;
   }
 
   /// Render text to PNG bytes using Flutter's TextPainter

@@ -45,19 +45,33 @@
   }
 
   async function waitForCVReady(timeoutMs = 15000) {
-    if (typeof cv === 'undefined') throw new Error('OpenCV.js not loaded');
-    if (cv.Mat) return;
+    // Fast-path: already ready
+    if (typeof cv !== 'undefined' && cv.Mat) return;
+    // Poll for both cv to be defined AND cv.Mat to exist.
+    // This handles the async-script race where opencv.js hasn't finished
+    // executing when the first vectorize call arrives.
     await new Promise((resolve, reject) => {
       const start = Date.now();
       const check = setInterval(() => {
-        if (cv && cv.Mat) { clearInterval(check); resolve(); }
-        else if (Date.now() - start > timeoutMs) { clearInterval(check); reject(new Error('OpenCV.js init timeout')); }
+        if (typeof cv !== 'undefined' && cv.Mat) {
+          clearInterval(check);
+          resolve();
+        } else if (Date.now() - start > timeoutMs) {
+          clearInterval(check);
+          reject(new Error(
+            'OpenCV.js not ready after ' + timeoutMs + 'ms. ' +
+            'cv defined: ' + (typeof cv !== 'undefined') + ', ' +
+            'cv.Mat: ' + (typeof cv !== 'undefined' && !!cv.Mat)
+          ));
+        }
       }, 25);
     });
   }
 
-  async function vectorizeContours(imageData, opts) {
+  async function vectorizeContours(pixels, width, height, opts) {
+    if (typeof opts === 'string') opts = JSON.parse(opts);
     await waitForCVReady();
+    const imageData = new ImageData(new Uint8ClampedArray(pixels), width, height);
 
     const blurK = ensureOdd(opts.blurK || 5);
     const edgeMode = opts.edgeMode || 'Canny';

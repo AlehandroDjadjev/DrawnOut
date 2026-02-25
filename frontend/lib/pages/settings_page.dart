@@ -128,8 +128,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 title: const Text('Developer Mode'),
                 subtitle: const Text('Enabled'),
                 trailing: TextButton(
-                  onPressed: () {
-                    devMode.disable();
+                  onPressed: () async {
+                    await devMode.clear();
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
                         content: Text('Developer mode disabled'),

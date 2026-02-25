@@ -273,14 +273,14 @@ class _HomePageState extends State<HomePage> {
                       ],
                     ),
               const SizedBox(height: 20),
-              const AppleSectionTitle(title: 'Available lesson'),
+              const AppleSectionTitle(title: 'Lessons'),
               const SizedBox(height: 10),
               AppleCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Pythagoras Theorem',
+                      'Pick a lesson to start learning',
                       style: theme.textTheme.titleLarge?.copyWith(
                         fontWeight: FontWeight.w800,
                         letterSpacing: -0.2,
@@ -288,14 +288,14 @@ class _HomePageState extends State<HomePage> {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      'Explore the relationship between the sides of a right-angled triangle and understand one of the most fundamental theorems in mathematics.',
+                      'Browse the library and jump in when you’re ready.',
                       style: theme.textTheme.bodyMedium?.copyWith(height: 1.25),
                     ),
                     const SizedBox(height: 14),
                     ApplePrimaryButton(
-                      label: 'Start lesson',
+                      label: 'Go to lessons',
                       onPressed: () {
-                        Navigator.pushNamed(context, '/whiteboard');
+                        Navigator.pushNamed(context, '/lessons');
                       },
                     ),
                   ],
