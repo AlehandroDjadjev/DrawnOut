@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 
 import '../models/lesson_list_item.dart';
@@ -104,7 +106,6 @@ class _LessonsPageState extends State<LessonsPage> {
       _lessons.map((l) => l.difficulty).whereType<String>(),
     );
 
-    final featuredPythagoras = _findFeaturedPythagoras(_lessons);
 
     final grouped = <String, List<LessonListItem>>{};
     for (final l in lessonsToDisplay) {
@@ -185,28 +186,6 @@ class _LessonsPageState extends State<LessonsPage> {
                           _reload();
                         },
                       ),
-                    const SizedBox(height: 12),
-                    _FeaturedLessonCard(
-                      title: featuredPythagoras?.title ?? 'Pythagorean Theorem',
-                      subtitle: featuredPythagoras == null
-                          ? 'Featured lesson'
-                          : 'Featured lesson • ${featuredPythagoras.subject ?? 'mathematics'}',
-                      onTap: () {
-                        if (featuredPythagoras != null) {
-                          _openLesson(featuredPythagoras);
-                          return;
-                        }
-                        HapticFeedback.selectionClick();
-                        Navigator.pushNamed(
-                          context,
-                          '/whiteboard',
-                          arguments: {
-                            'topic': 'Pythagorean Theorem',
-                            'title': 'Pythagorean Theorem',
-                          },
-                        );
-                      },
-                    ),
                     const SizedBox(height: 12),
                     if (!_hasTokens)
                       AppleCard(
@@ -323,6 +302,67 @@ class _LessonsPageState extends State<LessonsPage> {
       });
     }
     HapticFeedback.selectionClick();
+
+    // If the lesson is in-progress, try to find the saved session and continue
+    if (lesson.progressState == LessonProgressState.inProgress) {
+      _continueOrRewatch(lesson);
+      return;
+    }
+
+    Navigator.pushNamed(
+      context,
+      '/whiteboard',
+      arguments: {
+        'topic': lesson.title,
+        'title': lesson.title,
+        'lesson_id': lesson.id,
+      },
+    );
+  }
+
+  /// For in-progress lessons, fetch the user's session history, find the
+  /// matching session, and navigate with continue parameters.
+  Future<void> _continueOrRewatch(LessonListItem lesson) async {
+    try {
+      final base = (dotenv.env['API_URL'] ?? 'http://127.0.0.1:8000').trim();
+      final authService = AuthService(baseUrl: base);
+      final resp = await authService.authenticatedGet('$base/api/lessons/history/');
+
+      if (!mounted) return;
+
+      if (resp.statusCode == 200) {
+        final sessions = jsonDecode(resp.body) as List<dynamic>;
+        // Find the session matching this lesson's topic
+        final match = sessions.cast<Map<String, dynamic>>().where((s) {
+          final topic = (s['topic'] as String? ?? '').trim().toLowerCase();
+          return topic == lesson.title.trim().toLowerCase();
+        }).firstOrNull;
+
+        if (match != null) {
+          final resumeTime = (match['resume_playback_time'] as num?)?.toDouble() ?? 0.0;
+          final isCompleted = (match['is_completed'] as bool?) ?? false;
+
+          Navigator.pushNamed(
+            context,
+            '/whiteboard',
+            arguments: {
+              'session_id': match['id'],
+              'topic': lesson.title,
+              'title': lesson.title,
+              'rewatch': true,
+              'continue_lesson': !isCompleted && resumeTime > 0,
+              'resume_playback_time': resumeTime,
+            },
+          );
+          return;
+        }
+      }
+    } catch (e) {
+      debugPrint('Failed to fetch history for continue: $e');
+    }
+
+    // Fallback: start a fresh lesson if we couldn't find the session
+    if (!mounted) return;
     Navigator.pushNamed(
       context,
       '/whiteboard',
@@ -434,14 +474,6 @@ class _FiltersCard extends StatelessWidget {
   }
 }
 
-LessonListItem? _findFeaturedPythagoras(List<LessonListItem> lessons) {
-  for (final l in lessons) {
-    final t = l.title.toLowerCase();
-    if (t.contains('pythag')) return l;
-  }
-  return null;
-}
-
 class _PillGroupDivider extends StatelessWidget {
   final ThemeData theme;
 
@@ -480,94 +512,6 @@ class _PillGroupLabel extends StatelessWidget {
           color: theme.colorScheme.onSurface.withOpacity(0.65),
           fontWeight: FontWeight.w800,
           letterSpacing: -0.1,
-        ),
-      ),
-    );
-  }
-}
-
-class _FeaturedLessonCard extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final VoidCallback onTap;
-
-  const _FeaturedLessonCard({
-    required this.title,
-    required this.subtitle,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return AppleCard(
-      frosted: true,
-      padding: EdgeInsets.zero,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(22),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
-          child: Row(
-            children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF5E5CE6), Color(0xFF64D2FF)],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                ),
-                child: const Icon(
-                  Icons.change_history_rounded,
-                  color: Colors.white,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: -0.2,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: theme.colorScheme.onSurface.withOpacity(0.70),
-                        height: 1.2,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              Icon(
-                Icons.arrow_forward_ios_rounded,
-                size: 16,
-                color: theme.colorScheme.onSurface.withOpacity(0.45),
-              ),
-            ],
-          ),
         ),
       ),
     );

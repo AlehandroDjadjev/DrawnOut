@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import '../vectorizer.dart';
+import '../services/backend_vectorizer.dart';
 import '../assistant_api.dart';
 import '../services/timeline_api.dart';
 import '../services/lesson_pipeline_api.dart';
@@ -236,7 +237,9 @@ class WhiteboardOrchestrator extends ChangeNotifier {
     final prev = canvasSize;
     if (prev != null &&
         (prev.width - size.width).abs() < 1 &&
-        (prev.height - size.height).abs() < 1) return;
+        (prev.height - size.height).abs() < 1) {
+      return;
+    }
     canvasSize = size;
     // Rebuild layout config for new page size
     if (layout != null) {
@@ -442,8 +445,17 @@ class WhiteboardOrchestrator extends ChangeNotifier {
   // Vectorization
   // ============================================================
 
-  /// Vectorize image bytes with current config.
+  /// Vectorize image bytes. Uses backend API when baseUrl is set.
   Future<List<List<Offset>>> vectorize(Uint8List bytes) async {
+    if (baseUrl.isNotEmpty) {
+      return BackendVectorizer.vectorize(
+        baseUrl: baseUrl,
+        bytes: bytes,
+        worldScale: vectorConfig.worldScale,
+        sourceWidth: uploadedImage?.width.toDouble(),
+        sourceHeight: uploadedImage?.height.toDouble(),
+      );
+    }
     return Vectorizer.vectorize(
       bytes: bytes,
       worldScale: vectorConfig.worldScale,
@@ -552,28 +564,34 @@ class WhiteboardOrchestrator extends ChangeNotifier {
           ? (actualFont * centerlineParams.mergeFactor).clamp(centerlineParams.mergeMin, centerlineParams.mergeMax)
           : 10.0;
 
-      final strokes = await Vectorizer.vectorize(
-        bytes: png,
-        worldScale: vectorConfig.worldScale,
-        edgeMode: 'Canny',
-        blurK: 3,
-        cannyLo: 30.0,
-        cannyHi: 120.0,
-        dogSigma: vectorConfig.dogSigma,
-        dogK: vectorConfig.dogK,
-        dogThresh: vectorConfig.dogThresh,
-        epsilon: centerlineMode ? centerlineParams.epsilon : 0.8,
-        resampleSpacing: centerlineMode ? centerlineParams.resample : 1.0,
-        minPerimeter: (vectorConfig.minPerim * 0.6).clamp(6.0, 1e9),
-        retrExternalOnly: false,
-        angleThresholdDeg: 85.0,
-        angleWindow: 3,
-        smoothPasses: centerlineMode ? centerlineParams.smoothPasses.round() : 1,
-        mergeParallel: true,
-        mergeMaxDist: mergeDist,
-        minStrokeLen: 4.0,
-        minStrokePoints: 3,
-      );
+      final strokes = baseUrl.isNotEmpty
+          ? await BackendVectorizer.vectorize(
+              baseUrl: baseUrl,
+              bytes: png,
+              worldScale: vectorConfig.worldScale,
+            )
+          : await Vectorizer.vectorize(
+              bytes: png,
+              worldScale: vectorConfig.worldScale,
+              edgeMode: 'Canny',
+              blurK: 3,
+              cannyLo: 30.0,
+              cannyHi: 120.0,
+              dogSigma: vectorConfig.dogSigma,
+              dogK: vectorConfig.dogK,
+              dogThresh: vectorConfig.dogThresh,
+              epsilon: centerlineMode ? centerlineParams.epsilon : 0.8,
+              resampleSpacing: centerlineMode ? centerlineParams.resample : 1.0,
+              minPerimeter: (vectorConfig.minPerim * 0.6).clamp(6.0, 1e9),
+              retrExternalOnly: false,
+              angleThresholdDeg: 85.0,
+              angleWindow: 3,
+              smoothPasses: centerlineMode ? centerlineParams.smoothPasses.round() : 1,
+              mergeParallel: true,
+              mergeMaxDist: mergeDist,
+              minStrokeLen: 4.0,
+              minStrokePoints: 3,
+            );
 
       // Normalize direction and order by x
       final normalized = strokes.map((s) {
@@ -643,9 +661,42 @@ class WhiteboardOrchestrator extends ChangeNotifier {
       await loadImageBytes(bytes);
 
       // Determine placement
-      final targetX = x ?? (canvasSize?.width ?? defaultCanvasW) / 2;
-      final targetY = y ?? (canvasSize?.height ?? defaultCanvasH) / 2;
-      final targetW = width ?? 400.0;
+      final pageW = canvasSize?.width ?? defaultCanvasW;
+      final pageH = canvasSize?.height ?? defaultCanvasH;
+      var targetX = x ?? pageW / 2;
+      var targetY = y ?? pageH / 2;
+      var targetW = width ?? 400.0;
+
+      final hasExplicitPlacement = x != null || y != null || width != null;
+      if (hasExplicitPlacement) {
+        final isNormalized = targetX >= 0 &&
+            targetX <= 1 &&
+            targetY >= 0 &&
+            targetY <= 1 &&
+            targetW > 0 &&
+            targetW <= 1.2;
+        if (isNormalized) {
+          targetX *= pageW;
+          targetY *= pageH;
+          targetW *= pageW;
+        } else {
+          final looksLike1920Space = targetX >= 0 &&
+              targetY >= 0 &&
+              targetW > 0 &&
+              targetX <= 1920 &&
+              targetY <= 1080 &&
+              targetW <= 1920;
+          if (looksLike1920Space && (pageW != 1920 || pageH != 1080)) {
+            targetX = (targetX / 1920.0) * pageW;
+            targetY = (targetY / 1080.0) * pageH;
+            targetW = (targetW / 1920.0) * pageW;
+          }
+        }
+      }
+
+      targetW = targetW.clamp(80.0, pageW * 0.9).toDouble();
+      targetX = targetX.clamp(targetW / 2.0, pageW - targetW / 2.0).toDouble();
+      targetY = targetY.clamp(40.0, pageH - 40.0).toDouble();
 
       await vectorizeAndSketch(x: targetX, y: targetY, targetWidth: targetW);
 
@@ -778,25 +829,33 @@ class WhiteboardOrchestrator extends ChangeNotifier {
           ? (fontSize * centerlineParams.mergeFactor).clamp(centerlineParams.mergeMin, centerlineParams.mergeMax)
           : 10.0;
 
-      final strokes = await Vectorizer.vectorize(
-        bytes: renderedLine.bytes,
-        worldScale: vectorConfig.worldScale / scaleUp,
-        edgeMode: 'Canny',
-        blurK: 3,
-        cannyLo: 30.0,
-        cannyHi: 120.0,
-        epsilon: centerlineMode ? centerlineParams.epsilon : 0.8,
-        resampleSpacing: centerlineMode ? centerlineParams.resample : 1.0,
-        minPerimeter: 6.0,
-        retrExternalOnly: false,
-        angleThresholdDeg: 85.0,
-        angleWindow: 3,
-        smoothPasses: centerlineMode ? centerlineParams.smoothPasses.round() : 1,
-        mergeParallel: true,
-        mergeMaxDist: mergeDist,
-        minStrokeLen: 4.0,
-        minStrokePoints: 3,
-      );
+      final strokes = baseUrl.isNotEmpty
+          ? await BackendVectorizer.vectorize(
+              baseUrl: baseUrl,
+              bytes: renderedLine.bytes,
+              worldScale: vectorConfig.worldScale / scaleUp,
+              sourceWidth: renderedLine.w,
+              sourceHeight: renderedLine.h,
+            )
+          : await Vectorizer.vectorize(
+              bytes: renderedLine.bytes,
+              worldScale: vectorConfig.worldScale / scaleUp,
+              edgeMode: 'Canny',
+              blurK: 3,
+              cannyLo: 30.0,
+              cannyHi: 120.0,
+              epsilon: centerlineMode ? centerlineParams.epsilon : 0.8,
+              resampleSpacing: centerlineMode ? centerlineParams.resample : 1.0,
+              minPerimeter: 6.0,
+              retrExternalOnly: false,
+              angleThresholdDeg: 85.0,
+              angleWindow: 3,
+              smoothPasses: centerlineMode ? centerlineParams.smoothPasses.round() : 1,
+              mergeParallel: true,
+              mergeMaxDist: mergeDist,
+              minStrokeLen: 4.0,
+              minStrokePoints: 3,
+            );
 
       // Normalize and stitch
       final normalized = strokes.map((s) {
@@ -860,13 +919,14 @@ class WhiteboardOrchestrator extends ChangeNotifier {
         final imageUrl = action['image_url'] as String? ??
             action['url'] as String? ??
             action['imageUrl'] as String?;
+        final placement = action['placement'] as Map<String, dynamic>?;
         if (imageUrl != null && imageUrl.isNotEmpty) {
           await sketchImageFromUrl(
             url: imageUrl,
-            x: (action['x'] as num?)?.toDouble(),
-            y: (action['y'] as num?)?.toDouble(),
-            width: (action['width'] as num?)?.toDouble(),
-            height: (action['height'] as num?)?.toDouble(),
+            x: ((action['x'] as num?) ?? (placement?['x'] as num?))?.toDouble(),
+            y: ((action['y'] as num?) ?? (placement?['y'] as num?))?.toDouble(),
+            width: ((action['width'] as num?) ?? (placement?['width'] as num?))?.toDouble(),
+            height: ((action['height'] as num?) ?? (placement?['height'] as num?))?.toDouble(),
             name: action['name'] as String?,
           );
         }

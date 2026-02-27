@@ -4,7 +4,7 @@ import 'package:http/http.dart' as http;
 class WhiteboardPlanner {
   WhiteboardPlanner(this.baseUrl);
 
-  final String baseUrl; // e.g., http://127.0.0.1:8001
+  final String baseUrl; // e.g., http://127.0.0.1:8000
 
   String _api(String path) =>
       '${baseUrl.replaceFirst(RegExp(r'/+$'), '')}/api$path';
@@ -310,16 +310,14 @@ Additionally, decide whether a single simple diagram would help. If YES, include
     return out;
   }
 
-  String _trimSentencesAndWords(String s, int maxSentences, int maxWords) {
-    final text = s.trim();
-    if (text.isEmpty) return text;
-    final sentences = text.split(RegExp(r'(?<=[.!?])\s+'));
-    final takeS = sentences.take(maxSentences);
-    final trimmedSentences = takeS.map((sent) {
-      final words = sent.trim().split(RegExp(r'\s+'));
-      final kept = words.take(maxWords).join(' ');
-      return kept;
-    }).toList();
-    return trimmedSentences.join(' ');
+  /// Trim [text] to at most [maxSentences] sentences, each at most [maxWords] words.
+  String _trimSentencesAndWords(String text, int maxSentences, int maxWords) {
+    final sentences = text.trim().split(RegExp(r'(?<=[.!?])\s+'));
+    final taken = sentences.take(maxSentences).map((s) {
+      final words = s.trim().split(RegExp(r'\s+')).take(maxWords).toList();
+      return words.join(' ');
+    });
+    return taken.join(' ').trim();
   }
+
 }

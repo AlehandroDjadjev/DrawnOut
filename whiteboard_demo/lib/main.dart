@@ -13,6 +13,7 @@ import 'package:provider/provider.dart';
 import './providers/developer_mode_provider.dart';
 // Local imports
 import 'vectorizer.dart';
+import 'services/backend_vectorizer.dart';
 import 'assistant_api.dart';
 import 'assistant_audio.dart';
 import 'sdk_live_bridge.dart';
@@ -20,6 +21,7 @@ import 'planner.dart';
 import 'models/timeline.dart';
 import 'services/auth_service.dart';
 import 'services/timeline_api.dart';
+import 'services/lesson_api_service.dart';
 import 'controllers/timeline_playback_controller.dart';
 import 'controllers/whiteboard_orchestrator.dart';
 import 'services/lesson_pipeline_api.dart';
@@ -31,7 +33,6 @@ import 'pages/home.dart';
 import 'pages/settings_page.dart';
 import 'pages/auth_gate.dart';
 import 'pages/market_page.dart';
-import 'pages/whiteboard_page.dart';
 import 'pages/lesson_history_page.dart';
 
 // Whiteboard module
@@ -117,12 +118,6 @@ class DrawnOutApp extends StatelessWidget {
         '/market': (context) => const MarketPage(),
         '/history': (context) => const LessonHistoryPage(),
         '/whiteboard': (context) => const WhiteboardPageWrapper(),
-        '/whiteboard/user': (context) =>
-            const WhiteboardPageWrapper(startInDeveloperMode: false),
-        '/whiteboard/dev': (context) =>
-            const WhiteboardPageWrapper(startInDeveloperMode: true),
-        '/whiteboard/mobile': (context) => const WhiteboardPageMobile(),
-        '/whiteboard/legacy': (context) => const WhiteboardPageWrapper(),
       },
     );
   }
@@ -149,16 +144,22 @@ class WhiteboardPageWrapper extends StatelessWidget {
     String? title;
     int? sessionId;
     bool rewatch = false;
+    bool continueLesson = false;
+    double resumePlaybackTime = 0.0;
     if (args is Map<String, dynamic>) {
       topic = args['topic'] as String?;
       title = args['title'] as String?;
       sessionId = args['session_id'] as int?;
       rewatch = (args['rewatch'] as bool?) ?? false;
+      continueLesson = (args['continue_lesson'] as bool?) ?? false;
+      resumePlaybackTime = (args['resume_playback_time'] as num?)?.toDouble() ?? 0.0;
     }
     return WhiteboardPage(
       autoStartTopic: topic,
       lessonTitle: title,
-      autoStartSessionId: rewatch ? sessionId : null,
+      autoStartSessionId: (rewatch || continueLesson) ? sessionId : null,
+      continueLesson: continueLesson,
+      resumePlaybackTime: resumePlaybackTime,
     );
   }
 }
@@ -171,12 +172,18 @@ class WhiteboardPage extends StatefulWidget {
   final String? lessonTitle;
   /// If set, skips generation and replays a saved timeline for this session.
   final int? autoStartSessionId;
+  /// If true, seeks to the saved position instead of playing from the start.
+  final bool continueLesson;
+  /// The saved playback time (seconds) to resume from (minus a 2s buffer).
+  final double resumePlaybackTime;
 
   const WhiteboardPage({
     super.key,
     this.autoStartTopic,
     this.lessonTitle,
     this.autoStartSessionId,
+    this.continueLesson = false,
+    this.resumePlaybackTime = 0.0,
   });
 
   @override
@@ -184,9 +191,21 @@ class WhiteboardPage extends StatefulWidget {
 }
 
 class _WhiteboardPageState extends State<WhiteboardPage> {
+  /// Single source of truth for the backend API base URL.  Reads from the
+  /// .env file (API_URL) and falls back to 127.0.0.1:8000.
+  static String get _defaultApiUrl =>
+      (dotenv.env['API_URL'] ?? 'http://127.0.0.1:8000').trim();
+
+  String get _effectiveBaseUrl {
+    final text = _apiUrlCtrl.text.trim();
+    return text.isEmpty ? _defaultApiUrl : text;
+  }
+
   static const double canvasW = 1600; // fallback/default
   static const double canvasH = 1000; // fallback/default
   Size? _canvasSize; // live size from LayoutBuilder
+  Size? _pendingCanvasSize;
+  bool _canvasSizeUpdateScheduled = false;
 
   // Orchestrator for whiteboard business logic
   late final WhiteboardOrchestrator _orchestrator;
@@ -253,11 +272,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   bool _showDevPanel = false; // Toggle for developer panel visibility (requires is_developer flag)
   double _textFontSize = 60.0;
   // Assistant
-  final _apiUrlCtrl = TextEditingController(
-      text: const String.fromEnvironment(
-    'BACKEND_URL',
-    defaultValue: 'http://127.0.0.1:8001',
-  ));
+  late final _apiUrlCtrl = TextEditingController(text: _defaultApiUrl);
   AssistantApiClient? _api;
   int? _sessionId;
   final _questionCtrl = TextEditingController();
@@ -318,6 +333,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   bool _lessonAutoStarted = false;
   bool _lessonComplete = false;
 
+  // ── Continue / resume progress state ────────────────────────────────────
+  Timer? _progressSaveTimer;
+  LessonApiService? _lessonApiService;
+
   /// True when the whiteboard was opened for a lesson (auto-start or rewatch),
   /// false when the user is just using the free-draw whiteboard.
   bool get _isInLessonSession =>
@@ -334,6 +353,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     final paused = _timelineController?.isPaused ?? false;
     if (paused != _drawingPaused && mounted) {
       setState(() { _drawingPaused = paused; });
+      // Save progress whenever the user pauses
+      if (paused) {
+        _savePlaybackProgress();
+      }
     }
   }
 
@@ -397,10 +420,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     super.initState();
 
     // Initialize whiteboard orchestrator with current backend URL
-    final initialBaseUrl = _apiUrlCtrl.text.trim().isEmpty
-        ? 'http://localhost:8000'
-        : _apiUrlCtrl.text.trim();
-    _orchestrator = WhiteboardOrchestrator(baseUrl: initialBaseUrl);
+    _orchestrator = WhiteboardOrchestrator(baseUrl: _defaultApiUrl);
     // Rebuild this widget whenever orchestrator state changes
     _orchestrator.addListener(() {
       if (!mounted) return;
@@ -427,6 +447,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     };
     _timelineController!.onTimelineCompleted = () {
       debugPrint('✅ Timeline completed!');
+      _stopProgressSaveTimer();
       if (mounted) setState(() => _lessonComplete = true);
       // Persist completion status in the backend
       _markSessionComplete();
@@ -443,7 +464,14 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       // Rewatch mode: load a saved timeline directly (no generation step)
       if (!_lessonAutoStarted && widget.autoStartSessionId != null) {
         _lessonAutoStarted = true;
-        Future.microtask(() => _rewatchLesson(widget.autoStartSessionId!));
+        if (widget.continueLesson && widget.resumePlaybackTime > 0) {
+          Future.microtask(() => _continueLesson(
+            widget.autoStartSessionId!,
+            widget.resumePlaybackTime,
+          ));
+        } else {
+          Future.microtask(() => _rewatchLesson(widget.autoStartSessionId!));
+        }
       }
       // Auto-start lesson if topic was provided via route arguments
       else if (!_lessonAutoStarted && widget.autoStartTopic != null) {
@@ -456,10 +484,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   
   Future<void> _checkDeveloperMode() async {
     final devProvider = Provider.of<DeveloperModeProvider>(context, listen: false);
-    final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-        ? 'http://localhost:8000'
-        : _apiUrlCtrl.text.trim();
-    devProvider.setBaseUrl(baseUrl);
+    devProvider.setBaseUrl(_effectiveBaseUrl);
     
     final isDeveloper = await devProvider.refreshFromBackend();
     if (mounted) {
@@ -509,7 +534,12 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
   @override
   void dispose() {
+    // Save progress one final time before leaving
+    _savePlaybackProgress();
+    _stopProgressSaveTimer();
     _timelineController?.removeListener(_onTimelinePauseChanged);
+    _timelineController?.stop();
+    _timelineController?.dispose();
     _xCtrl.dispose();
     _yCtrl.dispose();
     _wCtrl.dispose();
@@ -594,12 +624,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     }
     _busy = true;
     try {
-      final base = _apiUrlCtrl.text.trim().isEmpty
-          ? const String.fromEnvironment(
-              'BACKEND_URL',
-              defaultValue: 'http://127.0.0.1:8001',
-            )
-          : _apiUrlCtrl.text.trim();
+      final base = _effectiveBaseUrl;
       final authService = AuthService(baseUrl: base);
       final diagramUrl =
           '${base.replaceAll(RegExp(r'/+$'), '')}/api/lessons/diagram/';
@@ -796,12 +821,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   Future<void> _runPlannerAndRender(Map<String, dynamic> sessionData) async {
     try {
       await _ensureLayout();
-      final planner = WhiteboardPlanner(_apiUrlCtrl.text.trim().isEmpty
-          ? const String.fromEnvironment(
-              'BACKEND_URL',
-              defaultValue: 'http://127.0.0.1:8001',
-            )
-          : _apiUrlCtrl.text.trim());
+      final planner = WhiteboardPlanner(_effectiveBaseUrl);
       final plan = await planner.planForSession(
         sessionData,
         maxItems: _plMaxItems.round(),
@@ -855,12 +875,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     try {
       debugPrint('🎨 Starting AI Lesson Pipeline with Images...');
 
-      final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-          ? const String.fromEnvironment(
-            'BACKEND_URL',
-            defaultValue: 'http://127.0.0.1:8001',
-          )
-          : _apiUrlCtrl.text.trim();
+      final baseUrl = _effectiveBaseUrl;
       final pipelineApi = LessonPipelineApi(baseUrl: baseUrl);
 
       // Show progress dialog
@@ -1053,12 +1068,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       debugPrint('🎬 Starting synchronized lesson...');
 
       // Initialize APIs
-      final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-          ? const String.fromEnvironment(
-            'BACKEND_URL',
-            defaultValue: 'http://127.0.0.1:8001',
-          )
-          : _apiUrlCtrl.text.trim();
+      final baseUrl = _effectiveBaseUrl;
       _api = AssistantApiClient(baseUrl);
       _timelineApi = TimelineApiClient(baseUrl);
       _timelineController!.setBaseUrl(baseUrl);
@@ -1086,6 +1096,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       // 5. Start playback
       debugPrint('▶️ Starting synchronized playback...');
       await _timelineController!.play();
+      _startProgressSaveTimer();
     } catch (e, st) {
       debugPrint('❌ Synchronized lesson error: $e\n$st');
       _showError('Error: $e');
@@ -1098,6 +1109,21 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   /// Auto-start the synced lesson pipeline with a given topic.
   /// Called when the user navigates here from the home/lessons page with a topic.
   Future<void> _autoStartLesson(String topic) async {
+    // Show image source popup at lesson start
+    final useExistingImages = await _showImageSourceDialog();
+    if (!mounted) return;
+    if (useExistingImages == null) {
+      Navigator.of(context).pop();
+      return;
+    }
+    // Show TTS provider choice: Google or ElevenLabs
+    final useElevenlabsTts = await _showTtsDialog();
+    if (!mounted) return;
+    if (useElevenlabsTts == null) {
+      Navigator.of(context).pop();
+      return;
+    }
+
     setState(() {
       _lessonLoading = true;
       _lessonLoadingStage = 'Connecting to server...';
@@ -1105,12 +1131,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     });
 
     try {
-      debugPrint('🎬 Auto-starting lesson for topic: $topic');
+      debugPrint('🎬 Auto-starting lesson for topic: $topic, useExistingImages: $useExistingImages, useElevenlabsTts: $useElevenlabsTts');
 
       // Initialize APIs
-      final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-          ? 'http://localhost:8000'
-          : _apiUrlCtrl.text.trim();
+      final baseUrl = _effectiveBaseUrl;
       _api = AssistantApiClient(baseUrl);
       _timelineApi = TimelineApiClient(baseUrl);
       _timelineController!.setBaseUrl(baseUrl);
@@ -1120,7 +1144,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         _lessonLoadingStage = 'Starting lesson session...';
         _lessonLoadingProgress = 0.15;
       });
-      final data = await _api!.startLesson(topic: topic);
+      final data = await _api!.startLesson(
+        topic: topic,
+        useExistingImages: useExistingImages,
+        useElevenlabsTts: useElevenlabsTts,
+      );
       _sessionId = data['id'] as int?;
       debugPrint('✅ Session created: $_sessionId');
 
@@ -1166,6 +1194,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
       debugPrint('▶️ Starting synchronized playback...');
       await _timelineController!.play();
+      _startProgressSaveTimer();
     } catch (e, st) {
       debugPrint('❌ Auto-start lesson error: $e\n$st');
       if (mounted) {
@@ -1175,6 +1204,122 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         });
       }
     }
+  }
+
+  /// Shows a dialog at lesson start: use existing DB images vs start research.
+  /// Returns true = use existing, false = start research, null = cancelled.
+  Future<bool?> _showImageSourceDialog() async {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.image_search, size: 28),
+            SizedBox(width: 12),
+            Text('Image Source'),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Choose how to get images for this lesson:',
+              style: TextStyle(fontSize: 15),
+            ),
+            SizedBox(height: 16),
+            Text(
+              '• Use existing images – Faster, uses images already in the database (if available).',
+              style: TextStyle(fontSize: 13),
+            ),
+            SizedBox(height: 8),
+            Text(
+              '• Start research – Searches and indexes new images (slower, but fresh results).',
+              style: TextStyle(fontSize: 13),
+            ),
+          ],
+        ),
+        backgroundColor: isDark ? Colors.grey[900] : Colors.white,
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            icon: const Icon(Icons.storage, size: 18),
+            label: const Text('Use existing images'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            icon: const Icon(Icons.search, size: 18),
+            label: const Text('Start research'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Shows a dialog at lesson start: Google TTS or ElevenLabs TTS.
+  /// Returns true = ElevenLabs, false = Google, null = cancelled.
+  Future<bool?> _showTtsDialog() async {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.record_voice_over, size: 28),
+            SizedBox(width: 12),
+            Text('Voice (TTS)'),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Choose text-to-speech provider:',
+              style: TextStyle(fontSize: 15),
+            ),
+            SizedBox(height: 16),
+            Text(
+              '• Google Cloud TTS – Uses Google voices (requires GOOGLE_APPLICATION_CREDENTIALS).',
+              style: TextStyle(fontSize: 13),
+            ),
+            SizedBox(height: 8),
+            Text(
+              '• ElevenLabs – Uses your voice (Netanyahu + voice_id env vars).',
+              style: TextStyle(fontSize: 13),
+            ),
+          ],
+        ),
+        backgroundColor: isDark ? Colors.grey[900] : Colors.white,
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            icon: const Icon(Icons.cloud, size: 18),
+            label: const Text('Google TTS'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            icon: const Icon(Icons.voice_chat, size: 18),
+            label: const Text('ElevenLabs'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Rewatch a previously completed lesson by loading its saved timeline.
@@ -1191,9 +1336,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       debugPrint('🔁 Rewatching lesson session $sessionId');
 
       // Initialize APIs
-      final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-          ? 'http://localhost:8000'
-          : _apiUrlCtrl.text.trim();
+      final baseUrl = _effectiveBaseUrl;
       _api = AssistantApiClient(baseUrl);
       _timelineApi = TimelineApiClient(baseUrl);
       _timelineController!.setBaseUrl(baseUrl);
@@ -1230,6 +1373,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
       debugPrint('▶️ Starting rewatch playback...');
       await _timelineController!.play();
+      _startProgressSaveTimer();
     } catch (e, st) {
       debugPrint('❌ Rewatch lesson error: $e\n$st');
       if (mounted) {
@@ -1241,14 +1385,115 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     }
   }
 
+  /// Continue a lesson from a saved playback position (minus a 2-second buffer).
+  Future<void> _continueLesson(int sessionId, double resumeTime) async {
+    setState(() {
+      _lessonLoading = true;
+      _lessonLoadingStage = 'Loading saved lesson...';
+      _lessonLoadingProgress = 0.0;
+      _lessonLoadingError = null;
+    });
+
+    try {
+      debugPrint('▶️ Continuing lesson session $sessionId from ${resumeTime}s');
+
+      final baseUrl = _effectiveBaseUrl;
+      _api = AssistantApiClient(baseUrl);
+      _timelineApi = TimelineApiClient(baseUrl);
+      _timelineController!.setBaseUrl(baseUrl);
+      _sessionId = sessionId;
+      _lessonApiService = LessonApiService(baseUrl: baseUrl);
+
+      if (!mounted) return;
+
+      setState(() {
+        _lessonLoadingStage = 'Fetching timeline data...';
+        _lessonLoadingProgress = 0.4;
+      });
+
+      final timeline = await _timelineApi!.getSessionTimeline(sessionId);
+      debugPrint('✅ Timeline loaded: ${timeline.segments.length} segments, ${timeline.totalDuration}s');
+
+      if (!mounted) return;
+
+      setState(() {
+        _lessonLoadingStage = 'Preparing playback...';
+        _lessonLoadingProgress = 0.8;
+      });
+      await _timelineController!.loadTimeline(timeline);
+
+      if (!mounted) return;
+
+      setState(() {
+        _lessonLoading = false;
+        _lessonLoadingStage = '';
+        _lessonLoadingProgress = 1.0;
+      });
+
+      // Seek to 2 seconds before the saved position (so the user gets context)
+      final seekTo = (resumeTime - 2.0).clamp(0.0, timeline.totalDuration);
+      debugPrint('▶️ Seeking to ${seekTo}s (saved was ${resumeTime}s)...');
+      await _timelineController!.seekToTime(seekTo);
+
+      // Start auto-saving progress
+      _startProgressSaveTimer();
+    } catch (e, st) {
+      debugPrint('❌ Continue lesson error: $e\n$st');
+      if (mounted) {
+        setState(() {
+          _lessonLoadingStage = 'Failed to load lesson';
+          _lessonLoadingError = e.toString();
+        });
+      }
+    }
+  }
+
+  /// Start a periodic timer that saves playback progress every 5 seconds.
+  void _startProgressSaveTimer() {
+    _progressSaveTimer?.cancel();
+    _lessonApiService ??= LessonApiService(baseUrl: _effectiveBaseUrl);
+    _progressSaveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _savePlaybackProgress();
+    });
+  }
+
+  /// Stop the periodic progress-save timer.
+  void _stopProgressSaveTimer() {
+    _progressSaveTimer?.cancel();
+    _progressSaveTimer = null;
+  }
+
+  /// Persist the current playback position to the backend.
+  Future<void> _savePlaybackProgress() async {
+    if (_sessionId == null) return;
+    final controller = _timelineController;
+    if (controller == null || !controller.isPlaying) return;
+
+    final segmentIndex = controller.currentSegmentIndex;
+    final playbackTime = controller.currentTime;
+    if (playbackTime <= 0) return;
+
+    try {
+      final baseUrl = _effectiveBaseUrl;
+      final authService = AuthService(baseUrl: baseUrl);
+      await authService.authenticatedPost(
+        '$baseUrl/api/lessons/$_sessionId/save-progress/',
+        body: json.encode({
+          'segment_index': segmentIndex,
+          'playback_time': playbackTime,
+        }),
+      );
+    } catch (e) {
+      debugPrint('⚠️ Auto-save progress failed: $e');
+    }
+  }
+
   /// Persist lesson completion on the backend so it shows as "Completed"
   /// in the history page.
   Future<void> _markSessionComplete() async {
     if (_sessionId == null) return;
     try {
-      final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-          ? 'http://localhost:8000'
-          : _apiUrlCtrl.text.trim();
+      final baseUrl = _effectiveBaseUrl;
       final authService = AuthService(baseUrl: baseUrl);
       await authService.authenticatedPost(
         '$baseUrl/api/lessons/$_sessionId/complete/',
@@ -1462,12 +1707,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
   void _startDiagramPipeline(String prompt, double currentSeconds) async {
     try {
-      final base = _apiUrlCtrl.text.trim().isEmpty
-          ? const String.fromEnvironment(
-              'BACKEND_URL',
-              defaultValue: 'http://127.0.0.1:8001',
-            )
-          : _apiUrlCtrl.text.trim();
+      final base = _effectiveBaseUrl;
       final authService = AuthService(baseUrl: base);
       final diagramUrl =
           '${base.replaceAll(RegExp(r'/+$'), '')}/api/lessons/diagram/';
@@ -1544,26 +1784,35 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     // push down to avoid overlaps with previous blocks
     y = _nextNonCollidingY(st, x, targetH, y);
 
-    // Vectorize with image-friendly params (no raster shown)
-    final strokes = await Vectorizer.vectorize(
-      bytes: Uint8List.fromList(bytes),
-      worldScale: _worldScale,
-      edgeMode: 'Canny',
-      blurK: 3,
-      cannyLo: 35.0,
-      cannyHi: 140.0,
-      epsilon: 0.9,
-      resampleSpacing: 1.1,
-      minPerimeter: math.max(20.0, _minPerim),
-      retrExternalOnly: false,
-      angleThresholdDeg: 85.0,
-      angleWindow: 3,
-      smoothPasses: 2,
-      mergeParallel: true,
-      mergeMaxDist: 14.0,
-      minStrokeLen: 16.0,
-      minStrokePoints: 10,
-    );
+    // Vectorize via backend when baseUrl set, else local
+    final base = _effectiveBaseUrl;
+    final strokes = base.isNotEmpty
+        ? await BackendVectorizer.vectorize(
+            baseUrl: base,
+            bytes: Uint8List.fromList(bytes),
+            worldScale: _worldScale,
+            sourceWidth: img.width.toDouble(),
+            sourceHeight: img.height.toDouble(),
+          )
+        : await Vectorizer.vectorize(
+            bytes: Uint8List.fromList(bytes),
+            worldScale: _worldScale,
+            edgeMode: 'Canny',
+            blurK: 3,
+            cannyLo: 35.0,
+            cannyHi: 140.0,
+            epsilon: 0.9,
+            resampleSpacing: 1.1,
+            minPerimeter: math.max(20.0, _minPerim),
+            retrExternalOnly: false,
+            angleThresholdDeg: 85.0,
+            angleWindow: 3,
+            smoothPasses: 2,
+            mergeParallel: true,
+            mergeMaxDist: 14.0,
+            minStrokeLen: 16.0,
+            minStrokePoints: 10,
+          );
 
     // Drop tiny decorative strokes (dots/specks) to keep result simple
     var filtered =
@@ -1653,12 +1902,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     if (resolvedUrl != null && resolvedUrl.isNotEmpty) {
       try {
         // Use proxy for CORS safety on web
-        final baseUrl = _apiUrlCtrl.text.trim().isEmpty
-            ? const String.fromEnvironment(
-                'BACKEND_URL',
-                defaultValue: 'http://127.0.0.1:8001',
-              )
-            : _apiUrlCtrl.text.trim();
+        final baseUrl = _effectiveBaseUrl;
         final api = LessonPipelineApi(baseUrl: baseUrl);
         final proxiedUrl = api.buildProxiedImageUrl(resolvedUrl);
 
@@ -1718,12 +1962,50 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     double x, y;
 
     if (hasExplicitPlacement) {
-      // Use explicit placement from action
-      x = (p['x'] as num?)?.toDouble() ?? contentX0;
-      y = (p['y'] as num?)?.toDouble() ?? st.cursorY;
-      targetW = (p['width'] as num?)?.toDouble() ?? (cw * 0.4);
-      targetH = (p['height'] as num?)?.toDouble() ??
-          (targetW * (img.height / math.max(1, img.width)));
+      // Use explicit placement from action. Support:
+      // 1) normalized ratios (0..1), 2) pixel values authored for 1920x1080,
+      // 3) direct pixel values in current canvas space.
+      double px = (p['x'] as num?)?.toDouble() ?? contentX0;
+      double py = (p['y'] as num?)?.toDouble() ?? st.cursorY;
+      double pw = (p['width'] as num?)?.toDouble() ?? (cw * 0.4);
+      double ph = (p['height'] as num?)?.toDouble() ??
+          (pw * (img.height / math.max(1, img.width)));
+
+      final isNormalized = px >= 0 &&
+          px <= 1 &&
+          py >= 0 &&
+          py <= 1 &&
+          pw > 0 &&
+          pw <= 1.2 &&
+          ph > 0 &&
+          ph <= 1.2;
+      if (isNormalized) {
+        px *= cfg.page.width;
+        py *= cfg.page.height;
+        pw *= cfg.page.width;
+        ph *= cfg.page.height;
+      } else {
+        final looksLike1920Space = px >= 0 &&
+            py >= 0 &&
+            pw > 0 &&
+            ph > 0 &&
+            px <= 1920 &&
+            py <= 1080 &&
+            pw <= 1920 &&
+            ph <= 1080;
+        if (looksLike1920Space &&
+            (cfg.page.width != 1920 || cfg.page.height != 1080)) {
+          px = (px / 1920.0) * cfg.page.width;
+          py = (py / 1080.0) * cfg.page.height;
+          pw = (pw / 1920.0) * cfg.page.width;
+          ph = (ph / 1080.0) * cfg.page.height;
+        }
+      }
+
+      x = px;
+      y = py;
+      targetW = pw;
+      targetH = ph;
 
       // Apply scale if specified
       final scale = (p['scale'] as num?)?.toDouble();
@@ -1731,6 +2013,14 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         targetW *= scale;
         targetH *= scale;
       }
+
+      // Keep explicit placement inside drawable page bounds.
+      final maxW = math.max(80.0, cfg.page.width - cfg.page.left - cfg.page.right);
+      final maxH = math.max(80.0, cfg.page.height - cfg.page.top - cfg.page.bottom);
+      targetW = targetW.clamp(80.0, maxW).toDouble();
+      targetH = targetH.clamp(80.0, maxH).toDouble();
+      x = x.clamp(cfg.page.left, cfg.page.width - cfg.page.right - targetW).toDouble();
+      y = y.clamp(cfg.page.top, cfg.page.height - cfg.page.bottom - targetH).toDouble();
     } else {
       // Auto-place: similar to _sketchDiagramAuto logic
       double maxW = cw * 0.4; // 40% of column width for images
@@ -1768,28 +2058,37 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
     debugPrint('   📐 Placement: ($x, $y) size: ${targetW}x$targetH');
 
-    // ── Step 5: Vectorize the image ────────────────────────────────────────
+    // ── Step 5: Vectorize the image (backend when baseUrl set) ───────────────
     List<List<Offset>> strokes;
     try {
-      strokes = await Vectorizer.vectorize(
-        bytes: imageBytes,
-        worldScale: _worldScale,
-        edgeMode: 'Canny',
-        blurK: 3,
-        cannyLo: 35.0,
-        cannyHi: 140.0,
-        epsilon: 0.9,
-        resampleSpacing: 1.1,
-        minPerimeter: math.max(20.0, _minPerim),
-        retrExternalOnly: false,
-        angleThresholdDeg: 85.0,
-        angleWindow: 3,
-        smoothPasses: 2,
-        mergeParallel: true,
-        mergeMaxDist: 14.0,
-        minStrokeLen: 16.0,
-        minStrokePoints: 10,
-      );
+      final base = _effectiveBaseUrl;
+      strokes = base.isNotEmpty
+          ? await BackendVectorizer.vectorize(
+              baseUrl: base,
+              bytes: imageBytes,
+              worldScale: _worldScale,
+              sourceWidth: img.width.toDouble(),
+              sourceHeight: img.height.toDouble(),
+            )
+          : await Vectorizer.vectorize(
+              bytes: imageBytes,
+              worldScale: _worldScale,
+              edgeMode: 'Canny',
+              blurK: 3,
+              cannyLo: 35.0,
+              cannyHi: 140.0,
+              epsilon: 0.9,
+              resampleSpacing: 1.1,
+              minPerimeter: math.max(20.0, _minPerim),
+              retrExternalOnly: false,
+              angleThresholdDeg: 85.0,
+              angleWindow: 3,
+              smoothPasses: 2,
+              mergeParallel: true,
+              mergeMaxDist: 14.0,
+              minStrokeLen: 16.0,
+              minStrokePoints: 10,
+            );
     } catch (e) {
       debugPrint('❌ Vectorization failed: $e');
       return false;
@@ -2073,28 +2372,37 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       final mergeDist = centerlineMode
           ? (fontSize * _clMergeFactor).clamp(_clMergeMin, _clMergeMax)
           : 10.0;
-      final strokes = await Vectorizer.vectorize(
-        bytes: rl.bytes,
-        worldScale: _worldScale,
-        edgeMode: 'Canny',
-        blurK: 3,
-        cannyLo: 30,
-        cannyHi: 120,
-        dogSigma: _dogSigma,
-        dogK: _dogK,
-        dogThresh: _dogThresh,
-        epsilon: centerlineMode ? _clEpsilon : 0.8,
-        resampleSpacing: centerlineMode ? _clResample : 1.0,
-        minPerimeter: (_minPerim * 0.6).clamp(6.0, 1e9),
-        retrExternalOnly: false,
-        angleThresholdDeg: 85,
-        angleWindow: 3,
-        smoothPasses: centerlineMode ? _clSmoothPasses.round() : 1,
-        mergeParallel: true,
-        mergeMaxDist: mergeDist,
-        minStrokeLen: 4.0,
-        minStrokePoints: 3,
-      );
+      final base = _effectiveBaseUrl;
+      final strokes = base.isNotEmpty
+          ? await BackendVectorizer.vectorize(
+              baseUrl: base,
+              bytes: rl.bytes,
+              worldScale: _worldScale,
+              sourceWidth: rl.w,
+              sourceHeight: rl.h,
+            )
+          : await Vectorizer.vectorize(
+              bytes: rl.bytes,
+              worldScale: _worldScale,
+              edgeMode: 'Canny',
+              blurK: 3,
+              cannyLo: 30,
+              cannyHi: 120,
+              dogSigma: _dogSigma,
+              dogK: _dogK,
+              dogThresh: _dogThresh,
+              epsilon: centerlineMode ? _clEpsilon : 0.8,
+              resampleSpacing: centerlineMode ? _clResample : 1.0,
+              minPerimeter: (_minPerim * 0.6).clamp(6.0, 1e9),
+              retrExternalOnly: false,
+              angleThresholdDeg: 85,
+              angleWindow: 3,
+              smoothPasses: centerlineMode ? _clSmoothPasses.round() : 1,
+              mergeParallel: true,
+              mergeMaxDist: mergeDist,
+              minStrokeLen: 4.0,
+              minStrokePoints: 3,
+            );
       final lineHeight = fontSize * 1.25;
       // Center-of-image placement: vectorizer returns strokes centered at (0,0) of the image
       final centerOffset = Offset(rl.w / 2.0, rl.h / 2.0);
@@ -2583,27 +2891,49 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   }
 
   void _maybeUpdateCanvasSize(Size size) {
-    final prev = _canvasSize;
-    if (prev != null &&
-        (prev.width - size.width).abs() < 1 &&
-        (prev.height - size.height).abs() < 1) {
+    final baseline = _pendingCanvasSize ?? _canvasSize;
+    if (!_isMeaningfulSizeChange(baseline, size)) {
       return;
     }
-    _canvasSize = size;
-    _orchestrator.setCanvasSize(size);
-    // rebuild layout config for new page size while preserving cursor/blocks
-    if (_layout == null) return;
-    final newCfg = _buildLayoutConfigForSize(size.width, size.height);
-    setState(() {
-      _layout = LayoutState(
-        config: newCfg,
-        cursorY: _layout!.cursorY
-            .clamp(newCfg.page.top, newCfg.page.height - newCfg.page.bottom),
-        columnIndex: 0,
-        blocks: _layout!.blocks, // keep drawn blocks references
-        sectionCount: _layout!.sectionCount,
-      );
+    _pendingCanvasSize = size;
+    if (_canvasSizeUpdateScheduled) return;
+
+    _canvasSizeUpdateScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _canvasSizeUpdateScheduled = false;
+      if (!mounted) return;
+
+      final pending = _pendingCanvasSize;
+      _pendingCanvasSize = null;
+      if (pending == null || !_isMeaningfulSizeChange(_canvasSize, pending)) {
+        return;
+      }
+
+      _canvasSize = pending;
+      _orchestrator.setCanvasSize(pending);
+
+      // Rebuild layout config for new page size while preserving cursor/blocks.
+      final currentLayout = _layout;
+      if (currentLayout == null) return;
+
+      final newCfg = _buildLayoutConfigForSize(pending.width, pending.height);
+      setState(() {
+        _layout = LayoutState(
+          config: newCfg,
+          cursorY: currentLayout.cursorY
+              .clamp(newCfg.page.top, newCfg.page.height - newCfg.page.bottom),
+          columnIndex: 0,
+          blocks: currentLayout.blocks, // keep drawn blocks references
+          sectionCount: currentLayout.sectionCount,
+        );
+      });
     });
+  }
+
+  bool _isMeaningfulSizeChange(Size? prev, Size next) {
+    if (prev == null) return true;
+    return (prev.width - next.width).abs() >= 1 ||
+        (prev.height - next.height).abs() >= 1;
   }
 
   Widget _buildRightPanel(BuildContext context) {
@@ -2937,7 +3267,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           TextField(
             controller: _apiUrlCtrl,
             decoration: const InputDecoration(
-                labelText: 'Backend URL (e.g. http://127.0.0.1:8001)'),
+                labelText: 'Backend URL (e.g. http://127.0.0.1:8000)'),
           ),
           const SizedBox(height: 8),
           // NEW: Lesson Pipeline with Intelligent Images

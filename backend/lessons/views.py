@@ -80,6 +80,7 @@ class StartLessonView(APIView):
                 lesson_obj = Lesson.objects.get(title__iexact=str(topic).strip())
             except Lesson.DoesNotExist:
                 lesson_obj = None
+        use_existing_images = request.data.get('use_existing_images', False) in (True, 'true', '1')
         engine = TutorEngine()
         plan = engine.build_lesson_plan(topic)
 
@@ -91,6 +92,7 @@ class StartLessonView(APIView):
             current_step_index=0,
             is_waiting_for_question=False,
             is_completed=False,
+            use_existing_images=use_existing_images,
         )
 
         # Speak the first step
@@ -128,8 +130,9 @@ class NextSegmentView(APIView):
         if session.current_step_index < len(session.lesson_plan) - 1:
             session.current_step_index += 1
 
+        use_elevenlabs_tts = getattr(session, 'use_elevenlabs_tts', False)
         step_text = engine.continue_step(session.lesson_plan[session.current_step_index])
-        audio_path = engine.synthesize_speech(step_text)
+        audio_path = engine.synthesize_speech(step_text, use_elevenlabs_tts=use_elevenlabs_tts)
         Utterance.objects.create(session=session, role='tutor', text=step_text, audio_file=audio_path)
 
         # If this is the last step, mark completed after speaking
@@ -182,18 +185,19 @@ class RaiseHandView(APIView):
 
         # (If start_live was requested we already returned above.)
 
+        use_elevenlabs_tts = getattr(session, 'use_elevenlabs_tts', False)
         answer = engine.answer_question(step_text, question_text)
         # Store student's question
         Utterance.objects.create(session=session, role='student', text=question_text)
         # Store tutor's answer
-        audio_path = engine.synthesize_speech(answer)
+        audio_path = engine.synthesize_speech(answer, use_elevenlabs_tts=use_elevenlabs_tts)
         Utterance.objects.create(session=session, role='tutor', text=answer, audio_file=audio_path)
 
         # After answering, continue exactly where we left off: move to next step if any
         if session.current_step_index < len(session.lesson_plan) - 1:
             session.current_step_index += 1
             next_text = engine.continue_step(session.lesson_plan[session.current_step_index])
-            next_audio = engine.synthesize_speech(next_text)
+            next_audio = engine.synthesize_speech(next_text, use_elevenlabs_tts=use_elevenlabs_tts)
             Utterance.objects.create(session=session, role='tutor', text=next_text, audio_file=next_audio)
             # Allow another question after the new sentence
             session.is_waiting_for_question = False
@@ -222,7 +226,8 @@ class LiveChatView(APIView):
             return Response({"detail": "message is required"}, status=400)
         reply = engine.live_message(session.id, user_text) or "I didn't catch that. Could you rephrase?"
         Utterance.objects.create(session=session, role='student', text=user_text)
-        audio = engine.synthesize_speech(reply)
+        use_elevenlabs_tts = getattr(session, 'use_elevenlabs_tts', False)
+        audio = engine.synthesize_speech(reply, use_elevenlabs_tts=use_elevenlabs_tts)
         Utterance.objects.create(session=session, role='tutor', text=reply, audio_file=audio)
         data = LessonSessionSerializer(session).data
         data['live'] = True
@@ -235,8 +240,9 @@ class LiveChatView(APIView):
         # After ending live, auto-advance to next lesson step
         if session.current_step_index < len(session.lesson_plan) - 1:
             session.current_step_index += 1
-            next_text = TutorEngine().continue_step(session.lesson_plan[session.current_step_index])
-            next_audio = TutorEngine().synthesize_speech(next_text)
+            use_elevenlabs_tts = getattr(session, 'use_elevenlabs_tts', False)
+            next_text = engine.continue_step(session.lesson_plan[session.current_step_index])
+            next_audio = engine.synthesize_speech(next_text, use_elevenlabs_tts=use_elevenlabs_tts)
             Utterance.objects.create(session=session, role='tutor', text=next_text, audio_file=next_audio)
             session.is_completed = session.current_step_index >= len(session.lesson_plan) - 1
         else:
@@ -399,17 +405,30 @@ class DiagnosticsView(APIView):
         info['live_api'] = live
 
         # Google TTS check
-        tts = { 'available': False }
+        google_tts = {'available': False}
         try:
             from google.cloud import texttospeech
             client = texttospeech.TextToSpeechClient()
-            # light call: list voices (no billing)
             voices = client.list_voices()
-            tts['available'] = True
-            tts['voices'] = len(getattr(voices, 'voices', []) or [])
+            google_tts['available'] = True
+            google_tts['voices'] = len(getattr(voices, 'voices', []) or [])
         except Exception as e:
-            tts['error'] = str(e)
-        info['google_tts'] = tts
+            google_tts['error'] = str(e)
+        info['google_tts'] = google_tts
+
+        # ElevenLabs TTS check (Netanyahu + voice_id env vars)
+        elevenlabs_tts = {'available': False}
+        try:
+            api_key = os.getenv('Netanyahu', '')
+            voice_id = os.getenv('voice_id', '')
+            if api_key and voice_id:
+                from elevenlabs.client import ElevenLabs
+                ElevenLabs(api_key=api_key)
+                elevenlabs_tts['available'] = True
+                elevenlabs_tts['voice_id'] = voice_id
+        except Exception as e:
+            elevenlabs_tts['error'] = str(e)
+        info['elevenlabs_tts'] = elevenlabs_tts
 
         info['took_ms'] = int((time.time() - started_at) * 1000)
         return Response(info)
@@ -713,9 +732,51 @@ class LessonHistoryView(APIView):
                 'timeline_id': tl.id,
                 'total_duration': tl.total_duration,
                 'segment_count': tl.segment_records.count(),
+                'resume_segment_index': s.resume_segment_index,
+                'resume_playback_time': s.resume_playback_time,
             })
 
         return Response(results)
+
+
+class SaveProgressView(APIView):
+    """Persist the current playback position so the user can resume later."""
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, session_id):
+        # Try to find the session — for authenticated users, scope to their own.
+        if request.user and request.user.is_authenticated:
+            session = get_object_or_404(LessonSession, pk=session_id, user=request.user)
+        else:
+            session = get_object_or_404(LessonSession, pk=session_id)
+
+        segment_index = request.data.get('segment_index')
+        playback_time = request.data.get('playback_time')
+
+        if segment_index is None or playback_time is None:
+            return Response(
+                {'error': 'segment_index and playback_time are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            segment_index = int(segment_index)
+            playback_time = float(playback_time)
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'segment_index must be int, playback_time must be float'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        session.resume_segment_index = segment_index
+        session.resume_playback_time = playback_time
+        session.save(update_fields=['resume_segment_index', 'resume_playback_time', 'updated_at'])
+
+        return Response({
+            'status': 'saved',
+            'resume_segment_index': session.resume_segment_index,
+            'resume_playback_time': session.resume_playback_time,
+        })
 
 
 class MarkLessonCompleteView(APIView):

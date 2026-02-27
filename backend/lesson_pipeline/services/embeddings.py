@@ -429,50 +429,45 @@ class SigLIPEmbeddingService:
             "or ImageMagick (https://imagemagick.org/script/download.php)"
         )
     
-    def _fetch_with_retry(self, url: str, headers: dict, max_retries: int = 3) -> requests.Response:
+    def _fetch_with_retry(self, url: str, headers: dict, max_retries: int = 2) -> requests.Response:
         """
-        Fetch URL with retry logic and exponential backoff for rate limiting.
-        
-        Args:
-            url: URL to fetch
-            headers: Request headers
-            max_retries: Maximum number of retries
-            
-        Returns:
-            Response object
-            
-        Raises:
-            requests.HTTPError: If all retries fail
+        Fetch URL with minimal retries. Fail fast on permanent errors (403, 404, etc.)
+        to skip failed embeds quickly instead of blocking on slow/broken URLs.
+
+        Uses short timeout (embedding_fetch_timeout) so bad URLs don't block the batch.
         """
         import time
-        
+
+        fetch_timeout = getattr(config, 'embedding_fetch_timeout', 15) or 15
+
         for attempt in range(max_retries):
-            # Exponential backoff: 0.5s, 1s, 2s
             if attempt > 0:
-                delay = 0.5 * (2 ** attempt)
-                logger.debug(f"Retry {attempt + 1}/{max_retries} after {delay}s delay")
-                time.sleep(delay)
-            else:
-                time.sleep(0.2)  # Initial courtesy delay
-            
-            response = requests.get(url, headers=headers, timeout=config.embedding_timeout)
-            
-            if response.status_code == 429:  # Rate limited
-                logger.warning(f"Rate limited (429), retrying...")
+                time.sleep(1)  # Brief backoff only for retryable errors
+
+            try:
+                response = requests.get(url, headers=headers, timeout=fetch_timeout)
+            except (requests.Timeout, requests.ConnectionError) as e:
+                logger.warning(f"Fetch failed (attempt {attempt + 1}): {e}")
+                if attempt == max_retries - 1:
+                    raise
                 continue
-            elif response.status_code == 403:  # Forbidden - might be temporary
-                logger.warning(f"Forbidden (403) for {url[:60]}...")
-                # Check if it's a robot block vs actual forbidden
-                if 'robot' in response.text.lower():
-                    continue  # Might be temporary, retry
+
+            # Fail fast - no retries for permanent errors
+            if response.status_code in (403, 404, 410, 451):
+                logger.debug(f"Permanent error {response.status_code} for {url[:50]}..., skipping")
                 response.raise_for_status()
-            else:
+
+            if response.status_code == 429:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Rate limited (429), retrying...")
+                    continue
                 response.raise_for_status()
-                return response
-        
-        # All retries exhausted
-        response.raise_for_status()
-        return response
+
+            response.raise_for_status()
+            return response
+
+        # Should not reach here; fail safely
+        raise requests.HTTPError("Max retries exceeded")
     
     def _load_image_from_source(self, image_url: str) -> Image.Image:
         """

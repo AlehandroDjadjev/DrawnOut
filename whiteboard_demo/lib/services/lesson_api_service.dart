@@ -32,7 +32,7 @@ class LessonApiService {
   final String baseUrl;
   final AuthService _authService;
 
-  LessonApiService({this.baseUrl = 'http://127.0.0.1:8001'})
+  LessonApiService({this.baseUrl = 'http://127.0.0.1:8000'})
       : _authService = AuthService(baseUrl: baseUrl);
 
   /// Set callback for when session expires (refresh failed).
@@ -86,22 +86,25 @@ class LessonApiService {
 
   /// Start a new lesson session
   /// Returns the session response with session ID
+  /// [useExistingImages] when true, skips image research and uses existing DB images (faster)
+  /// [useElevenlabsTts] when true, uses ElevenLabs TTS; else Google Cloud TTS
   Future<LessonSessionResponse> startLesson({
     required String topic,
     int? lessonId,
+    bool useExistingImages = false,
+    bool useElevenlabsTts = false,
     String?
         authToken, // Kept for API compatibility but ignored - uses AuthService
   }) async {
     debugPrint('Starting lesson with topic: $topic');
 
-    final payload = <String, dynamic>{
-      'topic': topic,
-      if (lessonId != null) 'lesson_id': lessonId,
-    };
-
     final response = await _authService.authenticatedPost(
       _api('/start/'),
-      body: json.encode(payload),
+      body: json.encode({
+        'topic': topic,
+        'use_existing_images': useExistingImages,
+        'use_elevenlabs_tts': useElevenlabsTts,
+      }),
     );
 
     if (response.statusCode != 201 && response.statusCode != 200) {
@@ -139,5 +142,27 @@ class LessonApiService {
 
     final data = json.decode(response.body) as Map<String, dynamic>;
     return LessonSessionResponse.fromJson(data);
+  }
+
+  /// Save the current playback position so the user can resume later.
+  Future<void> saveProgress({
+    required int sessionId,
+    required int segmentIndex,
+    required double playbackTime,
+  }) async {
+    try {
+      final response = await _authService.authenticatedPost(
+        _api('/$sessionId/save-progress/'),
+        body: json.encode({
+          'segment_index': segmentIndex,
+          'playback_time': playbackTime,
+        }),
+      );
+      if (response.statusCode != 200) {
+        debugPrint('Save progress failed: ${response.statusCode} ${response.body}');
+      }
+    } catch (e) {
+      debugPrint('Save progress error: $e');
+    }
   }
 }

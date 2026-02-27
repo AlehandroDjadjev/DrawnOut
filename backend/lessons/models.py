@@ -12,6 +12,22 @@ class LessonSession(models.Model):
     current_step_index = models.PositiveIntegerField(default=0)
     is_waiting_for_question = models.BooleanField(default=False)
     is_completed = models.BooleanField(default=False)
+    use_existing_images = models.BooleanField(
+        default=False,
+        help_text="If True, skip image research and use existing Pinecone images only (faster, requires prior indexing)"
+    )
+    use_elevenlabs_tts = models.BooleanField(
+        default=False,
+        help_text="If True, use ElevenLabs TTS; else use Google Cloud TTS"
+    )
+    resume_segment_index = models.PositiveIntegerField(
+        default=0,
+        help_text="Last-played segment index for continue-lesson feature"
+    )
+    resume_playback_time = models.FloatField(
+        default=0.0,
+        help_text="Playback position in seconds (global timeline time) for continue-lesson"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

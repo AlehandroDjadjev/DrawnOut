@@ -2,19 +2,12 @@
 Image research service - wrapper around existing image_researcher app.
 """
 import logging
-import sys
-from pathlib import Path
 from typing import List
 
 from lesson_pipeline.types import ImageCandidate
 from lesson_pipeline.config import config
 
 logger = logging.getLogger(__name__)
-
-# Add wb_research app to path for Imageresearcher
-WB_RESEARCH_DIR = Path(__file__).parent.parent.parent / 'wb_research'
-if str(WB_RESEARCH_DIR) not in sys.path:
-    sys.path.insert(0, str(WB_RESEARCH_DIR))
 
 # Lazy import - will be loaded on first use
 ir = None
@@ -25,11 +18,13 @@ def _get_image_researcher():
     """
     Load Imageresearcher module. Crashes with clear error if it fails.
     NO FALLBACKS - if this fails, fix the dependencies.
+    Must import via wb_research package so Imageresearcher's relative imports
+    (from .ddg_research, .smart_hits) resolve correctly.
     """
     global ir, IMAGE_RESEARCHER_AVAILABLE
     if IMAGE_RESEARCHER_AVAILABLE is None:
         try:
-            import Imageresearcher as _ir
+            from wb_research import Imageresearcher as _ir
             ir = _ir
             IMAGE_RESEARCHER_AVAILABLE = True
             logger.info("Imageresearcher module loaded from wb_research")

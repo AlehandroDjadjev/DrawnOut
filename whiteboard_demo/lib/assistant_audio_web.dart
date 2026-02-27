@@ -22,7 +22,7 @@ void setAssistantAudioBaseUrl(String baseUrl) {
     if (cleaned.isEmpty) {
       cleaned = const String.fromEnvironment(
         'BACKEND_URL',
-        defaultValue: 'http://127.0.0.1:8001',
+        defaultValue: 'http://127.0.0.1:8000',
       );
       cleaned = '$cleaned/';
     }

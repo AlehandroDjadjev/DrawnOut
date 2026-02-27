@@ -68,6 +68,20 @@ class _LessonHistoryPageState extends State<LessonHistoryPage> {
     );
   }
 
+  void _continueLesson(Map<String, dynamic> session) {
+    Navigator.pushNamed(
+      context,
+      '/whiteboard',
+      arguments: {
+        'session_id': session['id'],
+        'title': session['topic'],
+        'rewatch': true,
+        'continue_lesson': true,
+        'resume_playback_time': (session['resume_playback_time'] as num?)?.toDouble() ?? 0.0,
+      },
+    );
+  }
+
   static String _fmtDuration(double? seconds) {
     if (seconds == null) return '--:--';
     final m = (seconds ~/ 60).toString().padLeft(2, '0');
@@ -144,6 +158,9 @@ class _LessonHistoryPageState extends State<LessonHistoryPage> {
                         itemCount: _sessions.length,
                         itemBuilder: (context, index) {
                           final s = _sessions[index] as Map<String, dynamic>;
+                          final resumeTime = (s['resume_playback_time'] as num?)?.toDouble() ?? 0.0;
+                          final isCompleted = (s['is_completed'] as bool?) ?? false;
+                          final canContinue = !isCompleted && resumeTime > 0;
                           return _SessionCard(
                             topic: (s['topic'] ?? '') as String,
                             date: _fmtDate(s['created_at'] as String?),
@@ -151,10 +168,15 @@ class _LessonHistoryPageState extends State<LessonHistoryPage> {
                               (s['total_duration'] as num?)?.toDouble(),
                             ),
                             segmentCount: (s['segment_count'] as int?) ?? 0,
-                            isCompleted: (s['is_completed'] as bool?) ?? false,
+                            isCompleted: isCompleted,
                             hasTimeline: s['timeline_id'] != null,
+                            resumeTime: resumeTime,
+                            totalDuration: (s['total_duration'] as num?)?.toDouble() ?? 0.0,
                             onRewatch: s['timeline_id'] != null
                                 ? () => _rewatch(s)
+                                : null,
+                            onContinue: canContinue && s['timeline_id'] != null
+                                ? () => _continueLesson(s)
                                 : null,
                           );
                         },
@@ -171,7 +193,10 @@ class _SessionCard extends StatelessWidget {
   final int segmentCount;
   final bool isCompleted;
   final bool hasTimeline;
+  final double resumeTime;
+  final double totalDuration;
   final VoidCallback? onRewatch;
+  final VoidCallback? onContinue;
 
   const _SessionCard({
     required this.topic,
@@ -180,7 +205,10 @@ class _SessionCard extends StatelessWidget {
     required this.segmentCount,
     required this.isCompleted,
     required this.hasTimeline,
+    this.resumeTime = 0.0,
+    this.totalDuration = 0.0,
     this.onRewatch,
+    this.onContinue,
   });
 
   @override
@@ -267,6 +295,19 @@ class _SessionCard extends StatelessWidget {
                 Text('$segmentCount segments',
                     style: TextStyle(fontSize: 12, color: Colors.grey[600])),
                 const Spacer(),
+                // Continue button (for incomplete lessons with saved progress)
+                if (onContinue != null) ...[                  FilledButton.icon(
+                    onPressed: onContinue,
+                    icon: const Icon(Icons.play_arrow, size: 16),
+                    label: const Text('Continue'),
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 4),
+                      textStyle: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                ],
                 // Rewatch button
                 if (hasTimeline)
                   FilledButton.tonalIcon(
@@ -281,9 +322,31 @@ class _SessionCard extends StatelessWidget {
                   ),
               ],
             ),
+            // Resume progress bar (for in-progress lessons)
+            if (onContinue != null && totalDuration > 0) ...[              const SizedBox(height: 10),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: (resumeTime / totalDuration).clamp(0.0, 1.0),
+                  minHeight: 4,
+                  backgroundColor: Colors.grey[300],
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Stopped at ${_formatTime(resumeTime)} / ${_formatTime(totalDuration)}',
+                style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+              ),
+            ],
           ],
         ),
       ),
     );
+  }
+
+  static String _formatTime(double seconds) {
+    final m = (seconds ~/ 60).toString().padLeft(2, '0');
+    final s = (seconds.truncate() % 60).toString().padLeft(2, '0');
+    return '$m:$s';
   }
 }

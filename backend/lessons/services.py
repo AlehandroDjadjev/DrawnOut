@@ -1,5 +1,6 @@
 import io
 import os
+import re
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -7,7 +8,10 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.conf import settings
 
-from google.cloud import texttospeech
+try:
+    from google.cloud import texttospeech
+except Exception:
+    texttospeech = None
 
 try:
     import google.generativeai as genai  # optional
@@ -20,6 +24,8 @@ from openai import OpenAI
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 GOOGLE_APPLICATION_CREDENTIALS = os.getenv('GOOGLE_APPLICATION_CREDENTIALS', '')
 GOOGLE_AI_API_KEY = os.getenv('GOOGLE_AI_API_KEY', '')
+ELEVENLABS_API_KEY = os.getenv('Netanyahu', '')
+ELEVENLABS_VOICE_ID = os.getenv('voice_id', '')
 
 
 @dataclass
@@ -33,11 +39,22 @@ class TutorEngine:
 
     def __init__(self):
         self.openai = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
-        # Google TTS client (relies on GOOGLE_APPLICATION_CREDENTIALS or ADC)
-        try:
-            self.tts_client = texttospeech.TextToSpeechClient()
-        except Exception:
-            self.tts_client = None
+        # ElevenLabs TTS client (API key from Netanyahu env, voice from voice_id env)
+        self._elevenlabs_client = None
+        if ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
+            try:
+                from elevenlabs.client import ElevenLabs
+                self._elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+            except Exception:
+                pass
+
+        # Google Cloud TTS client (fallback when use_elevenlabs_tts=False)
+        self._google_tts_client = None
+        if texttospeech:
+            try:
+                self._google_tts_client = texttospeech.TextToSpeechClient()
+            except Exception:
+                pass
 
         # Gemini / google generative ai availability
         self.gemini_available = bool(GOOGLE_AI_API_KEY and genai)
@@ -147,7 +164,7 @@ class TutorEngine:
                 pass
         return ""
 
-    # --- TTS ---
+    # --- TTS (ElevenLabs or Google Cloud) ---
     def synthesize_speech(
         self,
         text: str,
@@ -156,67 +173,71 @@ class TutorEngine:
         speaking_rate: Optional[float] = None,
         pitch: Optional[float] = None,
         volume_gain_db: Optional[float] = None,
+        use_elevenlabs_tts: bool = False,
     ) -> Optional[str]:
         """
         Synthesize speech and save to default_storage. Returns saved path or None.
-        - If use_ssml=True, `text` is treated as SSML. Otherwise plain text.
-        - speaking_rate: 0.25..4.0
-        - pitch: semitones (-20..20)
-        - volume_gain_db: -96..16
+        use_elevenlabs_tts: If True, use ElevenLabs (Netanyahu + voice_id env vars); else Google Cloud TTS.
         """
-        if not self.tts_client:
+        plain_text = text
+        if use_ssml and text.strip().startswith("<speak"):
+            plain_text = re.sub(r"<[^>]+>", "", text).strip()
+        elif use_ssml:
+            plain_text = re.sub(r"<[^>]+>", "", text).strip() or text
+        if not plain_text.strip():
             return None
 
-        # Pull defaults from settings if present
-        default_voice = voice or getattr(settings, "TTS_DEFAULT_VOICE", "en-US-Neural2-F")
-        candidate_voices = getattr(settings, "TTS_CANDIDATE_VOICES", [default_voice, "en-US-Wavenet-F", "en-US-Standard-F"])
-        language_code = getattr(settings, "TTS_LANGUAGE_CODE", "en-US")
-        ssml_gender_str = getattr(settings, "TTS_SSML_GENDER", "FEMALE")
-        try:
-            ssml_gender = getattr(texttospeech.SsmlVoiceGender, ssml_gender_str)
-        except Exception:
-            ssml_gender = texttospeech.SsmlVoiceGender.FEMALE
-
-        speaking_rate = speaking_rate if speaking_rate is not None else getattr(settings, "TTS_DEFAULT_SPEAKING_RATE", 1.0)
-        pitch = pitch if pitch is not None else getattr(settings, "TTS_DEFAULT_PITCH", 0.0)
-        volume_gain_db = volume_gain_db if volume_gain_db is not None else getattr(settings, "TTS_DEFAULT_VOLUME_GAIN_DB", 0.0)
-
-        # Build input (SSML or plain text)
-        if use_ssml:
-            # Wrap text in <speak> if user provided plain text
-            if not text.strip().startswith("<speak"):
-                ssml_text = f"<speak><prosody rate=\"{speaking_rate}\" pitch=\"{pitch}st\">{text}</prosody></speak>"
-            else:
-                ssml_text = text
-            synthesis_input = texttospeech.SynthesisInput(ssml=ssml_text)
-        else:
-            synthesis_input = texttospeech.SynthesisInput(text=text)
-
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=speaking_rate,
-            pitch=pitch,
-            volume_gain_db=volume_gain_db,
-        )
-
-        for candidate in candidate_voices:
+        # ElevenLabs path
+        if use_elevenlabs_tts and self._elevenlabs_client and ELEVENLABS_VOICE_ID:
             try:
-                voice_params = texttospeech.VoiceSelectionParams(
-                    language_code=language_code,
-                    name=candidate,
-                    ssml_gender=ssml_gender,
+                audio_iter = self._elevenlabs_client.text_to_speech.convert(
+                    text=plain_text,
+                    voice_id=ELEVENLABS_VOICE_ID,
+                    model_id="eleven_multilingual_v2",
+                    output_format="mp3_44100_128",
                 )
-                response = self.tts_client.synthesize_speech(
-                    input=synthesis_input,
-                    voice=voice_params,
-                    audio_config=audio_config,
-                )
-                # Save result and return path
-                safe_name = f"tts/utterance_{abs(hash(candidate + '|' + text))}.mp3"
-                saved_path = default_storage.save(safe_name, ContentFile(response.audio_content))
-                return saved_path
+                audio_content = b"".join(audio_iter) if hasattr(audio_iter, "__iter__") else bytes(audio_iter)
+                if audio_content:
+                    safe_name = f"tts/utterance_{abs(hash(ELEVENLABS_VOICE_ID + '|' + text))}.mp3"
+                    return default_storage.save(safe_name, ContentFile(audio_content))
             except Exception:
-                continue
+                pass
+
+        # Google Cloud TTS path
+        if self._google_tts_client and texttospeech:
+            sr = speaking_rate if speaking_rate is not None else getattr(settings, "TTS_DEFAULT_SPEAKING_RATE", 1.0)
+            pt = pitch if pitch is not None else getattr(settings, "TTS_DEFAULT_PITCH", 0.0)
+            vg = volume_gain_db if volume_gain_db is not None else getattr(settings, "TTS_DEFAULT_VOLUME_GAIN_DB", 0.0)
+            candidate_voices = getattr(settings, "TTS_CANDIDATE_VOICES", ["en-US-Neural2-F", "en-US-Wavenet-F", "en-US-Standard-F"])
+            language_code = getattr(settings, "TTS_LANGUAGE_CODE", "en-US")
+            ssml_gender = getattr(settings, "TTS_SSML_GENDER", "FEMALE")
+            if use_ssml and not text.strip().startswith("<speak"):
+                ssml_text = f'<speak><prosody rate="{sr}" pitch="{pt}st">{text}</prosody></speak>'
+                synthesis_input = texttospeech.SynthesisInput(ssml=ssml_text)
+            else:
+                synthesis_input = texttospeech.SynthesisInput(text=plain_text)
+            audio_config = texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.MP3,
+                speaking_rate=sr,
+                pitch=pt,
+                volume_gain_db=vg,
+            )
+            for candidate in candidate_voices:
+                try:
+                    voice_params = texttospeech.VoiceSelectionParams(
+                        language_code=language_code,
+                        name=candidate,
+                        ssml_gender=ssml_gender,
+                    )
+                    response = self._google_tts_client.synthesize_speech(
+                        input=synthesis_input,
+                        voice=voice_params,
+                        audio_config=audio_config,
+                    )
+                    safe_name = f"tts/utterance_{abs(hash(candidate + '|' + text))}.mp3"
+                    return default_storage.save(safe_name, ContentFile(response.audio_content))
+                except Exception:
+                    continue
         return None
 
     # --- Gemini Live (text-chat fallback) ---

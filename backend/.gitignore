@@ -21,6 +21,7 @@ venv/
 
 # Local environment and secrets (also covered by *)
 .env
+venv/
 drawnout-*.json
 
 # Explicit junk

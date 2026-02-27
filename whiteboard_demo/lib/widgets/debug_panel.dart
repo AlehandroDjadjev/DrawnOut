@@ -537,7 +537,7 @@ class DebugPanel extends StatelessWidget {
         Row(children: [
           Expanded(
             child: DropdownButtonFormField<int>(
-              value: state.cfgColumnsCount,
+              initialValue: state.cfgColumnsCount,
               items: const [
                 DropdownMenuItem(value: 1, child: Text('1 column')),
                 DropdownMenuItem(value: 2, child: Text('2 columns')),
@@ -874,7 +874,7 @@ class DebugPanel extends StatelessWidget {
         Text('Vectorization', style: t.textTheme.titleLarge),
         const SizedBox(height: 8),
         DropdownButtonFormField<String>(
-          value: state.edgeMode,
+          initialValue: state.edgeMode,
           items: const [
             DropdownMenuItem(value: 'Canny', child: Text('Canny')),
             DropdownMenuItem(value: 'DoG', child: Text('DoG (Difference of Gaussians)')),

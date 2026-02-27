@@ -16,7 +16,7 @@ from lesson_pipeline.pipelines.orchestrator import generate_lesson_json
 logger = logging.getLogger(__name__)
 
 
-def _get_images_from_lesson_pipeline(topic: str, subject: str = "General") -> dict:
+def _get_images_from_lesson_pipeline(topic: str, subject: str = "General", use_existing_images: bool = False) -> dict:
     """
     Get images using the lesson pipeline - EXACT same approach as save_lesson_output.py
     
@@ -35,41 +35,52 @@ def _get_images_from_lesson_pipeline(topic: str, subject: str = "General") -> di
         prompt_text=topic,
         subject=subject,
         duration_target=60.0,  # Duration doesn't matter for images
+        use_existing_images=use_existing_images,
     )
     
     # Extract images - same structure as save_lesson_output.py reads
     images = lesson_data.get('images', [])
     
     if not images:
-        raise RuntimeError(f"Lesson pipeline returned 0 images for topic: '{topic}'")
+        logger.warning(f"[LessonPipeline] Returned 0 images for topic: '{topic}'")
+        return {}
     
     logger.info(f"[LessonPipeline] Got {len(images)} images from lesson pipeline")
     
     # Build lookup dict by tag ID
     image_lookup = {}
     for img in images:
-        tag = img.get('tag', {})
-        tag_id = tag.get('id', '')
-        base_url = img.get('base_image_url', '')
+        tag = img.get('tag', {}) or {}
+        tag_id = tag.get('id', '') if isinstance(tag, dict) else getattr(tag, 'id', '')
+        base_url = img.get('base_image_url', '') or ''
         final_url = img.get('final_image_url', '') or base_url
-        
-        if tag_id and base_url:
-            image_lookup[tag_id] = {
-                'url': base_url,
-                'image_url': base_url,
-                'final_url': final_url,
-                'source': 'lesson_pipeline',
-                'title': tag.get('query', topic),
-                'description': tag.get('prompt', ''),
-                'prompt': tag.get('prompt', ''),
-                'style': tag.get('style', 'diagram'),
-            }
+
+        if not tag_id:
+            continue
+
+        image_lookup[tag_id] = {
+            'url': base_url,          # may be '' if unresolved — handled downstream
+            'image_url': base_url,
+            'final_url': final_url,
+            'source': 'lesson_pipeline',
+            'title': (tag.get('query', topic) if isinstance(tag, dict) else getattr(tag, 'query', topic)) or topic,
+            'description': (tag.get('prompt', '') if isinstance(tag, dict) else getattr(tag, 'prompt', '')) or '',
+            'prompt': (tag.get('prompt', '') if isinstance(tag, dict) else getattr(tag, 'prompt', '')) or '',
+            'style': (tag.get('style', 'diagram') if isinstance(tag, dict) else getattr(tag, 'style', 'diagram')),
+            'needs_text_to_image': not base_url,
+        }
+        if base_url:
             logger.info(f"  [{tag_id}] {base_url[:60]}...")
-    
+        else:
+            logger.warning(f"  [{tag_id}] unresolved (no base_image_url) — will render as text-only")
+
+    if not image_lookup:
+        logger.warning(f"[LessonPipeline] 0 images resolved for topic: '{topic}' — timeline will skip sketch_image actions")
+
     return image_lookup
 
 
-def _research_images_for_timeline(timeline_data: dict, topic: str) -> dict:
+def _research_images_for_timeline(timeline_data: dict, topic: str, use_existing_images: bool = False) -> dict:
     """
     Get images for timeline using the lesson pipeline.
     
@@ -100,42 +111,53 @@ def _research_images_for_timeline(timeline_data: dict, topic: str) -> dict:
     if not image_requests:
         logger.info("No images to research")
         return researched
-    
+
     logger.info(f"Getting {len(image_requests)} images via lesson_pipeline...")
-    
+
     # Get images from lesson pipeline - same as save_lesson_output.py
-    image_lookup = _get_images_from_lesson_pipeline(topic, "General")
-    
-    # Map lesson pipeline images to timeline image requests
-    # The lesson pipeline generates its own image IDs, so we match by position
-    pipeline_images = list(image_lookup.values())
-    
+    try:
+        image_lookup = _get_images_from_lesson_pipeline(topic, "General", use_existing_images)
+    except Exception as exc:
+        logger.warning(f"[ImageResearch] lesson_pipeline failed ({exc}) — skipping all images")
+        return researched
+
+    # Map lesson pipeline images to timeline image requests.
+    # The pipeline assigns its own tag IDs, so we fall back to positional matching.
+    pipeline_images = [v for v in image_lookup.values() if v.get('url')]  # only resolved ones
+    all_pipeline_images = list(image_lookup.values())  # includes unresolved, for metadata
+
     for i, req in enumerate(image_requests):
         img_id = req.get('id', '')
         if not img_id:
             continue
-        
-        # Use pipeline image if available (by position), otherwise first available
+
+        # Prefer an image that actually has a URL; fall back to positional
         if i < len(pipeline_images):
             img_data = pipeline_images[i]
         elif pipeline_images:
-            img_data = pipeline_images[0]  # Fallback to first image
+            img_data = pipeline_images[0]
+        elif i < len(all_pipeline_images):
+            # Unresolved — keep the metadata but no URL; frontend will skip rendering
+            img_data = all_pipeline_images[i]
         else:
-            raise RuntimeError(f"No images available for {img_id}")
-        
+            logger.warning(f"[ImageResearch] No image data for '{img_id}' — skipping")
+            continue
+
         researched[img_id] = {
-            'url': img_data['url'],
-            'image_url': img_data['url'],
+            'url': img_data.get('url', ''),
+            'image_url': img_data.get('url', ''),
             'source': img_data.get('source', 'lesson_pipeline'),
             'title': img_data.get('title', topic),
             'description': img_data.get('description', ''),
             'prompt': req.get('prompt', ''),
             'placement': req.get('placement'),
             'style': req.get('style', 'diagram'),
+            'needs_text_to_image': img_data.get('needs_text_to_image', not img_data.get('url')),
         }
-        logger.info(f"  [{img_id}] -> {img_data['url'][:60]}...")
-    
-    logger.info(f"Got {len(researched)}/{len(image_requests)} images from lesson_pipeline")
+        url_preview = img_data.get('url', '(none)')
+        logger.info(f"  [{img_id}] -> {url_preview[:60] if url_preview else '(no url — text-only)'}")
+
+    logger.info(f"Got {len(researched)}/{len(image_requests)} image entries (some may have no URL)")
     return researched
 
 
@@ -149,6 +171,12 @@ class GenerateTimelineView(APIView):
             return Response({"error": "Session not found"}, status=404)
         
         regenerate = request.data.get('regenerate', False)
+        # Use request override, else session preference set at lesson start
+        use_existing_images = request.data.get('use_existing_images')
+        if use_existing_images is None:
+            use_existing_images = getattr(session, 'use_existing_images', False)
+        else:
+            use_existing_images = use_existing_images in (True, 'true', '1')
         if not regenerate:
             existing = Timeline.objects.filter(session=session).order_by('-created_at').first()
             if existing:
@@ -188,17 +216,20 @@ class GenerateTimelineView(APIView):
                 if act.get('type') == 'sketch_image'
             )
             logger.info(f"Found {img_count} sketch_image actions needing URLs")
-            
-            # STEP 2: Research images for all sketch_image actions
-            researched_images = _research_images_for_timeline(timeline_data, session.topic)
+
+            # STEP 2: Research images for all sketch_image actions (or use existing DB images)
+            researched_images = _research_images_for_timeline(
+                timeline_data, session.topic, use_existing_images=use_existing_images
+            )
             
             # STEP 3: Second pass - inject researched URLs into sketch_image actions
             if researched_images:
                 logger.info(f"Injecting {len(researched_images)} image URLs...")
                 timeline_data = generator._inject_sketch_image_actions(timeline_data, researched_images)
             
-            # Synthesize audio
-            audio_pipeline = AudioSynthesisPipeline()
+            # Synthesize audio (use session TTS preference)
+            use_elevenlabs_tts = getattr(session, 'use_elevenlabs_tts', False)
+            audio_pipeline = AudioSynthesisPipeline(use_elevenlabs_tts=use_elevenlabs_tts)
             timeline_data = audio_pipeline.synthesize_segments(timeline_data)
             audio_contents = timeline_data.pop('_audio_contents', {})
             

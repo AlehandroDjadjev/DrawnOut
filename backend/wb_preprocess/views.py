@@ -1,14 +1,12 @@
-import os
-import time
-import sys
-from pathlib import Path
-
-from django.http import JsonResponse, HttpResponseNotAllowed, HttpResponseBadRequest
+import numpy as np
+import cv2
+from django.http import JsonResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
 
 try:
-    from . import ImagePreproccessor as pre
-except Exception as e:  # pragma: no cover - defensive import handling
+    from . import ImagePreprocessor as pre
+except Exception as e:  # pragma: no cover
     pre = None
     _IMPORT_ERROR = str(e)
 else:
@@ -16,66 +14,27 @@ else:
 
 
 @csrf_exempt
+@require_http_methods(["POST"])
 def run_preprocess(request):
-    if request.method != "POST":
-        return HttpResponseNotAllowed(["POST"])
-
+    """In-memory preprocessing: accepts an image upload, returns preprocessed pass info."""
     if pre is None:
-        return JsonResponse({"ok": False, "error": f"ImagePreproccessor unavailable: {_IMPORT_ERROR}"}, status=500)
+        return JsonResponse({"ok": False, "error": f"ImagePreprocessor unavailable: {_IMPORT_ERROR}"}, status=500)
 
     upload = request.FILES.get("image")
     if not upload:
         return HttpResponseBadRequest("Upload an image file as 'image'")
 
-    # Persist upload into the expected input directory
-    in_dir = Path(pre.IN_DIR)
-    in_dir.mkdir(parents=True, exist_ok=True)
-    ts = int(time.time() * 1000)
-    upload_path = in_dir / f"upload_{ts}_{upload.name}"
-    with open(upload_path, "wb") as f:
-        for chunk in upload.chunks():
-            f.write(chunk)
+    file_bytes = upload.read()
+    arr = np.frombuffer(file_bytes, dtype=np.uint8)
+    img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img_bgr is None:
+        return JsonResponse({"ok": False, "error": "Could not decode image"}, status=400)
 
-    # Track files before processing to identify new outputs
-    out_dir = Path(pre.OUT_DIR)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    before = set(p.name for p in out_dir.glob("*"))
+    text_item = {"idx": 0, "masked_bgr": img_bgr}
+    result = pre.process_images_in_memory([text_item])
 
-    pre.process_one(upload_path)
+    pass_names = {}
+    for idx, data in result.items():
+        pass_names[idx] = list(data.get("passes", {}).keys())
 
-    after = set(p.name for p in out_dir.glob("*"))
-    new_files = sorted(list(after - before))
-
-    processed = None
-    edges = None
-    meta = None
-    for name in new_files:
-        if name.startswith("processed_") and name.endswith(".png") and not processed:
-            processed = str(out_dir / name)
-        elif name.startswith("edges_") and name.endswith(".png") and not edges:
-            edges = str(out_dir / name)
-        elif name.startswith("processed_") and name.endswith("_labels.json") and not meta:
-            meta = str(out_dir / name)
-
-    return JsonResponse(
-        {
-            "ok": True,
-            "input": str(upload_path),
-            "processed_image": processed,
-            "edges_image": edges,
-            "labels_json": meta,
-            "generated_files": new_files,
-        }
-    )
-
-
-
-
-
-
-
-
-
-
-
-
+    return JsonResponse({"ok": True, "processed_count": len(result), "passes": pass_names})

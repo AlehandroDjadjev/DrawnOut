@@ -65,7 +65,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                   child: Text(
-                    'Android emulator: use http://10.0.2.2:8001.\nPhysical phone: use your PC LAN IP (example: http://192.168.1.50:8001).',
+                    'Android emulator: use http://10.0.2.2:8000.\nPhysical phone: use your PC LAN IP (example: http://192.168.1.50:8000).',
                     style: TextStyle(
                       color: Theme.of(context)
                           .colorScheme

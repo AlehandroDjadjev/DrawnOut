@@ -5,6 +5,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import os
 
 #Currently pushing pen width above 3 breaks stuff, but im happy to work with it as "pen width" only really matters for customization of the output, not the core functionality.
 
@@ -26,11 +27,10 @@ import numpy as np
 #This allows us to then easily measure, decide on line directions and record lines with our vectorizer (look at it next)
 
 
-
 # ===================== PATHS =====================
 BASE = Path(__file__).resolve().parent
-IN_DIR  = BASE / "ProccessedImages"   # input: your already processed images
-OUT_DIR = BASE / "Skeletonized"       # output: skeleton PNGs
+IN_DIR  = BASE / "ProccessedImages"   # input: your already processed images (now includes bundles)
+OUT_DIR = BASE / "Skeletonized"       # output: skeleton PNGs (mirrors bundle structure)
 
 # ===================== KNOBS =====================
 
@@ -39,7 +39,7 @@ OUT_DIR = BASE / "Skeletonized"       # output: skeleton PNGs
 PEN_WIDTH = 3.0              # try 2.0 or 3.0 like you said
 
 # Small noise kill before everything
-MIN_COMPONENT_AREA = 5      # drop tiny blobs before skeletonizing
+MIN_COMPONENT_AREA = 3      # drop tiny blobs before skeletonizing
 
 # Half-width classification tolerance:
 # if max distance in a component <= PEN_WIDTH + WIDTH_EPS → treat as thin stroke
@@ -50,8 +50,11 @@ WIDTH_EPS = 0.5
 BAND_HALF = 0.5
 
 # Thinning passes for strokes / bands (only to make them 1px wide, nothing fancy)
-USE_SKIMAGE = True           # try skimage.thin if available
-MAX_THIN_PASSES = 1          # Zhang–Suen fallback will loop until stable anyway
+MAX_THIN_PASSES = None
+
+# Parallelism
+PARALLEL = True
+MAX_WORKERS = None           # None => cpu_count()-1
 
 
 # ===================== BASIC HELPERS =====================
@@ -63,22 +66,19 @@ def _finite_nd(a: np.ndarray) -> bool:
 # ---------- Binarize from processed image ----------
 def load_foreground(path: Path) -> np.ndarray:
     """
-    Input: grayscale line-art like your processed PNGs (white on black).
+    Input: edges PNGs (0/255 mostly).
     Output: fg 0/1 mask (1 = foreground strokes/shapes).
     """
     img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise FileNotFoundError(str(path))
 
-    # Otsu to get a clear 0/255 separation
-    _, bw = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # For edges images: foreground is simply non-zero.
+    fg = (img > 0).astype(np.uint8)
 
-    # Decide which is foreground: minority color is fg
-    white_ratio = float((bw == 255).mean())
-    if white_ratio < 0.5:
-        fg = (bw == 255).astype(np.uint8)
-    else:
-        fg = (bw == 0).astype(np.uint8)
+    # Light close to reconnect tiny breaks (helps missing segments)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k, iterations=1)
 
     # Drop tiny connected components
     num, lab, stats, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
@@ -90,29 +90,19 @@ def load_foreground(path: Path) -> np.ndarray:
     return out
 
 
+
 # ---------- Thinning (for thin strokes + offset bands) ----------
 
 def thin_mask(mask01: np.ndarray) -> np.ndarray:
     """
     0/1 mask → 0/1 mask, thinned to ~1px while preserving topology.
-    MUST use skimage.morphology.thin. If not available → hard error.
+    Uses skimage.morphology.thin.
     """
+    from skimage.morphology import thin
+
     m = (mask01 > 0).astype(np.uint8)
-
-    if USE_SKIMAGE:
-        try:
-            from skimage.morphology import thin
-        except Exception as e:
-            raise RuntimeError("ERROR: skimage.morphology.thin is required but not available.") from e
-
-        try:
-            th = thin(m > 0, max_num_iter=MAX_THIN_PASSES).astype(np.uint8)
-            return th
-        except Exception as e:
-            raise RuntimeError("ERROR: skimage thinning failed during execution.") from e
-
-    # If USE_SKIMAGE is False, stop immediately.
-    raise RuntimeError("ERROR: USE_SKIMAGE is False but no fallback thinning is allowed.")
+    th = thin(m > 0, max_num_iter=MAX_THIN_PASSES).astype(np.uint8)
+    return th
 
 
 
@@ -147,26 +137,34 @@ def pen_width_skeleton(fg01: np.ndarray, pen_width: float) -> np.ndarray:
     # B: build iso-distance band for fat blobs
     band_lo = max(0.0, pen_width - BAND_HALF)
     band_hi = pen_width + BAND_HALF
-    band_mask = ((dist >= band_lo) & (dist <= band_hi) & (fg > 0)).astype(np.uint8)
+    band_mask = ((dist >= band_lo) & (dist <= band_hi) & (fg > 0))
+
+    # Vectorized per-component max distance:
+    # max_d[label] = max(dist[pixels in that label])
+    max_d = np.zeros(num, dtype=np.float32)
+    np.maximum.at(max_d, labels, dist)
+
+    areas = stats[:, cv2.CC_STAT_AREA].astype(np.int32)
+    valid_label = areas >= MIN_COMPONENT_AREA
+    valid_label[0] = False
+
+    is_thin_label = (max_d <= (pen_width + WIDTH_EPS)) & valid_label
+    is_fat_label = (~is_thin_label) & valid_label
+
+    is_thin_px = is_thin_label[labels]
+    is_fat_px = is_fat_label[labels]
+    is_fg_px = labels != 0
 
     out = np.zeros_like(fg, dtype=np.uint8)
 
-    for comp_idx in range(1, num):
-        if stats[comp_idx, cv2.CC_STAT_AREA] < MIN_COMPONENT_AREA:
-            continue
+    # thin stroke: centerline only
+    out[(thin_all > 0) & is_thin_px] = 1
 
-        comp_mask = (labels == comp_idx)
-        # local max distance (half-width of thickest section in this component)
-        max_d = float(dist[comp_mask].max()) if np.any(comp_mask) else 0.0
+    # fat blob: offset ring + taper fallback
+    out[(band_mask > 0) & is_fat_px] = 1
 
-        if max_d <= pen_width + WIDTH_EPS:
-            # -------- thin stroke: centerline only --------
-            # use thinned version, but *only* inside this component
-            out[comp_mask & (thin_all > 0)] = 1
-        else:
-            # -------- fat blob: canny-style offset lines --------
-            # we keep a ring at depth ~= pen_width from the border
-            out[comp_mask & (band_mask > 0)] = 1
+    taper_zone = is_fat_px & is_fg_px & (dist < band_lo) & (thin_all > 0)
+    out[taper_zone] = 1
 
     # one more very light thin pass, just to ensure 1px thickness everywhere
     out = thin_mask(out)
@@ -176,54 +174,90 @@ def pen_width_skeleton(fg01: np.ndarray, pen_width: float) -> np.ndarray:
 
 # ===================== MAIN PIPELINE =====================
 
-def process_one(path: Path, output : Path):
+def skeletonize_in_memory(
+    preproc_by_idx: dict[int, dict],
+    *,
+    save_outputs: bool = False,
+    parallel: bool = False,
+) -> dict[int, dict]:
+    """
+    Input: preproc_by_idx[idx]["passes"][gname]["edges"] (uint8 0/255)
+    Output: { idx: { "idx": idx, "skeletons": {gname: skel_u8_255}, "size": (H,W) } }
+    """
+    out: dict[int, dict] = {}
 
-    output.mkdir(parents=True, exist_ok=True)
+    def _load_foreground_from_edges(edges_u8: np.ndarray) -> np.ndarray:
+        fg = (edges_u8 > 0).astype(np.uint8)
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k, iterations=1)
 
-    print(f"[START] {path.name}")
-    fg = load_foreground(path)
+        num, lab, stats, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
+        outm = np.zeros_like(fg, dtype=np.uint8)
+        for i in range(1, num):
+            if stats[i, cv2.CC_STAT_AREA] >= MIN_COMPONENT_AREA:
+                outm[lab == i] = 1
+        return outm
 
-    skel = pen_width_skeleton(fg, PEN_WIDTH)
+    def _one(idx: int, item: dict) -> tuple[int, dict]:
+        passes = item["passes"]
+        skeletons: dict[str, np.ndarray] = {}
+        H = W = None
 
-    # 0/1 → 0/255 for saving
-    img_out = (skel * 255).astype(np.uint8)
-    out_path = output / f"{path.stem}_skeleton.png"
-    cv2.imwrite(str(out_path), img_out)
-    print(f"[OK]  wrote {out_path}")
+        for gname, pd in passes.items():
+            edges = pd["edges"]
+            if H is None:
+                H, W = edges.shape[:2]
+
+            fg = _load_foreground_from_edges(edges)
+            sk01 = pen_width_skeleton(fg, PEN_WIDTH)
+            sk255 = (sk01 * 255).astype(np.uint8)
+            skeletons[str(gname)] = sk255
+
+            if save_outputs:
+                out_path = OUT_DIR / f"processed_{idx}" / f"edges_{idx}_{gname}.png"
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(out_path), sk255)
+
+        return idx, {"idx": idx, "skeletons": skeletons, "size": (int(H), int(W))}
+
+    if parallel:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=max(1, (os.cpu_count() or 2) - 1)) as ex:
+            futs = [ex.submit(_one, idx, item) for idx, item in preproc_by_idx.items()]
+            for f in as_completed(futs):
+                idx, payload = f.result()
+                out[idx] = payload
+    else:
+        for idx, item in preproc_by_idx.items():
+            idx, payload = _one(idx, item)
+            out[idx] = payload
+
+    return out
 
 
 def skeletonize_images():
+    """File-based batch skeletonization for backward compatibility.
 
-    import shutil
-    if OUT_DIR.exists():
-        shutil.rmtree(OUT_DIR)
+    Reads edge images from IN_DIR, skeletonizes them, and writes to OUT_DIR.
+    """
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     imgs = sorted(
-        [
-            p for p in IN_DIR.glob("*")
-            if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff") and "edges" in p.stem.lower()
-        ],
+        [p for p in IN_DIR.glob("**/*.png")],
         key=lambda p: p.name.lower(),
     )
-    print(f"[INFO] IN={IN_DIR}  OUT={OUT_DIR}  found={len(imgs)} image(s)")
-
+    print(f"[SKEL] found {len(imgs)} edge image(s) in {IN_DIR}.")
     if not imgs:
-        print("[!] No images.")
         return
 
     for p in imgs:
-        process_one(p, OUT_DIR)
-
-
-
-
-
-
-
-
-
-
-
+        try:
+            fg = load_foreground(p)
+            skel01 = pen_width_skeleton(fg, PEN_WIDTH)
+            skel255 = (skel01 * 255).astype(np.uint8)
+            out_path = OUT_DIR / p.name
+            cv2.imwrite(str(out_path), skel255)
+        except Exception as e:
+            print(f"[SKEL] error processing {p}: {e}")
 
 

@@ -46,6 +46,7 @@ class Vectorizer {
     if (width <= 0 || height <= 0) {
       throw StateError('Failed to decode image for web vectorization');
     }
+
     final canvas = html.CanvasElement(width: width, height: height);
     final ctx = canvas.context2D;
     ctx.drawImageScaled(decoded, 0, 0, width.toDouble(), height.toDouble());
@@ -69,21 +70,23 @@ class Vectorizer {
     final cx = width / 2.0;
     final cy = height / 2.0;
 
-    // 3) Convert to world coords and apply Dart-side shaping (same knobs)
+    // 3) Convert to world coords and apply Dart-side shaping
     final List<List<Offset>> rawStrokes = [];
-    final polylines = _extractPolylines(jsResult);
+    if (jsResult == null) return rawStrokes;
+
+    final polylines = (jsResult as Map)['polylines'] as List? ?? const [];
     if (polylines.isEmpty) {
       debugPrint('⚠️ Vectorizer: JS returned no polylines');
       return const [];
     }
-
-    for (final pl in polylines) {
+    for (final pl in polylines.cast<List>()) {
       var polyWorld = pl
           .where((p) => p.length >= 2)
           .map((p) => Offset(
-              (p[0] as num).toDouble(), (p[1] as num).toDouble()))
-          .map(
-              (p) => Offset((p.dx - cx) * worldScale, (p.dy - cy) * worldScale))
+                ((p as List)[0] as num).toDouble(),
+                ((p)[1] as num).toDouble(),
+              ))
+          .map((p) => Offset((p.dx - cx) * worldScale, (p.dy - cy) * worldScale))
           .toList();
 
       if (polyWorld.length < 2) {
@@ -110,8 +113,12 @@ class Vectorizer {
     }
 
     final merged = mergeParallel
-        ? _mergeParallelStrokes(rawStrokes,
-            maxDist: mergeMaxDist, maxAngleDiffDeg: 12.0, minOverlapFrac: 0.45)
+        ? _mergeParallelStrokes(
+            rawStrokes,
+            maxDist: mergeMaxDist,
+            maxAngleDiffDeg: 12.0,
+            minOverlapFrac: 0.45,
+          )
         : rawStrokes;
 
     merged.sort((a, b) {
@@ -121,35 +128,15 @@ class Vectorizer {
       final lenA = _polyLen(a), lenB = _polyLen(b);
       return lenB.compareTo(lenA);
     });
-    final ordered = _orderGreedy(merged);
 
-    return ordered;
+    return _orderGreedy(merged);
   }
 
-  static List<List<List<dynamic>>> _extractPolylines(dynamic jsResult) {
-    if (jsResult == null) return const [];
-
-    dynamic candidate;
-    if (jsResult is Map) {
-      candidate = jsResult['polylines'] ?? jsResult['strokes'] ?? jsResult['lines'];
-    } else if (jsResult is List) {
-      candidate = jsResult;
-    }
-
-    if (candidate is! List) return const [];
-
-    return candidate
-        .whereType<List>()
-        .map((line) => line.whereType<List>().toList())
-        .where((line) => line.isNotEmpty)
-        .toList();
-  }
-
-  static Future<html.ImageElement> _decodeToImageElement(
-      Uint8List bytes) async {
+  static Future<html.ImageElement> _decodeToImageElement(Uint8List bytes) async {
     final blob = html.Blob([bytes]);
     final url = html.Url.createObjectUrlFromBlob(blob);
     final img = html.ImageElement(src: url);
+
     final completer = Completer<html.ImageElement>();
     img.onLoad.listen((_) {
       html.Url.revokeObjectUrl(url);
@@ -163,29 +150,29 @@ class Vectorizer {
   }
 
   static Future<dynamic> _cvVectorizeContours(
-      html.ImageData imageData, Map<String, dynamic> options) async {
+    html.ImageData imageData,
+    Map<String, dynamic> options,
+  ) async {
     try {
       final fn = globalContext['cvVectorizeContours'];
       if (fn == null) {
         debugPrint(
-            '⚠️ cvVectorizeContours not on window yet — is opencv_glue.js loaded?');
+            '⚠️ cvVectorizeContours not on window — is opencv_glue.js loaded?');
         return null;
       }
       final pixels = imageData.data.toJS;
       final width = imageData.width;
       final height = imageData.height;
       final optionsJson = jsonEncode(options).toJS;
-      final result = await _jsCvVectorizeContours(
-              pixels, width, height, optionsJson)
-          .toDart;
+      final result =
+          await _jsCvVectorizeContours(pixels, width, height, optionsJson)
+              .toDart;
       return result?.dartify();
     } catch (e) {
       debugPrint('⚠️ Vectorizer JS bridge failed: $e');
       return null;
     }
   }
-
-
 
   // --- Dart-side shaping helpers (same as native) ---
   static List<Offset> _smoothPolyline(List<Offset> pts, {int passes = 1}) {
@@ -237,8 +224,8 @@ class Vectorizer {
       final v2 = pts[i1] - pts[i];
       final ang = _angleBetween(v1, v2).abs();
 
-      final shouldSplit = (ang > threshRad) &&
-          (curLen >= minSegmentLen || cur.length >= minPoints);
+      final shouldSplit =
+          (ang > threshRad) && (curLen >= minSegmentLen || cur.length >= minPoints);
 
       if (shouldSplit) {
         if (cur.length >= 2) segs.add(cur);
@@ -246,6 +233,7 @@ class Vectorizer {
         curLen = 0.0;
       }
     }
+
     cur.add(pts.last);
     if (cur.length >= 2) segs.add(cur);
 
@@ -287,7 +275,6 @@ class Vectorizer {
     for (int i = 0; i < list.length; i++) {
       if (used[i]) continue;
       var a = list[i];
-      bool mergedAny = false;
 
       for (int j = i + 1; j < list.length; j++) {
         if (used[j]) continue;
@@ -302,26 +289,22 @@ class Vectorizer {
         final ang = _angleBetween(da, db);
         if (ang > maxAngle && (3.141592653589793 - ang) > maxAngle) continue;
 
-        final distFF =
-            (a.first - b.first).distance + (a.last - b.last).distance;
-        final distFR =
-            (a.first - b.last).distance + (a.last - b.first).distance;
+        final distFF = (a.first - b.first).distance + (a.last - b.last).distance;
+        final distFR = (a.first - b.last).distance + (a.last - b.first).distance;
         final bAligned = (distFR < distFF) ? b.reversed.toList() : b;
 
         final avgDistOverlap = _avgAlignedDistance(a, bAligned, samples: 32);
         final avgDist = avgDistOverlap.$1;
         final overlapFrac = avgDistOverlap.$2;
+
         if (avgDist <= maxDist && overlapFrac >= minOverlapFrac) {
-          final merged = _averageCenterline(a, bAligned, samples: 64);
-          a = merged;
+          a = _averageCenterline(a, bAligned, samples: 64);
           used[j] = true;
-          mergedAny = true;
         }
       }
 
       out.add(a);
       used[i] = true;
-      if (mergedAny) {}
     }
 
     return out;
@@ -350,10 +333,9 @@ class Vectorizer {
     double sum = 0.0;
     int overlap = 0;
     for (int k = 0; k < n; k++) {
-      final ta = k / (n - 1);
-      final tb = ta;
-      final pa = _sampleAlong(a, ta);
-      final pb = _sampleAlong(b, tb);
+      final t = k / (n - 1);
+      final pa = _sampleAlong(a, t);
+      final pb = _sampleAlong(b, t);
       if (pa == null || pb == null) continue;
       sum += (pa - pb).distance;
       overlap++;
@@ -431,10 +413,10 @@ class Vectorizer {
           reverse = true;
         }
       }
+
       var next = remaining.removeAt(bestIdx);
-      if (reverse) {
-        next = next.reversed.toList();
-      }
+      if (reverse) next = next.reversed.toList();
+
       result.add(next);
       current = next;
     }
@@ -445,6 +427,7 @@ class Vectorizer {
 class RectLike {
   final double left, top, right, bottom;
   RectLike(this.left, this.top, this.right, this.bottom);
+
   bool overlaps(RectLike other) {
     return !(other.left > right ||
         other.right < left ||
@@ -452,6 +435,5 @@ class RectLike {
         other.bottom < top);
   }
 
-  RectLike inflate(double d) =>
-      RectLike(left - d, top - d, right + d, bottom + d);
+  RectLike inflate(double d) => RectLike(left - d, top - d, right + d, bottom + d);
 }

@@ -1,5 +1,4 @@
 from django.db import models
-from decimal import Decimal
 
 # Create your models here.
 class MarketItem(models.Model):
@@ -13,12 +12,24 @@ class MarketItem(models.Model):
 class MarketListing(models.Model):
     item = models.ForeignKey(MarketItem, on_delete=models.CASCADE)
     listed_at = models.DateTimeField(auto_now_add=True)
-    status = models.CharField(max_length=50, choices=[('available', 'Available'), ('sold', 'Sold')], default='available')
+    status = models.CharField(
+        max_length=50,
+        choices=[
+            ('available', 'Available'),
+            ('sold', 'Sold'),
+            ('cancelled', 'Cancelled'),
+        ],
+        default='available',
+    )
     seller = models.ForeignKey('users.CustomUser', on_delete=models.CASCADE)
     quantity = models.IntegerField(default=1)
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2)
 
     def __str__(self):
-        return f"Listing for {self.item.name} at {self.listed_at} by {self.seller.username}"
+        return (
+            f"Listing {self.id} ({self.quantity}x {self.item.name}) "
+            f"by {self.seller.username} at {self.unit_price}"
+        )
     
 class TradeProposal(models.Model):
     listing = models.ForeignKey(MarketListing, on_delete=models.CASCADE, related_name="proposals")

@@ -10,11 +10,14 @@ from typing import List, Dict, Any, Optional
 from .models import WhiteboardObject
 from .utils import validate_image_json, validate_text_prompt
 
-from Imageresearcher import research
-from ImagePreproccessor import proccess_images
-from ImageSkeletonizer import skeletonize_images
-from ImageVectorizer import vectorize_images
-from ImageVecOrganizer import organize_images
+import numpy as np
+import cv2
+
+from wb_research.Imageresearcher import research
+from wb_preprocess import ImagePreprocessor as pre_module
+from wb_vectorize import ImageSkeletonizer as skel_module
+from wb_vectorize import ImageVectorizer as vec_module
+from wb_vectorize.ImageVecOrganizer import organize_images
 
 
 """
@@ -297,12 +300,32 @@ def research_images(request):
     return JsonResponse({"ok": True, "results": results})
 
 @csrf_exempt
+@require_http_methods(["POST"])
 def process_images(request):
+    """Full in-memory pipeline: preprocess -> skeletonize -> vectorize.
 
-    if request.method != "POST":
-        return HttpResponseBadRequest("POST JSON only")
-    
-    ct = request.META.get("CONTENT_TYPE")
+    Accepts either:
+      - A multipart image upload (field 'image')
+      - A JSON body with 'inputdir' pointing to a directory of images (legacy compat)
+    """
+    upload = request.FILES.get("image")
+
+    if upload:
+        file_bytes = upload.read()
+        arr = np.frombuffer(file_bytes, dtype=np.uint8)
+        img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img_bgr is None:
+            return JsonResponse({"ok": False, "error": "Could not decode image"}, status=400)
+
+        text_items = [{"idx": 0, "masked_bgr": img_bgr}]
+        preproc = pre_module.process_images_in_memory(text_items)
+        skels = skel_module.skeletonize_in_memory(preproc)
+        vectors = vec_module.vectorize_in_memory(skels)
+
+        result = vectors.get(0, {})
+        return JsonResponse({"ok": True, "result": result})
+
+    ct = request.META.get("CONTENT_TYPE", "")
     raw = request.body or b""
 
     try:
@@ -311,27 +334,36 @@ def process_images(request):
         return JsonResponse({
             "error": "Invalid JSON",
             "where": {"lineno": e.lineno, "colno": e.colno, "msg": e.msg},
-            "debug": {
-                "content_type": ct,
-                "len": len(raw),
-                "preview": raw[:200].decode("utf-8", errors="replace")
-            }
         }, status=400)
 
     inpt = (body.get("inputdir") or "").strip()
     if not inpt:
-        return HttpResponseBadRequest("Missing 'inpt'")
-    
-    base = Path(__file__).resolve().parent.parent
-    i_dir  = base / inpt
-    
+        return HttpResponseBadRequest("Provide 'image' file or JSON 'inputdir'")
 
-    proccess_images(i_dir)
-    skeletonize_images()
-    vectorize_images()
+    base = Path(__file__).resolve().parent.parent
+    i_dir = base / inpt
+
+    imgs = sorted(
+        [p for p in Path(i_dir).glob("*") if p.suffix.lower() in (
+            ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"
+        )],
+        key=lambda p: p.name.lower(),
+    )
+    if not imgs:
+        return JsonResponse({"ok": False, "error": f"No images found in {i_dir}"}, status=400)
+
+    text_items = []
+    for i, p in enumerate(imgs):
+        img_bgr = cv2.imread(str(p))
+        if img_bgr is not None:
+            text_items.append({"idx": i, "masked_bgr": img_bgr})
+
+    preproc = pre_module.process_images_in_memory(text_items)
+    skels = skel_module.skeletonize_in_memory(preproc)
+    vectors = vec_module.vectorize_in_memory(skels)
     organize_images()
 
-    return JsonResponse({"ok": True})
+    return JsonResponse({"ok": True, "processed": len(vectors)})
 
 @csrf_exempt
 @require_http_methods(["POST"])

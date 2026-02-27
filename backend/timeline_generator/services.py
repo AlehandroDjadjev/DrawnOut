@@ -431,18 +431,33 @@ class TimelineGeneratorService:
         return timeline
 
 
+ELEVENLABS_API_KEY = os.getenv('Netanyahu', '')
+ELEVENLABS_VOICE_ID = os.getenv('voice_id', '')
+
+
 class AudioSynthesisPipeline:
-    """Synthesizes audio for each timeline segment"""
-    
-    def __init__(self):
-        try:
-            from google.cloud import texttospeech
-            self.tts_client = texttospeech.TextToSpeechClient()
-            self.tts_available = True
-        except Exception as e:
-            logger.error(f"Google TTS client initialization failed: {e}")
-            self.tts_client = None
-            self.tts_available = False
+    """Synthesizes audio for each timeline segment. Supports Google Cloud TTS and ElevenLabs."""
+
+    def __init__(self, use_elevenlabs_tts: bool = False):
+        self.use_elevenlabs_tts = use_elevenlabs_tts
+        self._elevenlabs_client = None
+        self.tts_client = None
+        self.tts_available = False
+
+        if use_elevenlabs_tts and ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
+            try:
+                from elevenlabs.client import ElevenLabs
+                self._elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+                self.tts_available = True
+            except Exception as e:
+                logger.error(f"ElevenLabs TTS initialization failed: {e}")
+        else:
+            try:
+                from google.cloud import texttospeech
+                self.tts_client = texttospeech.TextToSpeechClient()
+                self.tts_available = True
+            except Exception as e:
+                logger.error(f"Google TTS client initialization failed: {e}")
     
     def synthesize_segments(self, timeline: Dict) -> Dict:
         """
@@ -500,260 +515,68 @@ class AudioSynthesisPipeline:
         timeline['_audio_contents'] = audio_contents
         
         return timeline
-    
-    def _synthesize_speech(self, text: str) -> bytes:
-        """Synthesize speech using Google Cloud TTS"""
-        from google.cloud import texttospeech
-        
-        synthesis_input = texttospeech.SynthesisInput(text=text)
-        voice = texttospeech.VoiceSelectionParams(
-            language_code="en-US",
-            name="en-US-Neural2-F"  # Female voice
-        )
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=1.0,
-            pitch=0.0,
-        )
-        
-        response = self.tts_client.synthesize_speech(
-            input=synthesis_input,
-            voice=voice,
-            audio_config=audio_config
-        )
-        
-        return response.audio_content
-    
-    def _get_audio_duration_from_bytes(self, audio_bytes: bytes) -> float:
-        """Get duration of audio in seconds from bytes"""
-        try:
-            # Try mutagen (lightweight, no external dependencies)
-            import io
-            from mutagen.mp3 import MP3
-            
-            audio_io = io.BytesIO(audio_bytes)
-            audio = MP3(audio_io)
-            return audio.info.length
-        except Exception:
-            pass
-        
-        try:
-            # Try pydub as fallback
-            import io
-            from pydub import AudioSegment
-            
-            audio = AudioSegment.from_mp3(io.BytesIO(audio_bytes))
-            duration = len(audio) / 1000.0
-            return duration
-        except Exception:
-            pass
-        
-        # Final fallback: estimate from text length
-        # Google TTS speaks at ~150 words per minute = 2.5 words/sec
-        # This is just for getting a duration estimate from the speech_text
-        logger.warning("Could not determine audio duration from bytes, will use text-based estimate")
-        return 3.0  # Return placeholder, will be calculated from text in calling code
-    
-    def _estimate_duration_from_text(self, text: str) -> float:
-        """Estimate speech duration from text (words per minute method)"""
-        words = len(text.split())
-        # Average: 150 words per minute = 2.5 words per second
-        duration = words / 2.5
-        # Add small pause at end
-        duration += 0.3
-        return round(max(2.0, duration), 1)
-    
-    def _recompute_timings(self, timeline: Dict) -> Dict:
-        """Recompute start/end times based on actual audio durations"""
-        cumulative = 0.0
-        for segment in timeline['segments']:
-            segment['start_time'] = round(cumulative, 2)
-            duration = segment.get('actual_audio_duration', segment.get('estimated_duration', 3.0))
-            cumulative += duration
-            segment['end_time'] = round(cumulative, 2)
-        
-        timeline['total_actual_duration'] = round(cumulative, 2)
-        return timeline
-    
-    def _synthesize_speech(self, text: str) -> bytes:
-        """Synthesize speech using Google Cloud TTS"""
-        from google.cloud import texttospeech
-        
-        synthesis_input = texttospeech.SynthesisInput(text=text)
-        voice = texttospeech.VoiceSelectionParams(
-            language_code="en-US",
-            name="en-US-Neural2-F"  # Female voice
-        )
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=1.0,
-            pitch=0.0,
-        )
-        
-        response = self.tts_client.synthesize_speech(
-            input=synthesis_input,
-            voice=voice,
-            audio_config=audio_config
-        )
-        
-        return response.audio_content
-    
-    def _get_audio_duration_from_bytes(self, audio_bytes: bytes) -> float:
-        """Get duration of audio in seconds from bytes"""
-        try:
-            # Try mutagen (lightweight, no external dependencies)
-            import io
-            from mutagen.mp3 import MP3
-            
-            audio_io = io.BytesIO(audio_bytes)
-            audio = MP3(audio_io)
-            return audio.info.length
-        except Exception:
-            pass
-        
-        try:
-            # Try pydub as fallback
-            import io
-            from pydub import AudioSegment
-            
-            audio = AudioSegment.from_mp3(io.BytesIO(audio_bytes))
-            duration = len(audio) / 1000.0
-            return duration
-        except Exception:
-            pass
-        
-        # Final fallback: estimate from text length
-        # Google TTS speaks at ~150 words per minute = 2.5 words/sec
-        # This is just for getting a duration estimate from the speech_text
-        logger.warning("Could not determine audio duration from bytes, will use text-based estimate")
-        return 3.0  # Return placeholder, will be calculated from text in calling code
-    
-    def _estimate_duration_from_text(self, text: str) -> float:
-        """Estimate speech duration from text (words per minute method)"""
-        words = len(text.split())
-        # Average: 150 words per minute = 2.5 words per second
-        duration = words / 2.5
-        # Add small pause at end
-        duration += 0.3
-        return round(max(2.0, duration), 1)
-    
-    def _recompute_timings(self, timeline: Dict) -> Dict:
-        """Recompute start/end times based on actual audio durations"""
-        cumulative = 0.0
-        for segment in timeline['segments']:
-            segment['start_time'] = round(cumulative, 2)
-            duration = segment.get('actual_audio_duration', segment.get('estimated_duration', 3.0))
-            cumulative += duration
-            segment['end_time'] = round(cumulative, 2)
-        
-        timeline['total_actual_duration'] = round(cumulative, 2)
-        return timeline
 
-
-        segments = timeline['segments']
-        audio_contents = {}  # Store audio separately, keyed by segment index
-        
-        for i, segment in enumerate(segments):
-            try:
-                # Synthesize audio
-                audio_content = self._synthesize_speech(segment['speech_text'])
-                
-                # Get actual duration
-                duration = self._get_audio_duration_from_bytes(audio_content)
-                
-                # If we got placeholder (3.0), estimate from text instead
-                if duration == 3.0:
-                    duration = self._estimate_duration_from_text(segment['speech_text'])
-                    logger.info(f"Using text-based duration estimate: {duration:.2f}s")
-                
-                segment['actual_audio_duration'] = round(duration, 2)
-                
-                # Save audio file name
-                filename = f"segment_{i+1}_{int(time.time())}_{i}.mp3"
-                segment['audio_file'] = filename
-                
-                # Store audio content separately (NOT in segment dict)
-                audio_contents[i] = audio_content
-                
-                logger.info(f"Synthesized segment {i+1}: {duration:.2f}s")
-                
-            except Exception as e:
-                logger.error(f"Failed to synthesize segment {i+1}: {e}")
-                # Use text-based estimation as fallback
-                duration = self._estimate_duration_from_text(segment.get('speech_text', ''))
-                segment['actual_audio_duration'] = duration
-                segment['audio_file'] = None
-        
-        # Recompute timings based on actual durations
-        timeline = self._recompute_timings(timeline)
-        
-        # Store audio contents separately for the view to access
-        timeline['_audio_contents'] = audio_contents
-        
-        return timeline
-    
     def _synthesize_speech(self, text: str) -> bytes:
-        """Synthesize speech using Google Cloud TTS"""
+        """Synthesize speech using ElevenLabs or Google Cloud TTS based on use_elevenlabs_tts."""
+        if self.use_elevenlabs_tts and self._elevenlabs_client:
+            audio_iter = self._elevenlabs_client.text_to_speech.convert(
+                text=text,
+                voice_id=ELEVENLABS_VOICE_ID,
+                model_id="eleven_multilingual_v2",
+                output_format="mp3_44100_128",
+            )
+            return b"".join(audio_iter) if hasattr(audio_iter, "__iter__") else bytes(audio_iter)
+
+        # Google Cloud TTS
         from google.cloud import texttospeech
-        
         synthesis_input = texttospeech.SynthesisInput(text=text)
         voice = texttospeech.VoiceSelectionParams(
             language_code="en-US",
-            name="en-US-Neural2-F"  # Female voice
+            name="en-US-Neural2-F",
         )
         audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3,
             speaking_rate=1.0,
             pitch=0.0,
         )
-        
         response = self.tts_client.synthesize_speech(
             input=synthesis_input,
             voice=voice,
-            audio_config=audio_config
+            audio_config=audio_config,
         )
-        
         return response.audio_content
-    
+
     def _get_audio_duration_from_bytes(self, audio_bytes: bytes) -> float:
         """Get duration of audio in seconds from bytes"""
         try:
-            # Try mutagen (lightweight, no external dependencies)
             import io
             from mutagen.mp3 import MP3
-            
+
             audio_io = io.BytesIO(audio_bytes)
             audio = MP3(audio_io)
             return audio.info.length
         except Exception:
             pass
-        
+
         try:
-            # Try pydub as fallback
             import io
             from pydub import AudioSegment
-            
+
             audio = AudioSegment.from_mp3(io.BytesIO(audio_bytes))
-            duration = len(audio) / 1000.0
-            return duration
+            return len(audio) / 1000.0
         except Exception:
             pass
-        
-        # Final fallback: estimate from text length
-        # Google TTS speaks at ~150 words per minute = 2.5 words/sec
-        # This is just for getting a duration estimate from the speech_text
+
         logger.warning("Could not determine audio duration from bytes, will use text-based estimate")
-        return 3.0  # Return placeholder, will be calculated from text in calling code
-    
+        return 3.0
+
     def _estimate_duration_from_text(self, text: str) -> float:
         """Estimate speech duration from text (words per minute method)"""
         words = len(text.split())
-        # Average: 150 words per minute = 2.5 words per second
         duration = words / 2.5
-        # Add small pause at end
         duration += 0.3
         return round(max(2.0, duration), 1)
-    
+
     def _recompute_timings(self, timeline: Dict) -> Dict:
         """Recompute start/end times based on actual audio durations"""
         cumulative = 0.0
@@ -762,7 +585,7 @@ class AudioSynthesisPipeline:
             duration = segment.get('actual_audio_duration', segment.get('estimated_duration', 3.0))
             cumulative += duration
             segment['end_time'] = round(cumulative, 2)
-        
+
         timeline['total_actual_duration'] = round(cumulative, 2)
         return timeline
 
