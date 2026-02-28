@@ -217,6 +217,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
   // Services
   final _strokeService = const StrokeService();
+  final _textSketchService = const TextSketchService();
 
   // Delegate board/plan/raster/busy to orchestrator
   List<VectorObject> get _board => _orchestrator.board;
