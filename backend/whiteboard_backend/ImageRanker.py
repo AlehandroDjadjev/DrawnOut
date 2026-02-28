@@ -8,16 +8,16 @@ from PIL import Image, UnidentifiedImageError
 # keep your SiglipBackend as-is, but I strongly recommend this small safety tweak:
 # (this does NOT change your existing comments)
 class SiglipBackend:
-    def __init__(self, model_name: str = "google/siglip2-giant-opt-patch16-384", device: Optional[str] = None):
+    def __init__(self, model_name: str = "google/siglip-base-patch16-384", device: Optional[str] = None):
         import torch
-        from transformers import AutoModel, AutoProcessor
+        from transformers import SiglipProcessor, SiglipModel
 
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
 
-        self.model = AutoModel.from_pretrained(model_name).to(self.device)
-        self.processor = AutoProcessor.from_pretrained(model_name)
+        self.model = SiglipModel.from_pretrained(model_name).to(self.device)
+        self.processor = SiglipProcessor.from_pretrained(model_name)
         self.model.eval()
 
     @staticmethod
@@ -219,7 +219,7 @@ def rerank_image_candidates_siglip(
     # ---- STEP 3: Final score ----
 
     for c in prepared:
-        c["final_score"] = float(0.60 * c["confidence_score"] + 0.40 * c["clip_score"])
+        c["final_score"] = float(0.40 * c["confidence_score"] + 0.60 * c["clip_score"])
 
     prepared.sort(key=lambda d: d["final_score"], reverse=True)
     winners = prepared[: min(final_k, len(prepared))]
