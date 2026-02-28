@@ -3,3 +3,4 @@ library;
 
 export 'sketch_player.dart';
 export 'user_whiteboard_page.dart';
+export 'backend_image_player.dart';

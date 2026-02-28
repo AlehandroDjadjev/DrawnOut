@@ -18,6 +18,9 @@ class TimelinePlaybackController extends ChangeNotifier {
   /// Incremented every time a new playback sequence starts (play, seek, restart).
   /// Old _playSegment loops check this and exit when superseded.
   int _playbackGeneration = 0;
+  int _lastStartedSegmentGeneration = -1;
+  int? _lastStartedSegmentIndex;
+  int _sameSegmentStartCount = 0;
 
   // Callbacks
   Future<void> Function(List<DrawingAction> actions)? onDrawingActionsTriggered;
@@ -57,6 +60,9 @@ class TimelinePlaybackController extends ChangeNotifier {
   Future<void> loadTimeline(SyncedTimeline timeline) async {
     if (_isDisposed) return;
     _playbackGeneration++;
+    _lastStartedSegmentGeneration = -1;
+    _lastStartedSegmentIndex = null;
+    _sameSegmentStartCount = 0;
     await _audioPlayer.stop();
     if (_isDisposed) return;
     _stopProgressTimer();
@@ -97,6 +103,9 @@ class TimelinePlaybackController extends ChangeNotifier {
     _isPlaying = true;
     _isPaused = false;
     _playbackGeneration++;
+    _lastStartedSegmentGeneration = -1;
+    _lastStartedSegmentIndex = null;
+    _sameSegmentStartCount = 0;
     _safeNotifyListeners();
 
     await _playSegment(_currentSegmentIndex, _playbackGeneration);
@@ -116,6 +125,23 @@ class TimelinePlaybackController extends ChangeNotifier {
     // Check if this loop has been superseded
     if (_isDisposed || generation != _playbackGeneration) return;
 
+    // Safety guard: if the same segment keeps restarting in the same playback
+    // generation, advance once to avoid an infinite repeat loop.
+    if (_lastStartedSegmentGeneration == generation &&
+        _lastStartedSegmentIndex == index) {
+      _sameSegmentStartCount += 1;
+      if (_sameSegmentStartCount >= 2) {
+        debugPrint(
+            'Repeat guard: segment $index restarted $_sameSegmentStartCount times; advancing');
+        await _playSegment(index + 1, generation);
+        return;
+      }
+    } else {
+      _lastStartedSegmentGeneration = generation;
+      _lastStartedSegmentIndex = index;
+      _sameSegmentStartCount = 0;
+    }
+
     _currentSegmentIndex = index;
     final segment = _timeline!.segments[index];
 
@@ -125,38 +151,70 @@ class TimelinePlaybackController extends ChangeNotifier {
     onSegmentChanged?.call(index);
 
     try {
-      final audioUrl = _buildAudioUrl(segment.audioFile);
+      final audioFile = segment.audioFile;
+      if (audioFile == null || audioFile.isEmpty) {
+        debugPrint('   No audio file for segment $index, advancing after delay');
+        await Future.delayed(
+            Duration(
+                milliseconds: (segment.actualAudioDuration * 1000).round().clamp(1000, 15000)),
+        );
+        if (_isDisposed || generation != _playbackGeneration) return;
+        onSegmentChangedCompleted?.call();
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (_isDisposed || generation != _playbackGeneration) return;
+        await _playSegment(index + 1, generation);
+        return;
+      }
+
+      final audioUrl = _buildAudioUrl(audioFile);
       debugPrint('   Audio URL: $audioUrl');
 
-      // Load audio
+      // Reset any prior state and enforce non-looping playback per segment.
+      await _audioPlayer.stop();
+      await _audioPlayer.setLoopMode(LoopMode.off);
       await _audioPlayer.setUrl(audioUrl);
       if (_isDisposed || generation != _playbackGeneration) return;
 
-      // Fire drawing actions in parallel (don't await)
+      // Fire drawing and audio in parallel; wait for BOTH before advancing.
+      // Previously we only waited for audio, so we could clear and advance
+      // while drawing was still animating — causing random deletions and stuttering.
       debugPrint('   Triggering drawing actions...');
-      if (onDrawingActionsTriggered != null) {
-        onDrawingActionsTriggered!(segment.drawingActions).catchError((e) {
-          debugPrint('   Drawing error: $e');
-        });
+      Future<void> drawFuture = Future.value();
+      if (onDrawingActionsTriggered != null &&
+          segment.drawingActions.isNotEmpty) {
+        drawFuture = onDrawingActionsTriggered!(segment.drawingActions);
       }
+      drawFuture = drawFuture.catchError((e) {
+        debugPrint('   Drawing error: $e');
+      });
 
-      // Start audio playback — DON'T await (play() returns when audio finishes,
-      // which would block the timer from starting).
-      _audioPlayer.play();
       _startProgressTimer();
+      final playFuture = _audioPlayer.play();
       debugPrint('   Audio playing, drawing animating in parallel');
 
-      // Wait for audio to complete OR for this loop to be invalidated
-      await _audioPlayer.playerStateStream.firstWhere((state) =>
-          state.processingState == ProcessingState.completed ||
-          generation != _playbackGeneration);
+      final maxWaitSec = (segment.endTime - segment.startTime).ceil() + 15;
+      var timedOut = false;
+      await Future.wait([
+        drawFuture,
+        playFuture.timeout(
+          Duration(seconds: maxWaitSec),
+          onTimeout: () async {
+            timedOut = true;
+            debugPrint('   Segment $index: audio timeout');
+            await _audioPlayer.stop();
+          },
+        ),
+      ]);
+
+      if (timedOut) {
+        debugPrint('   Segment $index advanced after timeout');
+      }
 
       _stopProgressTimer();
 
-      // If superseded by a new seek/stop/restart, exit silently
       if (_isDisposed || generation != _playbackGeneration) return;
 
-      debugPrint('   Segment $index audio completed');
+      debugPrint('   Segment $index audio and drawing completed');
       onSegmentChangedCompleted?.call();
 
       // Brief pause between segments
@@ -213,6 +271,9 @@ class TimelinePlaybackController extends ChangeNotifier {
     if (_isDisposed) return;
     debugPrint('Stopping playback');
     _playbackGeneration++; // Invalidate any active _playSegment loop
+    _lastStartedSegmentGeneration = -1;
+    _lastStartedSegmentIndex = null;
+    _sameSegmentStartCount = 0;
     await _audioPlayer.stop();
     if (_isDisposed) return;
     _stopProgressTimer();
@@ -249,6 +310,9 @@ class TimelinePlaybackController extends ChangeNotifier {
 
     // Invalidate the old playback loop and stop audio
     _playbackGeneration++;
+    _lastStartedSegmentGeneration = -1;
+    _lastStartedSegmentIndex = null;
+    _sameSegmentStartCount = 0;
     final gen = _playbackGeneration;
     await _audioPlayer.stop();
     if (_isDisposed) return;

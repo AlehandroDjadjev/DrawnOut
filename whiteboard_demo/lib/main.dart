@@ -5,7 +5,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'dart:convert';
 
-import 'package:file_picker/file_picker.dart';
+import 'package:file_picker/file_picker.dart' deferred as file_picker;
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -38,6 +38,8 @@ import 'pages/lesson_history_page.dart';
 
 // Whiteboard module
 import 'whiteboard/whiteboard.dart';
+import 'whiteboard/text/chalk_text_preset.dart';
+import 'whiteboard/text/text_normalizer.dart';
 // UI widgets
 import 'widgets/lesson_playback_bar.dart';
 import 'widgets/lesson_completion_overlay.dart';
@@ -108,7 +110,8 @@ class DrawnOutApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'DrawnOut',
-      theme: _buildTheme(themeProvider.isDarkMode, highContrast: themeProvider.isHighContrast),
+      theme: _buildTheme(themeProvider.isDarkMode,
+          highContrast: themeProvider.isHighContrast),
       home: const AuthGate(),
       routes: {
         '/login': (context) => const LoginPage(),
@@ -169,8 +172,10 @@ class WhiteboardPageWrapper extends StatelessWidget {
 class WhiteboardPage extends StatefulWidget {
   /// If set, auto-starts the synced lesson pipeline on this topic.
   final String? autoStartTopic;
+
   /// Display title for the lesson (shown in loading UI).
   final String? lessonTitle;
+
   /// If set, skips generation and replays a saved timeline for this session.
   final int? autoStartSessionId;
 
@@ -187,9 +192,9 @@ class WhiteboardPage extends StatefulWidget {
 
 class _WhiteboardPageState extends State<WhiteboardPage> {
   /// Single source of truth for the backend API base URL.  Reads from the
-  /// .env file (API_URL) and falls back to 127.0.0.1:8000.
+  /// .env file (API_URL) and falls back to localhost:8000 (use localhost on web for CORS).
   static String get _defaultApiUrl =>
-      (dotenv.env['API_URL'] ?? 'http://127.0.0.1:8000').trim();
+      (dotenv.env['API_URL'] ?? 'http://localhost:8000').trim();
 
   String get _effectiveBaseUrl {
     final text = _apiUrlCtrl.text.trim();
@@ -250,7 +255,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   double _seconds = 60;
   int _passes = 1;
   double _opacity = 0.8;
-  double _width = 5;
+  double _width = 3.0;
   double _jitterAmp = 0;
   double _jitterFreq = 0.02;
   bool _showRasterUnder = true;
@@ -266,7 +271,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   double _minStrokeLen = 8.70; // px/world
   double _minStrokePoints = 6; // int
 
-  bool _showDevPanel = false; // Toggle for developer panel visibility (requires is_developer flag)
+  bool _showDevPanel =
+      false; // Toggle for developer panel visibility (requires is_developer flag)
   double _textFontSize = 60.0;
   // Assistant
   late final _apiUrlCtrl = TextEditingController(text: _defaultApiUrl);
@@ -321,6 +327,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   bool _tutorUseFixedFont = true;
   double _tutorFixedFont = 72.0;
   double _tutorMinFont = 72.0; // hard floor for any tutor-drawn text
+  // Chalk text rendering style
+  String _chalkPresetId = ChalkTextPreset.classicId;
+  double _chalkTextureStrength = 0.75;
 
   // ── Auto-start lesson loading state ─────────────────────────────────────
   bool _lessonLoading = false;
@@ -335,13 +344,17 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   bool get _isInLessonSession =>
       widget.autoStartTopic != null || widget.autoStartSessionId != null;
 
+  ChalkTextPreset get _chalkPreset => ChalkTextPreset.byId(_chalkPresetId);
+
   /// Tracks the last-known pause state so we only call setState on transitions.
   bool _drawingPaused = false;
 
   void _onTimelinePauseChanged() {
     final paused = _timelineController?.isPaused ?? false;
     if (paused != _drawingPaused && mounted) {
-      setState(() { _drawingPaused = paused; });
+      setState(() {
+        _drawingPaused = paused;
+      });
     }
   }
 
@@ -387,19 +400,14 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     c.sketchPreferOutline = _sketchPreferOutline;
     c.preferOutlineHeadings = _preferOutlineHeadings;
     _orchestrator.tutorConfig.minFont = _tutorMinFont;
-  }
 
-  void _syncPlaybackConfigToOrchestrator() {
-    final p = _orchestrator.playbackConfig;
-    p.width = _width;
-    p.opacity = _opacity;
-    p.passes = _passes;
-    p.jitterAmp = _jitterAmp;
-    p.jitterFreq = _jitterFreq;
+    final chalk = _orchestrator.chalkTextConfig;
+    chalk.presetId = _chalkPresetId;
+    chalk.textureStrength = _chalkTextureStrength;
   }
 
   bool _devModeChecked = false;
-  
+
   @override
   void initState() {
     super.initState();
@@ -426,7 +434,6 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     };
     _timelineController!.onSegmentChanged = (index) {
       debugPrint('📍 Segment $index started');
-      // Clear the canvas so each segment starts fresh
       _clearBoard();
     };
     _timelineController!.onTimelineCompleted = () {
@@ -436,14 +443,14 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       _markSessionComplete();
     };
   }
-  
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (!_devModeChecked) {
       _devModeChecked = true;
       _checkDeveloperMode();
-      
+
       // Rewatch mode: load a saved timeline directly (no generation step)
       if (!_lessonAutoStarted && widget.autoStartSessionId != null) {
         _lessonAutoStarted = true;
@@ -457,11 +464,12 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       }
     }
   }
-  
+
   Future<void> _checkDeveloperMode() async {
-    final devProvider = Provider.of<DeveloperModeProvider>(context, listen: false);
+    final devProvider =
+        Provider.of<DeveloperModeProvider>(context, listen: false);
     devProvider.setBaseUrl(_effectiveBaseUrl);
-    
+
     final isDeveloper = await devProvider.refreshFromBackend();
     if (mounted) {
       setState(() {
@@ -529,8 +537,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   }
 
   Future<void> _pickImage() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.image,
+    await file_picker.loadLibrary();
+    final result = await file_picker.FilePicker.platform.pickFiles(
+      type: file_picker.FileType.image,
       withData: true,
     );
     if (result == null || result.files.isEmpty) return;
@@ -554,8 +563,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         final img = _orchestrator.uploadedImage!;
         final aspect = img.height / img.width;
         final size = Size(w, w * aspect);
-        _raster = PlacedImage(
-            image: img, worldCenter: Offset(x, y), worldSize: size);
+        _raster =
+            PlacedImage(image: img, worldCenter: Offset(x, y), worldSize: size);
       }
       _plan = null;
     } finally {
@@ -568,10 +577,13 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       _showError('Please upload an image first.');
       return;
     }
+    _orchestrator.setBaseUrl(_effectiveBaseUrl);
     _syncVectorConfigToOrchestrator();
     final x = double.tryParse(_xCtrl.text.trim()) ?? 0;
     final y = double.tryParse(_yCtrl.text.trim()) ?? 0;
-    final w = (double.tryParse(_wCtrl.text.trim()) ?? 800).clamp(1, 100000).toDouble();
+    final w = (double.tryParse(_wCtrl.text.trim()) ?? 800)
+        .clamp(1, 100000)
+        .toDouble();
     try {
       await _orchestrator.vectorizeAndSketch(x: x, y: y, targetWidth: w);
       if (_orchestrator.lastError != null) {
@@ -613,6 +625,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       final bytes = base64Decode(b64);
 
       await _orchestrator.loadImageBytes(bytes);
+      _orchestrator.setBaseUrl(_effectiveBaseUrl);
       final x = double.tryParse(_xCtrl.text.trim()) ?? 0;
       final y = double.tryParse(_yCtrl.text.trim()) ?? 0;
       final w = (double.tryParse(_wCtrl.text.trim()) ?? 800)
@@ -622,7 +635,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         final img = _orchestrator.uploadedImage!;
         final aspect = img.height / img.width;
         _raster = PlacedImage(
-            image: img, worldCenter: Offset(x, y), worldSize: Size(w, w * aspect));
+            image: img,
+            worldCenter: Offset(x, y),
+            worldSize: Size(w, w * aspect));
       }
       _syncVectorConfigToOrchestrator();
       await _orchestrator.vectorizeAndSketch(x: x, y: y, targetWidth: w);
@@ -647,6 +662,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       return;
     }
     _syncCenterlineAndTutorToOrchestrator();
+    // Use current API URL from field (create_text_object needs correct backend)
+    _orchestrator.setBaseUrl(_effectiveBaseUrl);
     try {
       await _orchestrator.sketchText(text, fontSize: _textFontSize);
       if (_orchestrator.lastError != null) {
@@ -667,7 +684,12 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   // Commit the current animated sketch to the board memory.
   void _commitCurrentSketch() {
     if (_plan == null) return;
-    _syncPlaybackConfigToOrchestrator();
+    final p = _orchestrator.playbackConfig;
+    p.width = (_width * _chalkPreset.strokeWidthScale).clamp(0.5, 100.0);
+    p.opacity = (_opacity * _chalkPreset.opacityScale).clamp(0.05, 1.0);
+    p.passes = _passes;
+    p.jitterAmp = _jitterAmp;
+    p.jitterFreq = _jitterFreq;
     _orchestrator.commitCurrentSketch();
   }
 
@@ -1103,7 +1125,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     });
 
     try {
-      debugPrint('🎬 Auto-starting lesson for topic: $topic, useExistingImages: $useExistingImages, useElevenlabsTts: $useElevenlabsTts');
+      debugPrint(
+          '🎬 Auto-starting lesson for topic: $topic, useExistingImages: $useExistingImages, useElevenlabsTts: $useElevenlabsTts');
 
       // Initialize APIs
       final baseUrl = _effectiveBaseUrl;
@@ -1128,12 +1151,14 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
       // Step 2: Generate timeline (this is the slow step)
       setState(() {
-        _lessonLoadingStage = 'Generating lesson content...\nThis may take 30-60 seconds';
+        _lessonLoadingStage =
+            'Generating lesson content...\nThis may take 30-60 seconds';
         _lessonLoadingProgress = 0.3;
       });
-      
+
       // Animate progress while waiting
-      final progressTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      final progressTimer =
+          Timer.periodic(const Duration(milliseconds: 500), (_) {
         if (mounted && _lessonLoading && _lessonLoadingProgress < 0.85) {
           setState(() {
             _lessonLoadingProgress += 0.01;
@@ -1322,7 +1347,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       });
 
       final timeline = await _timelineApi!.getSessionTimeline(sessionId);
-      debugPrint('✅ Timeline loaded: ${timeline.segments.length} segments, ${timeline.totalDuration}s');
+      debugPrint(
+          '✅ Timeline loaded: ${timeline.segments.length} segments, ${timeline.totalDuration}s');
 
       if (!mounted) return;
 
@@ -1380,8 +1406,24 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     try {
       await _ensureLayout();
 
-      // ── DEBUG: Log action breakdown from backend ─────────────────────────
-      debugPrint('📥 Received ${actions.length} drawing actions from backend:');
+      // ── DEBUG: Log full actions from backend (for decoding trace) ────────
+      debugPrint('🔍 DECODE │ RAW ACTIONS FROM BACKEND (${actions.length} total):');
+      for (var i = 0; i < actions.length; i++) {
+        final a = actions[i];
+        final json = a.toJson();
+        debugPrint('🔍 DECODE │   [${i + 1}] type=${a.type} text="${a.text.length > 40 ? "${a.text.substring(0, 40)}..." : a.text}"');
+        debugPrint('🔍 DECODE │       full: $json');
+        if (a.metadata != null && a.metadata!.isNotEmpty) {
+          debugPrint('🔍 DECODE │       metadata keys: ${a.metadata!.keys.toList()}');
+          if (a.metadata!['strokes'] != null) {
+            final st = a.metadata!['strokes'];
+            final preview = st is Map
+                ? 'Map(${st.keys.take(5).toList()})'
+                : st.runtimeType.toString();
+            debugPrint('🔍 DECODE │       metadata.strokes: $preview');
+          }
+        }
+      }
       final actionTypes = <String, int>{};
       for (final a in actions) {
         actionTypes[a.type] = (actionTypes[a.type] ?? 0) + 1;
@@ -1486,8 +1528,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
       // Wait for animation — pause-aware: the timer only counts down while
       // playback is active, so pausing freezes both the SketchPlayer and this
-      // countdown.
-      final totalWaitMs = (drawDuration * 1000 * 0.95).round();
+      // countdown. Use 100% so the full path (e.g. crossbars on "t") is drawn.
+      final totalWaitMs = (drawDuration * 1000).round();
       var elapsedMs = 0;
       const tickMs = 100;
       while (elapsedMs < totalWaitMs) {
@@ -1636,7 +1678,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     final targetW = img.width * effScale;
     final targetH = img.height * effScale;
     // push down to avoid overlaps with previous blocks
-    y = _nextNonCollidingY(st, x, targetH, y);
+    y = _nextNonCollidingY(st, x, targetH, y, w: targetW);
 
     // Vectorize via backend when baseUrl set, else local
     final base = _effectiveBaseUrl;
@@ -1709,6 +1751,182 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // Sketch Image from pre-computed backend strokes
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /// Places pre-computed cubic Bézier strokes from the backend pipeline onto
+  /// the whiteboard.  Used as the fast path inside [_sketchImageFromUrl] when
+  /// [metadata]['strokes'] is present.
+  Future<bool> _sketchFromBackendStrokesJson({
+    required Map<String, dynamic> strokesJson,
+    Map<String, dynamic>? placement,
+    required List<List<Offset>> accum,
+  }) async {
+    final st = _layout!;
+    final cfg = st.config;
+
+    debugPrint('🔍 DECODE │ SKETCH_IMAGE: calling BackendStrokeService.parseJson');
+    debugPrint('🔍 DECODE │   input keys: ${strokesJson.keys.toList()}, vector_format=${strokesJson['vector_format']}');
+    final strokesList = strokesJson['strokes'];
+    debugPrint('🔍 DECODE │   strokes: ${strokesList is List ? strokesList.length : "not List"} items');
+    if (strokesList is List && strokesList.isNotEmpty) {
+      final first = strokesList.first;
+      debugPrint('🔍 DECODE │   first stroke: ${first is Map ? first.keys.toList() : first.runtimeType}');
+    }
+    final parsed = BackendStrokeService.parseJson(strokesJson);
+    if (parsed == null) {
+      debugPrint('🔍 DECODE │   parseJson returned null - invalid');
+      debugPrint('⚠️ Backend stroke JSON invalid, skipping');
+      return false;
+    }
+    debugPrint('🔍 DECODE │   output: ${parsed.strokes.length} RawCubicStrokes, src=${parsed.srcWidth}x${parsed.srcHeight}');
+
+    final srcW = parsed.srcWidth;
+    final srcH = parsed.srcHeight;
+
+    final p = placement ?? {};
+    final hasExplicitPlacement = p.containsKey('x') && p.containsKey('y');
+
+    double contentX0 = cfg.page.left + st.columnOffsetX();
+    double cw = st.columnWidth();
+
+    double x, y, targetW, targetH;
+
+    if (hasExplicitPlacement) {
+      double px = (p['x'] as num?)?.toDouble() ?? contentX0;
+      double py = (p['y'] as num?)?.toDouble() ?? st.cursorY;
+      double pw = (p['width'] as num?)?.toDouble() ?? (cw * 0.4);
+      double ph = (p['height'] as num?)?.toDouble() ??
+          (pw * (srcH / math.max(1.0, srcW)));
+
+      final isNormalized = px >= 0 &&
+          px <= 1 &&
+          py >= 0 &&
+          py <= 1 &&
+          pw > 0 &&
+          pw <= 1.2 &&
+          ph > 0 &&
+          ph <= 1.2;
+      if (isNormalized) {
+        px *= cfg.page.width;
+        py *= cfg.page.height;
+        pw *= cfg.page.width;
+        ph *= cfg.page.height;
+      } else {
+        final looksLike1920Space = px >= 0 &&
+            py >= 0 &&
+            pw > 0 &&
+            ph > 0 &&
+            px <= 1920 &&
+            py <= 1080 &&
+            pw <= 1920 &&
+            ph <= 1080;
+        if (looksLike1920Space &&
+            (cfg.page.width != 1920 || cfg.page.height != 1080)) {
+          px = (px / 1920.0) * cfg.page.width;
+          py = (py / 1080.0) * cfg.page.height;
+          pw = (pw / 1920.0) * cfg.page.width;
+          ph = (ph / 1080.0) * cfg.page.height;
+        }
+      }
+
+      final scale = (p['scale'] as num?)?.toDouble();
+      if (scale != null && scale > 0) {
+        pw *= scale;
+        ph *= scale;
+      }
+
+      final maxW =
+          math.max(80.0, cfg.page.width - cfg.page.left - cfg.page.right);
+      final maxH =
+          math.max(80.0, cfg.page.height - cfg.page.top - cfg.page.bottom);
+      x = px
+          .clamp(cfg.page.left,
+              cfg.page.width - cfg.page.right - pw.clamp(80.0, maxW))
+          .toDouble();
+      y = py
+          .clamp(cfg.page.top,
+              cfg.page.height - cfg.page.bottom - ph.clamp(80.0, maxH))
+          .toDouble();
+      targetW = pw.clamp(80.0, maxW).toDouble();
+      targetH = ph.clamp(80.0, maxH).toDouble();
+
+      // Prevent explicit image placements from covering existing blocks.
+      final fitted = _fitImagePlacementNoOverlap(
+        st,
+        x: x,
+        y: y,
+        w: targetW,
+        h: targetH,
+      );
+      x = fitted.x;
+      y = fitted.y;
+      targetW = fitted.w;
+      targetH = fitted.h;
+    } else {
+      double maxW = cw * 0.4;
+      x = contentX0 + (cw - maxW) / 2.0;
+      y = st.cursorY;
+
+      final pageBottom = cfg.page.height - cfg.page.bottom;
+      if ((pageBottom - y) < 100 &&
+          cfg.columns != null &&
+          st.columnIndex < (cfg.columns!.count - 1)) {
+        st.columnIndex += 1;
+        contentX0 = cfg.page.left + st.columnOffsetX();
+        cw = st.columnWidth();
+        maxW = cw * 0.4;
+        x = contentX0 + (cw - maxW) / 2.0;
+        y = cfg.page.top;
+      }
+
+      final remainH = (cfg.page.height - cfg.page.bottom) - y - cfg.gutterY;
+      final scaleW = srcW == 0 ? 1.0 : (maxW / srcW);
+      final scaleH = srcH == 0 ? scaleW : math.max(0.1, remainH / srcH);
+      final effScaleAuto = math.min(scaleW, scaleH);
+      targetW = srcW * effScaleAuto;
+      targetH = srcH * effScaleAuto;
+      y = _nextNonCollidingY(st, x, targetH, y, w: targetW);
+    }
+
+    debugPrint(
+        '   📐 Backend strokes placement: ($x, $y) → ${targetW}x$targetH');
+
+    // Convert to world-space polylines using the layout coordinate system
+    final worldTopLeft = Offset(
+      x - (cfg.page.width / 2),
+      y - (cfg.page.height / 2),
+    );
+    final worldCenter = worldTopLeft + Offset(targetW / 2.0, targetH / 2.0);
+
+    final polylines = BackendStrokeService.toPolylines(
+      strokes: parsed.strokes,
+      srcWidth: srcW,
+      srcHeight: srcH,
+      worldCenter: worldCenter,
+      targetWidth: targetW,
+    );
+
+    if (polylines.isEmpty) {
+      debugPrint('⚠️ Backend strokes produced no polylines');
+      return false;
+    }
+
+    // Register block in layout state (mirrors _sketchImageFromUrl step 7)
+    st.blocks.add(DrawnBlock(
+      id: 'backend_img_${st.blocks.length + 1}',
+      type: 'sketch_image',
+      bbox: BBox(x: x, y: y, w: targetW, h: targetH),
+      meta: {'src_w': srcW, 'src_h': srcH, 'source': 'backend_pipeline'},
+    ));
+    st.cursorY = y + targetH + cfg.gutterY * 1.25;
+
+    accum.addAll(polylines);
+    debugPrint('   ✅ Added ${polylines.length} backend strokes to accum');
+    return true;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Sketch Image from URL (for sketch_image actions)
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -1735,6 +1953,20 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     await _ensureLayout();
     final st = _layout!;
     final cfg = st.config;
+
+    // ── Fast path: use pre-computed cubic Bézier strokes from the backend ──
+    // When the lesson pipeline has already vectorized the image and returned
+    // the stroke JSON in metadata['strokes'], skip URL fetch + re-vectorization
+    // entirely and draw the high-quality pre-computed strokes directly.
+    final precomputedStrokes = metadata?['strokes'];
+    if (precomputedStrokes is Map<String, dynamic>) {
+      debugPrint('🎨 sketch_image: using pre-computed backend strokes');
+      return await _sketchFromBackendStrokesJson(
+        strokesJson: precomputedStrokes,
+        placement: placement,
+        accum: accum,
+      );
+    }
 
     // ── Step 1: Resolve the image URL ──────────────────────────────────────
     String? resolvedUrl = imageUrl;
@@ -1865,12 +2097,31 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       }
 
       // Keep explicit placement inside drawable page bounds.
-      final maxW = math.max(80.0, cfg.page.width - cfg.page.left - cfg.page.right);
-      final maxH = math.max(80.0, cfg.page.height - cfg.page.top - cfg.page.bottom);
+      final maxW =
+          math.max(80.0, cfg.page.width - cfg.page.left - cfg.page.right);
+      final maxH =
+          math.max(80.0, cfg.page.height - cfg.page.top - cfg.page.bottom);
       targetW = targetW.clamp(80.0, maxW).toDouble();
       targetH = targetH.clamp(80.0, maxH).toDouble();
-      x = x.clamp(cfg.page.left, cfg.page.width - cfg.page.right - targetW).toDouble();
-      y = y.clamp(cfg.page.top, cfg.page.height - cfg.page.bottom - targetH).toDouble();
+      x = x
+          .clamp(cfg.page.left, cfg.page.width - cfg.page.right - targetW)
+          .toDouble();
+      y = y
+          .clamp(cfg.page.top, cfg.page.height - cfg.page.bottom - targetH)
+          .toDouble();
+
+      // Prevent explicit image placements from covering existing blocks.
+      final fitted = _fitImagePlacementNoOverlap(
+        st,
+        x: x,
+        y: y,
+        w: targetW,
+        h: targetH,
+      );
+      x = fitted.x;
+      y = fitted.y;
+      targetW = fitted.w;
+      targetH = fitted.h;
     } else {
       // Auto-place: similar to _sketchDiagramAuto logic
       double maxW = cw * 0.4; // 40% of column width for images
@@ -1903,7 +2154,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       targetH = img.height * effScale;
 
       // Avoid overlaps with previous blocks
-      y = _nextNonCollidingY(st, x, targetH, y);
+      y = _nextNonCollidingY(st, x, targetH, y, w: targetW);
     }
 
     debugPrint('   📐 Placement: ($x, $y) size: ${targetW}x$targetH');
@@ -2147,7 +2398,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     if (font < _tutorMinFont) font = _tutorMinFont;
     final indent = _indentFor(type, level, cfg.indent);
     final maxWidth = (contentW - indent).clamp(80.0, contentW);
-    final lines = _wrapText(text, font, maxWidth);
+    final displayText = TextNormalizer.normalizeForAction(
+      type: type,
+      text: text,
+    );
+    final lines = _wrapText(displayText, font, maxWidth);
     final height = (lines.length * font * cfg.lineHeight).ceilToDouble();
 
     double x = contentX0 + indent;
@@ -2167,7 +2422,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         st.columnIndex += 1;
         st.cursorY = cfg.page.top;
         await _placeBlock(st,
-            type: type, text: text, level: level, style: style, accum: accum);
+            type: type,
+            text: displayText,
+            level: level,
+            style: style,
+            accum: accum);
         return;
       } else {
         // new page: clear board and reset layout (simple approach)
@@ -2177,7 +2436,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         st.blocks.clear();
         st.sectionCount += 1;
         await _placeBlock(st,
-            type: type, text: text, level: level, style: style, accum: accum);
+            type: type,
+            text: displayText,
+            level: level,
+            style: style,
+            accum: accum);
         return;
       }
     }
@@ -2187,8 +2450,15 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     final worldTopLeft =
         Offset(x - (cfg.page.width / 2), y - (cfg.page.height / 2));
     final preferOutline = (type == 'heading' || type == 'formula');
-    final strokes = await _drawTextLines(lines, worldTopLeft, font,
-        preferOutline: preferOutline);
+    final isBold = (style?['bold'] == true) || type == 'heading';
+    final strokes = await _drawTextLines(
+      lines,
+      worldTopLeft,
+      font,
+      preferOutline: preferOutline,
+      actionType: type,
+      forceBold: isBold,
+    );
     accum.addAll(strokes);
 
     final bbox = BBox(x: x, y: y, w: maxWidth, h: height);
@@ -2196,7 +2466,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         id: 'b${st.blocks.length + 1}',
         type: type,
         bbox: bbox,
-        meta: {'level': level, 'text': text}));
+        meta: {'level': level, 'text': displayText}));
 
     // advance cursor
     final extra = (type == 'heading') ? cfg.gutterY * 1.5 : cfg.gutterY;
@@ -2204,85 +2474,178 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   }
 
   Future<List<List<Offset>>> _drawTextLines(
-      List<String> lines, Offset topLeftWorld, double fontSize,
-      {bool preferOutline = false}) async {
-    // Render each line as a text image → vectorize → place inside content box using top-left anchor
+    List<String> lines,
+    Offset topLeftWorld,
+    double fontSize, {
+    bool preferOutline = false,
+    String actionType = 'body',
+    bool forceBold = false,
+  }) async {
+    final root = _effectiveBaseUrl.trim();
+    if (root.isEmpty) {
+      debugPrint('⚠️ Backend vectorizer URL is empty; cannot render text');
+      return const [];
+    }
+
     final out = <List<Offset>>[];
+    final lineHeight = fontSize * _chalkPreset.lineHeightMultiplier;
+    const letterGap = 20.0;
+
     for (int i = 0; i < lines.length; i++) {
       final line = lines[i];
       if (line.trim().isEmpty) continue;
-      // Scale small fonts up for legibility and then scale back in world
+
+      // Try create_text_object first (same as visual_whiteboard; works on web)
+      final baselineY = topLeftWorld.dy + fontSize * 0.8 + i * lineHeight;
+      debugPrint('🔍 DECODE │ TEXT: calling BackendVectorizer.fetchTextStrokesAsPolylines');
+      debugPrint('🔍 DECODE │   input: line="$line" x=${topLeftWorld.dx} y=$baselineY fontSize=$fontSize');
+      final textStrokes = await BackendVectorizer.fetchTextStrokesAsPolylines(
+        baseUrl: root,
+        prompt: line,
+        x: topLeftWorld.dx,
+        y: baselineY,
+        letterSize: fontSize,
+        letterGap: letterGap,
+      );
+      debugPrint('🔍 DECODE │   output: ${textStrokes.length} polylines, ${textStrokes.fold<int>(0, (s, p) => s + p.length)} total points');
+      if (textStrokes.isNotEmpty) {
+        out.addAll(textStrokes);
+        continue;
+      }
+
+      // Fallback: render each glyph to PNG and vectorize
+      final lineJitterScale = preferOutline ? 0.9 : 1.0;
+      final baselineJitter =
+          _chalkPreset.baselineJitterPx(fontSize, i) * lineJitterScale;
       final scaleUp = fontSize < 24 ? (24.0 / fontSize) : 1.0;
-      final rl = await _renderTextLine(line, fontSize * scaleUp);
-      final centerlineMode = !preferOutline && fontSize < _clThreshold;
-      final mergeDist = centerlineMode
-          ? (fontSize * _clMergeFactor).clamp(_clMergeMin, _clMergeMax)
-          : 10.0;
-      final base = _effectiveBaseUrl;
-      final strokes = base.isNotEmpty
-          ? await BackendVectorizer.vectorize(
-              baseUrl: base,
-              bytes: rl.bytes,
-              worldScale: _worldScale,
-              sourceWidth: rl.w,
-              sourceHeight: rl.h,
-            )
-          : await Vectorizer.vectorize(
-              bytes: rl.bytes,
-              worldScale: _worldScale,
-              edgeMode: 'Canny',
-              blurK: 3,
-              cannyLo: 30,
-              cannyHi: 120,
-              dogSigma: _dogSigma,
-              dogK: _dogK,
-              dogThresh: _dogThresh,
-              epsilon: centerlineMode ? _clEpsilon : 0.8,
-              resampleSpacing: centerlineMode ? _clResample : 1.0,
-              minPerimeter: (_minPerim * 0.6).clamp(6.0, 1e9),
-              retrExternalOnly: false,
-              angleThresholdDeg: 85,
-              angleWindow: 3,
-              smoothPasses: centerlineMode ? _clSmoothPasses.round() : 1,
-              mergeParallel: true,
-              mergeMaxDist: mergeDist,
-              minStrokeLen: 4.0,
-              minStrokePoints: 3,
-            );
-      final lineHeight = fontSize * 1.25;
-      // Center-of-image placement: vectorizer returns strokes centered at (0,0) of the image
-      final centerOffset = Offset(rl.w / 2.0, rl.h / 2.0);
-      final offset = topLeftWorld + Offset(0, i * lineHeight) + centerOffset;
-      // If we scaled up, scale down coordinates to match intended font size
-      final placed = strokes
-          .map((s) => s.map((p) => (p + offset) / scaleUp).toList())
-          .toList();
-      out.addAll(placed);
+      final drawFontSize = fontSize * scaleUp;
+      final glyphs = TextNormalizer.expandScriptGlyphs(line);
+      var cursorX = 0.0;
+      Offset? previousEnd;
+
+      for (final glyph in glyphs) {
+        final glyphFontSize = drawFontSize * glyph.sizeFactor;
+        final glyphStyle = _lineTextStyle(
+          glyphFontSize,
+          actionType: actionType,
+          bold: forceBold,
+        );
+        final advance = _measureTextWidth(glyph.value, glyphStyle) / scaleUp;
+        if (glyph.value.trim().isEmpty) {
+          cursorX += advance;
+          continue;
+        }
+
+        final rl = await _renderTextLine(
+          glyph.value,
+          glyphFontSize,
+          actionType: actionType,
+          bold: forceBold,
+        );
+
+        debugPrint('🔍 DECODE │ GLYPH: calling BackendVectorizer.vectorize for "${glyph.value}"');
+        final glyphStrokes = await BackendVectorizer.vectorize(
+          baseUrl: root,
+          bytes: rl.bytes,
+          worldScale: _worldScale,
+          sourceWidth: rl.w,
+          sourceHeight: rl.h,
+        );
+        debugPrint('🔍 DECODE │   output: ${glyphStrokes.length} polylines, ${glyphStrokes.fold<int>(0, (s, p) => s + p.length)} total points');
+
+        final glyphOffset = topLeftWorld +
+            Offset(
+              cursorX,
+              i * lineHeight +
+                  baselineJitter +
+                  (glyph.baselineShiftEm * fontSize),
+            ) +
+            Offset(rl.w / 2.0, rl.h / 2.0);
+
+        final placed = glyphStrokes
+            .map((s) => s.map((p) => (p + glyphOffset) / scaleUp).toList())
+            .toList();
+        final oriented = _orientStrokesForNaturalFlow(
+          placed,
+          startNear: previousEnd,
+        );
+        if (oriented.isNotEmpty) {
+          previousEnd = oriented.last.last;
+        }
+        out.addAll(oriented);
+        cursorX += advance;
+      }
     }
     return out;
   }
 
+  TextStyle _lineTextStyle(
+    double fontSize, {
+    String actionType = 'body',
+    bool bold = false,
+  }) {
+    return _chalkPreset.toTextStyle(
+      fontSize: fontSize,
+      bold: bold || actionType == 'heading' || actionType == 'formula',
+    );
+  }
+
   // Render a single line to PNG and return bytes with pixel size (used to convert top-left → center coords)
-  Future<RenderedLine> _renderTextLine(String text, double fontSize) async {
-    final style = const TextStyle(color: Colors.black);
+  Future<RenderedLine> _renderTextLine(
+    String text,
+    double fontSize, {
+    String actionType = 'body',
+    bool bold = false,
+  }) async {
+    final style = _lineTextStyle(
+      fontSize,
+      actionType: actionType,
+      bold: bold,
+    );
+    return _textSketchService.renderTextLine(
+      text,
+      fontSize,
+      textStyle: style,
+      // Keep glyph input clean for vectorization; texture is added by stroke pass.
+      texturePasses: 0,
+      textureAlpha: 0.0,
+      textureJitterPx: 0.0,
+    );
+  }
+
+  double _measureTextWidth(String text, TextStyle style) {
+    if (text.isEmpty) return 0.0;
     final tp = TextPainter(
-      text: TextSpan(text: text, style: style.copyWith(fontSize: fontSize)),
+      text: TextSpan(text: text, style: style),
       textDirection: TextDirection.ltr,
     )..layout();
-    final pad = 10.0;
-    final w = (tp.width + pad * 2).ceil();
-    final h = (tp.height + pad * 2).ceil();
-    final recorder = ui.PictureRecorder();
-    final canvas =
-        Canvas(recorder, Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()));
-    canvas.drawRect(Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
-        Paint()..color = Colors.white);
-    tp.paint(canvas, Offset(pad, pad));
-    final pic = recorder.endRecording();
-    final img = await pic.toImage(w, h);
-    final data = await img.toByteData(format: ui.ImageByteFormat.png);
-    return RenderedLine(
-        bytes: data!.buffer.asUint8List(), w: w.toDouble(), h: h.toDouble());
+    return tp.width;
+  }
+
+  List<List<Offset>> _orientStrokesForNaturalFlow(
+    List<List<Offset>> strokes, {
+    Offset? startNear,
+  }) {
+    final ordered = <List<Offset>>[];
+    Offset? anchor = startNear;
+    for (final stroke in strokes.where((s) => s.length >= 2)) {
+      if (anchor == null) {
+        ordered.add(stroke);
+        anchor = stroke.last;
+        continue;
+      }
+      final dStart = (stroke.first - anchor).distance;
+      final dEnd = (stroke.last - anchor).distance;
+      if (dEnd < dStart) {
+        final reversed = stroke.reversed.toList(growable: false);
+        ordered.add(reversed);
+        anchor = reversed.last;
+      } else {
+        ordered.add(stroke);
+        anchor = stroke.last;
+      }
+    }
+    return ordered;
   }
 
   double _chooseFont(String type, Fonts fonts, Map<String, dynamic>? style) {
@@ -2331,13 +2694,102 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     return lines;
   }
 
-  double _nextNonCollidingY(LayoutState st, double x, double h, double startY) {
+  ({double x, double y, double w, double h}) _fitImagePlacementNoOverlap(
+    LayoutState st, {
+    required double x,
+    required double y,
+    required double w,
+    required double h,
+  }) {
+    const minSize = 80.0;
+    final cfg = st.config;
+    final pageLeft = cfg.page.left;
+    final pageTop = cfg.page.top;
+    final pageRight = cfg.page.width - cfg.page.right;
+    final pageBottom = cfg.page.height - cfg.page.bottom;
+    final maxPageW = math.max(minSize, pageRight - pageLeft);
+    final maxPageH = math.max(minSize, pageBottom - pageTop);
+
+    double targetX = x;
+    double targetY = y;
+    double targetW = w;
+    double targetH = h;
+
+    void clampToPage() {
+      targetW = targetW.clamp(minSize, maxPageW).toDouble();
+      targetH = targetH.clamp(minSize, maxPageH).toDouble();
+      targetX = targetX.clamp(pageLeft, pageRight - targetW).toDouble();
+      targetY = targetY.clamp(pageTop, pageBottom - targetH).toDouble();
+    }
+
+    bool hasCollision() {
+      final candidate = BBox(x: targetX, y: targetY, w: targetW, h: targetH);
+      for (final block in st.blocks) {
+        if (candidate.intersects(block.bbox)) return true;
+      }
+      return false;
+    }
+
+    clampToPage();
+
+    var attempts = 0;
+    while (hasCollision() && attempts < 8) {
+      final shiftedY = _nextNonCollidingY(
+        st,
+        targetX,
+        targetH,
+        targetY,
+        w: targetW,
+      );
+      if (shiftedY <= (pageBottom - targetH)) {
+        targetY = shiftedY;
+        if (!hasCollision()) break;
+      }
+
+      // No free vertical slot at this size: scale down and retry.
+      targetW *= 0.9;
+      targetH *= 0.9;
+      clampToPage();
+      targetY = _nextNonCollidingY(
+        st,
+        targetX,
+        targetH,
+        pageTop,
+        w: targetW,
+      );
+      clampToPage();
+      attempts++;
+    }
+
+    // Final guard in dense layouts.
+    if (hasCollision()) {
+      targetY = _nextNonCollidingY(
+        st,
+        targetX,
+        targetH,
+        pageTop,
+        w: targetW,
+      );
+      clampToPage();
+    }
+
+    return (x: targetX, y: targetY, w: targetW, h: targetH);
+  }
+
+  double _nextNonCollidingY(
+    LayoutState st,
+    double x,
+    double h,
+    double startY, {
+    double? w,
+  }) {
     double y = startY;
+    final candidateW = w ?? st.columnWidth();
     while (true) {
       bool hit = false;
       double maxBottom = y;
       for (final b in st.blocks) {
-        if (b.bbox.intersects(BBox(x: x, y: y, w: st.columnWidth(), h: h))) {
+        if (b.bbox.intersects(BBox(x: x, y: y, w: candidateW, h: h))) {
           maxBottom = math.max(maxBottom, b.bbox.bottom);
           hit = true;
         }
@@ -2355,10 +2807,6 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     _orchestrator.clearBoard();
   }
 
-  void _undoLast() {
-    _orchestrator.undoLast();
-  }
-
   Future<ui.Image> _decodeUiImage(Uint8List bytes) async {
     final c = Completer<ui.Image>();
     ui.decodeImageFromList(bytes, (ui.Image img) => c.complete(img));
@@ -2374,6 +2822,14 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       // update layout page size to reflect live canvas
       _maybeUpdateCanvasSize(size);
 
+      final planWidth =
+          (_width * _chalkPreset.strokeWidthScale).clamp(0.5, 100.0);
+      final planOpacity =
+          (_opacity * _chalkPreset.opacityScale).clamp(0.05, 1.0);
+      final planPasses = _passes;
+      final planJitterAmp = _jitterAmp;
+      final planJitterFreq = _jitterFreq;
+
       final baseCanvas = _busy
           ? const Center(child: CircularProgressIndicator())
           : (_plan == null
@@ -2381,11 +2837,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
               : SketchPlayer(
                   plan: _plan!,
                   totalSeconds: _seconds,
-                  baseWidth: _width,
-                  passOpacity: _opacity,
-                  passes: _passes,
-                  jitterAmp: _jitterAmp,
-                  jitterFreq: _jitterFreq,
+                  baseWidth: planWidth,
+                  passOpacity: planOpacity,
+                  passes: planPasses,
+                  jitterAmp: planJitterAmp,
+                  jitterFreq: planJitterFreq,
                   showRasterUnderlay: _planUnderlay ? _showRasterUnder : false,
                   raster: _raster,
                   isPaused: _drawingPaused,
@@ -2442,7 +2898,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                     ),
                   ),
                   // Toggle button for developer panel (debug builds + developer users only)
-                  if (kDebugMode && Provider.of<DeveloperModeProvider>(context).isEnabled)
+                  if (kDebugMode &&
+                      Provider.of<DeveloperModeProvider>(context).isEnabled)
                     Container(
                       width: 32,
                       color: Colors.grey[100],
@@ -2451,21 +2908,28 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                         children: [
                           IconButton(
                             icon: Icon(
-                              _showDevPanel ? Icons.chevron_right : Icons.developer_mode,
+                              _showDevPanel
+                                  ? Icons.chevron_right
+                                  : Icons.developer_mode,
                               color: Colors.grey[700],
                             ),
-                            tooltip: _showDevPanel ? 'Hide Developer Panel' : 'Show Developer Panel',
-                            onPressed: () => setState(() => _showDevPanel = !_showDevPanel),
+                            tooltip: _showDevPanel
+                                ? 'Hide Developer Panel'
+                                : 'Show Developer Panel',
+                            onPressed: () =>
+                                setState(() => _showDevPanel = !_showDevPanel),
                           ),
                         ],
                       ),
                     ),
-                // Collapsible developer panel (only for developer users)
-                if (kDebugMode && _showDevPanel && Provider.of<DeveloperModeProvider>(context).isEnabled)
-                  DeveloperDashboard(child: rightPanel),
+                  // Collapsible developer panel (only for developer users)
+                  if (kDebugMode &&
+                      _showDevPanel &&
+                      Provider.of<DeveloperModeProvider>(context).isEnabled)
+                    DeveloperDashboard(child: rightPanel),
                 ],
               ),
-            
+
             // ── Lesson loading overlay ──────────────────────────────────────
             if (_lessonLoading)
               Positioned.fill(
@@ -2504,9 +2968,12 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                           if (widget.lessonTitle != null) ...[
                             Text(
                               widget.lessonTitle!,
-                              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                                fontWeight: FontWeight.bold,
-                              ),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .headlineSmall
+                                  ?.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                  ),
                               textAlign: TextAlign.center,
                             ),
                             const SizedBox(height: 8),
@@ -2514,9 +2981,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                           // Stage text
                           Text(
                             _lessonLoadingStage,
-                            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                              color: Colors.grey[600],
-                            ),
+                            style:
+                                Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                      color: Colors.grey[600],
+                                    ),
                             textAlign: TextAlign.center,
                           ),
                           const SizedBox(height: 32),
@@ -2556,16 +3024,19 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                               decoration: BoxDecoration(
                                 color: Colors.red.withOpacity(0.08),
                                 borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: Colors.red.withOpacity(0.3)),
+                                border: Border.all(
+                                    color: Colors.red.withOpacity(0.3)),
                               ),
                               child: Row(
                                 children: [
-                                  const Icon(Icons.error_outline, color: Colors.red, size: 20),
+                                  const Icon(Icons.error_outline,
+                                      color: Colors.red, size: 20),
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Text(
                                       _lessonLoadingError!,
-                                      style: const TextStyle(fontSize: 12, color: Colors.red),
+                                      style: const TextStyle(
+                                          fontSize: 12, color: Colors.red),
                                       maxLines: 3,
                                       overflow: TextOverflow.ellipsis,
                                     ),
@@ -2603,7 +3074,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                                       _lessonLoadingError = null;
                                       _lessonLoadingProgress = 0.0;
                                     });
-                                    _autoStartLesson(widget.autoStartTopic ?? '');
+                                    _autoStartLesson(
+                                        widget.autoStartTopic ?? '');
                                   },
                                   icon: const Icon(Icons.refresh, size: 18),
                                   label: const Text('Retry'),
@@ -2617,7 +3089,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                   ),
                 ),
               ),
-            
+
             // Floating buttons on the left side
             Positioned(
               left: 12,
@@ -2633,28 +3105,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                     onPressed: () => Navigator.of(context).pop(),
                     child: const Icon(Icons.close),
                   ),
-                  const SizedBox(height: 8),
-                  // Undo button
-                  FloatingActionButton.small(
-                    heroTag: 'undo',
-                    tooltip: 'Undo last',
-                    backgroundColor: Colors.white,
-                    foregroundColor: _board.isEmpty ? Colors.grey : Colors.black87,
-                    onPressed: _board.isEmpty ? null : _undoLast,
-                    child: const Icon(Icons.undo),
-                  ),
-                  const SizedBox(height: 8),
-                  // Clear button
-                  FloatingActionButton.small(
-                    heroTag: 'clear',
-                    tooltip: 'Clear board',
-                    backgroundColor: Colors.white,
-                    foregroundColor: _board.isEmpty ? Colors.grey : Colors.black87,
-                    onPressed: _board.isEmpty ? null : _clearBoard,
-                    child: const Icon(Icons.delete_sweep),
-                  ),
                   // Dev panel button on mobile (opens as bottom sheet, debug builds only)
-                  if (kDebugMode && isMobile && Provider.of<DeveloperModeProvider>(context).isEnabled) ...[
+                  if (kDebugMode &&
+                      isMobile &&
+                      Provider.of<DeveloperModeProvider>(context)
+                          .isEnabled) ...[
                     const SizedBox(height: 8),
                     FloatingActionButton.small(
                       heroTag: 'devpanel',
@@ -2685,8 +3140,11 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
               ),
             ),
 
-            // ── Playback bar (bottom) — only during lesson sessions ────────
-            if (_isInLessonSession && _timelineController?.timeline != null && !_lessonLoading && !_lessonComplete)
+            // ── Playback bar (bottom) — only for stored (rewatch) lessons ───
+            if (widget.autoStartSessionId != null &&
+                _timelineController?.timeline != null &&
+                !_lessonLoading &&
+                !_lessonComplete)
               Positioned(
                 left: 0,
                 right: 0,
@@ -2700,7 +3158,8 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
                 child: LessonCompletionOverlay(
                   lessonTitle: widget.lessonTitle,
                   segmentsCompleted: _timelineController?.segmentCount ?? 0,
-                  totalDurationSeconds: _timelineController?.totalDuration ?? 0.0,
+                  totalDurationSeconds:
+                      _timelineController?.totalDuration ?? 0.0,
                   onReplay: () {
                     setState(() => _lessonComplete = false);
                     _timelineController?.restart();
@@ -3290,6 +3749,35 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
             controller: _textCtrl,
             decoration: const InputDecoration(labelText: 'Enter text'),
           ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            initialValue: _chalkPresetId,
+            decoration: const InputDecoration(labelText: 'Chalk style preset'),
+            items: ChalkTextPreset.all
+                .map(
+                  (preset) => DropdownMenuItem<String>(
+                    value: preset.id,
+                    child: Text(preset.label),
+                  ),
+                )
+                .toList(),
+            onChanged: (v) {
+              if (v == null) return;
+              final preset = ChalkTextPreset.byId(v);
+              setState(() {
+                _chalkPresetId = v;
+                _preferOutlineHeadings = preset.preferOutlineHeadings;
+              });
+              _syncCenterlineAndTutorToOrchestrator();
+            },
+          ),
+          _slider('Chalk texture strength', 0.0, 1.0, _chalkTextureStrength,
+              (v) {
+            setState(() {
+              _chalkTextureStrength = double.parse(v.toStringAsFixed(2));
+            });
+            _syncCenterlineAndTutorToOrchestrator();
+          }),
           _slider('Font size (px)', 20.0, 400.0, _textFontSize,
               (v) => setState(() => _textFontSize = v)),
           SwitchListTile(
@@ -3463,25 +3951,6 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
               ),
             ),
           ]),
-          const SizedBox(height: 8),
-          Row(children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: _board.isEmpty ? null : _undoLast,
-                icon: const Icon(Icons.undo),
-                label: const Text('Undo last'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: _board.isEmpty ? null : _clearBoard,
-                icon: const Icon(Icons.delete_sweep),
-                label: const Text('Clear board'),
-              ),
-            ),
-          ]),
-
           const Divider(height: 24),
           Text('Playback / Texture', style: t.textTheme.titleLarge),
           const SizedBox(height: 8),

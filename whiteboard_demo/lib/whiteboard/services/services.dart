@@ -7,3 +7,5 @@ library;
 export 'stroke_service.dart';
 export 'text_sketch_service.dart';
 export 'image_sketch_service.dart';
+export 'backend_stroke_service.dart';
+export 'font_glyph_service.dart';

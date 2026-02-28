@@ -46,26 +46,37 @@ def _get_images_from_lesson_pipeline(topic: str, subject: str = "General", use_e
     
     logger.info(f"[LessonPipeline] Got {len(images)} images from lesson pipeline")
     
-    # Build lookup dict by tag ID
+    # Build lookup dict by tag ID.
+    # The whiteboard pipeline uses strokes (not URLs), so base_image_url is intentionally
+    # empty. Accept any image that has either a URL or a vector_id/strokes payload.
     image_lookup = {}
     for img in images:
         tag = img.get('tag', {})
         tag_id = tag.get('id', '')
-        base_url = img.get('base_image_url', '')
+        base_url = img.get('base_image_url', '') or ''
         final_url = img.get('final_image_url', '') or base_url
-        
-        if tag_id and base_url:
-            image_lookup[tag_id] = {
-                'url': base_url,
-                'image_url': base_url,
-                'final_url': final_url,
-                'source': 'lesson_pipeline',
-                'title': tag.get('query', topic),
-                'description': tag.get('prompt', ''),
-                'prompt': tag.get('prompt', ''),
-                'style': tag.get('style', 'diagram'),
-            }
-            logger.info(f"  [{tag_id}] {base_url[:60]}...")
+        vector_id = img.get('vector_id') or img.get('pipeline_id') or ''
+        strokes = img.get('strokes')
+
+        if not tag_id:
+            continue
+        # Accept if we have either a URL or stroke/vector data
+        if not base_url and not vector_id and not strokes:
+            continue
+
+        image_lookup[tag_id] = {
+            'url': base_url,
+            'image_url': base_url,
+            'final_url': final_url,
+            'vector_id': vector_id,
+            'strokes': strokes,
+            'source': 'lesson_pipeline',
+            'title': tag.get('query', topic),
+            'description': tag.get('prompt', ''),
+            'prompt': tag.get('prompt', ''),
+            'style': tag.get('style', 'diagram'),
+        }
+        logger.info(f"  [{tag_id}] url={base_url[:40] or '(none)'} vector_id={vector_id or '(none)'}")
     
     return image_lookup
 
@@ -124,9 +135,12 @@ def _research_images_for_timeline(timeline_data: dict, topic: str, use_existing_
         else:
             raise RuntimeError(f"No images available for {img_id}")
         
+        url = img_data.get('url', '') or ''
         researched[img_id] = {
-            'url': img_data['url'],
-            'image_url': img_data['url'],
+            'url': url,
+            'image_url': url,
+            'vector_id': img_data.get('vector_id', ''),
+            'strokes': img_data.get('strokes'),
             'source': img_data.get('source', 'lesson_pipeline'),
             'title': img_data.get('title', topic),
             'description': img_data.get('description', ''),
@@ -134,7 +148,7 @@ def _research_images_for_timeline(timeline_data: dict, topic: str, use_existing_
             'placement': req.get('placement'),
             'style': req.get('style', 'diagram'),
         }
-        logger.info(f"  [{img_id}] -> {img_data['url'][:60]}...")
+        logger.info(f"  [{img_id}] url={url[:40] or '(none)'} vector_id={img_data.get('vector_id', '') or '(none)'}")
     
     logger.info(f"Got {len(researched)}/{len(image_requests)} images from lesson_pipeline")
     return researched

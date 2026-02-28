@@ -1,5 +1,7 @@
 import 'dart:ui';
 
+import 'package:flutter/material.dart' show Colors;
+
 /// Drawable stroke with rendering data and timing information
 class DrawableStroke {
   /// Origin JSON name for grouping/erasing
@@ -28,6 +30,9 @@ class DrawableStroke {
   
   /// Average curvature in degrees
   final double curvatureMetricDeg;
+
+  /// Per-stroke color (from backend color_group_id or default black)
+  final Color color;
 
   /// Cumulative geometric length at each point
   final List<double> cumGeomLen;
@@ -70,6 +75,7 @@ class DrawableStroke {
     required this.cumDrawCost,
     required this.drawCostTotal,
     required this.drawTimeSec,
+    this.color = Colors.black,
     this.travelTimeBeforeSec = 0.0,
     this.timeWeight = 0.0,
     this.groupId = -1,

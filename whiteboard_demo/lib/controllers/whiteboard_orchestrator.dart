@@ -18,11 +18,14 @@ import '../assistant_api.dart';
 import '../services/timeline_api.dart';
 import '../services/lesson_pipeline_api.dart';
 import '../whiteboard/whiteboard.dart';
+import '../whiteboard/text/chalk_text_preset.dart';
+import '../whiteboard/text/text_normalizer.dart';
 import 'timeline_playback_controller.dart';
 
 // Re-export from whiteboard module for convenience
 export '../whiteboard/layout/layout_config.dart' show Fonts, Indent;
-export '../whiteboard/layout/layout_state.dart' show RenderedLine, BBox, DrawnBlock;
+export '../whiteboard/layout/layout_state.dart'
+    show RenderedLine, BBox, DrawnBlock;
 
 /// Vectorization configuration.
 class VectorizerConfig {
@@ -173,6 +176,17 @@ class TutorConfig {
   });
 }
 
+/// Chalk-style text rendering controls.
+class ChalkTextConfig {
+  String presetId;
+  double textureStrength;
+
+  ChalkTextConfig({
+    this.presetId = ChalkTextPreset.classicId,
+    this.textureStrength = 0.75,
+  });
+}
+
 /// Main orchestrator for whiteboard operations.
 ///
 /// Manages drawing state, layout, vectorization, and content rendering.
@@ -211,6 +225,7 @@ class WhiteboardOrchestrator extends ChangeNotifier {
   final PlaybackConfig playbackConfig = PlaybackConfig();
   final LayoutParams layoutParams = LayoutParams();
   final TutorConfig tutorConfig = TutorConfig();
+  final ChalkTextConfig chalkTextConfig = ChalkTextConfig();
 
   // API clients
   String baseUrl;
@@ -250,7 +265,8 @@ class WhiteboardOrchestrator extends ChangeNotifier {
       final newCfg = buildLayoutConfigForSize(size.width, size.height);
       layout = LayoutState(
         config: newCfg,
-        cursorY: layout!.cursorY.clamp(newCfg.page.top, newCfg.page.height - newCfg.page.bottom),
+        cursorY: layout!.cursorY
+            .clamp(newCfg.page.top, newCfg.page.height - newCfg.page.bottom),
         columnIndex: 0,
         blocks: layout!.blocks,
         sectionCount: layout!.sectionCount,
@@ -379,14 +395,51 @@ class WhiteboardOrchestrator extends ChangeNotifier {
   // Text Rendering
   // ============================================================
 
+  ChalkTextPreset get _chalkPreset =>
+      ChalkTextPreset.byId(chalkTextConfig.presetId);
+
+  TextStyle _chalkStyleFor(String type, double fontSize, {bool bold = false}) {
+    final headingLike = type == 'heading' || type == 'formula';
+    return _chalkPreset.toTextStyle(
+      fontSize: fontSize,
+      bold: bold || headingLike,
+    );
+  }
+
   /// Render text to PNG bytes.
-  Future<Uint8List> renderTextImageBytes(String text, double fontSize) async {
-    return _textSketchService.renderTextToPng(text, fontSize);
+  Future<Uint8List> renderTextImageBytes(
+    String text,
+    double fontSize, {
+    String actionType = 'body',
+    bool bold = false,
+  }) async {
+    return _textSketchService.renderTextToPng(
+      text,
+      fontSize,
+      textStyle: _chalkStyleFor(actionType, fontSize, bold: bold),
+      // Keep glyph input clean for vectorization; texture is added by stroke pass.
+      texturePasses: 0,
+      textureAlpha: 0.0,
+      textureJitterPx: 0.0,
+    );
   }
 
   /// Render a single line to PNG with dimensions.
-  Future<RenderedLine> renderTextLine(String text, double fontSize) async {
-    final result = await _textSketchService.renderTextLine(text, fontSize);
+  Future<RenderedLine> renderTextLine(
+    String text,
+    double fontSize, {
+    String actionType = 'body',
+    bool bold = false,
+  }) async {
+    final result = await _textSketchService.renderTextLine(
+      text,
+      fontSize,
+      textStyle: _chalkStyleFor(actionType, fontSize, bold: bold),
+      // Keep glyph input clean for vectorization; texture is added by stroke pass.
+      texturePasses: 0,
+      textureAlpha: 0.0,
+      textureJitterPx: 0.0,
+    );
     return RenderedLine(bytes: result.bytes, w: result.w, h: result.h);
   }
 
@@ -418,6 +471,41 @@ class WhiteboardOrchestrator extends ChangeNotifier {
   /// Wrap text to fit width.
   List<String> wrapText(String text, double fontSize, double maxWidth) {
     return _textSketchService.wrapText(text, fontSize, maxWidth);
+  }
+
+  double _measureTextWidth(String text, TextStyle style) {
+    if (text.isEmpty) return 0.0;
+    final tp = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    return tp.width;
+  }
+
+  List<List<Offset>> _orientStrokesForNaturalFlow(
+    List<List<Offset>> strokes, {
+    Offset? startNear,
+  }) {
+    final ordered = <List<Offset>>[];
+    Offset? anchor = startNear;
+    for (final stroke in strokes.where((s) => s.length >= 2)) {
+      if (anchor == null) {
+        ordered.add(stroke);
+        anchor = stroke.last;
+        continue;
+      }
+      final dStart = (stroke.first - anchor).distance;
+      final dEnd = (stroke.last - anchor).distance;
+      if (dEnd < dStart) {
+        final reversed = stroke.reversed.toList(growable: false);
+        ordered.add(reversed);
+        anchor = reversed.last;
+      } else {
+        ordered.add(stroke);
+        anchor = stroke.last;
+      }
+    }
+    return ordered;
   }
 
   /// Find next Y position that doesn't collide with existing blocks.
@@ -506,7 +594,8 @@ class WhiteboardOrchestrator extends ChangeNotifier {
     }
   }
 
-  void _onVectorized(List<List<Offset>> strokes, double x, double y, double targetWidth) {
+  void _onVectorized(
+      List<List<Offset>> strokes, double x, double y, double targetWidth) {
     if (strokes.isEmpty) {
       setError('No strokes found');
       return;
@@ -560,12 +649,60 @@ class WhiteboardOrchestrator extends ChangeNotifier {
     setBusy(true);
     try {
       final usedFont = fontSize ?? tutorConfig.minFont;
-      final actualFont = usedFont < tutorConfig.minFont ? tutorConfig.minFont : usedFont;
-      final png = await renderTextImageBytes(text, actualFont);
+      final actualFont =
+          usedFont < tutorConfig.minFont ? tutorConfig.minFont : usedFont;
 
-      final centerlineMode = !centerlineParams.sketchPreferOutline && actualFont < centerlineParams.threshold;
+      // Try create_text_object first (same as visual_whiteboard; works on web)
+      if (baseUrl.isNotEmpty) {
+        final textStrokes =
+            await BackendVectorizer.fetchTextStrokesAsPolylines(
+          baseUrl: baseUrl,
+          prompt: text,
+          x: 0,
+          y: 0,
+          letterSize: actualFont,
+          letterGap: 20.0,
+        );
+        if (textStrokes.isNotEmpty) {
+          // Center text at worldCenter (match PNG vectorize behavior)
+          double minX = double.infinity, minY = double.infinity;
+          double maxX = -double.infinity, maxY = -double.infinity;
+          for (final s in textStrokes) {
+            for (final p in s) {
+              if (p.dx < minX) minX = p.dx;
+              if (p.dy < minY) minY = p.dy;
+              if (p.dx > maxX) maxX = p.dx;
+              if (p.dy > maxY) maxY = p.dy;
+            }
+          }
+          final cx = (minX + maxX) / 2;
+          final cy = (minY + maxY) / 2;
+          final offset = raster?.worldCenter ?? Offset.zero;
+          final placed = textStrokes
+              .map((s) =>
+                  s.map((p) => p - Offset(cx, cy) + offset).toList())
+              .toList();
+          plan = StrokePlan(placed);
+          notifyListeners();
+          return;
+        }
+      }
+
+      final png = await renderTextImageBytes(
+        text,
+        actualFont,
+        actionType: 'body',
+      );
+
+      final threshold =
+          centerlineParams.threshold * _chalkPreset.centerlineThresholdScale;
+      final centerlineMode =
+          !centerlineParams.sketchPreferOutline && actualFont < threshold;
       final mergeDist = centerlineMode
-          ? (actualFont * centerlineParams.mergeFactor).clamp(centerlineParams.mergeMin, centerlineParams.mergeMax)
+          ? (actualFont *
+                  centerlineParams.mergeFactor *
+                  _chalkPreset.centerlineMergeScale)
+              .clamp(centerlineParams.mergeMin, centerlineParams.mergeMax)
           : 10.0;
 
       final strokes = baseUrl.isNotEmpty
@@ -590,7 +727,8 @@ class WhiteboardOrchestrator extends ChangeNotifier {
               retrExternalOnly: false,
               angleThresholdDeg: 85.0,
               angleWindow: 3,
-              smoothPasses: centerlineMode ? centerlineParams.smoothPasses.round() : 1,
+              smoothPasses:
+                  centerlineMode ? centerlineParams.smoothPasses.round() : 1,
               mergeParallel: true,
               mergeMaxDist: mergeDist,
               minStrokeLen: 4.0,
@@ -615,7 +753,8 @@ class WhiteboardOrchestrator extends ChangeNotifier {
       );
 
       final offset = raster?.worldCenter ?? Offset.zero;
-      final placed = stitched.map((s) => s.map((p) => p + offset).toList()).toList();
+      final placed =
+          stitched.map((s) => s.map((p) => p + offset).toList()).toList();
       plan = StrokePlan(placed);
       notifyListeners();
     } catch (e, st) {
@@ -800,8 +939,13 @@ class WhiteboardOrchestrator extends ChangeNotifier {
     final availableWidth = colWidth - indentPx;
 
     // Wrap text
-    final lines = wrapText(text, fontSize, availableWidth);
-    final lineH = fontSize * cfg.lineHeight;
+    final displayText = TextNormalizer.normalizeForAction(
+      type: type,
+      text: text,
+    );
+    final lines = wrapText(displayText, fontSize, availableWidth);
+    final lineH =
+        fontSize * cfg.lineHeight * (_chalkPreset.lineHeightMultiplier / 1.25);
 
     // Calculate block height
     final blockH = lines.length * lineH;
@@ -822,74 +966,79 @@ class WhiteboardOrchestrator extends ChangeNotifier {
     // Render each line
     for (int i = 0; i < lines.length; i++) {
       final line = lines[i];
-      final lineY = y + i * lineH;
+      final lineJitter = _chalkPreset.baselineJitterPx(fontSize, i);
+      final lineY = y + i * lineH + lineJitter;
 
       // Scale small fonts for better vectorization
       final scaleUp = fontSize < 24 ? (24.0 / fontSize) : 1.0;
-      final renderedLine = await renderTextLine(line, fontSize * scaleUp);
+      final isBold = (style?['bold'] == true) || type == 'heading';
+      if (baseUrl.isEmpty) {
+        debugPrint('Backend vectorizer URL is empty; cannot render text');
+        continue;
+      }
+      final glyphs = TextNormalizer.expandScriptGlyphs(line);
+      var cursorX = x;
+      Offset? previousEnd;
+      final placed = <List<Offset>>[];
 
-      final centerlineMode = !preferOutline && fontSize < centerlineParams.threshold;
-      final mergeDist = centerlineMode
-          ? (fontSize * centerlineParams.mergeFactor).clamp(centerlineParams.mergeMin, centerlineParams.mergeMax)
-          : 10.0;
+      for (final glyph in glyphs) {
+        final glyphFontSize = (fontSize * scaleUp) * glyph.sizeFactor;
+        final glyphStyle = _chalkStyleFor(type, glyphFontSize, bold: isBold);
+        final advance = _measureTextWidth(glyph.value, glyphStyle) / scaleUp;
+        if (glyph.value.trim().isEmpty) {
+          cursorX += advance;
+          continue;
+        }
 
-      final strokes = baseUrl.isNotEmpty
-          ? await BackendVectorizer.vectorize(
-              baseUrl: baseUrl,
-              bytes: renderedLine.bytes,
-              worldScale: vectorConfig.worldScale / scaleUp,
-              sourceWidth: renderedLine.w,
-              sourceHeight: renderedLine.h,
-            )
-          : await Vectorizer.vectorize(
-              bytes: renderedLine.bytes,
-              worldScale: vectorConfig.worldScale / scaleUp,
-              edgeMode: 'Canny',
-              blurK: 3,
-              cannyLo: 30.0,
-              cannyHi: 120.0,
-              epsilon: centerlineMode ? centerlineParams.epsilon : 0.8,
-              resampleSpacing: centerlineMode ? centerlineParams.resample : 1.0,
-              minPerimeter: 6.0,
-              retrExternalOnly: false,
-              angleThresholdDeg: 85.0,
-              angleWindow: 3,
-              smoothPasses: centerlineMode ? centerlineParams.smoothPasses.round() : 1,
-              mergeParallel: true,
-              mergeMaxDist: mergeDist,
-              minStrokeLen: 4.0,
-              minStrokePoints: 3,
-            );
+        final renderedGlyph = await renderTextLine(
+          glyph.value,
+          glyphFontSize,
+          actionType: type,
+          bold: isBold,
+        );
+        final glyphStrokes = await BackendVectorizer.vectorize(
+          baseUrl: baseUrl,
+          bytes: renderedGlyph.bytes,
+          worldScale: vectorConfig.worldScale / scaleUp,
+          sourceWidth: renderedGlyph.w,
+          sourceHeight: renderedGlyph.h,
+        );
 
-      // Normalize and stitch
-      final normalized = strokes.map((s) {
-        if (s.isEmpty) return s;
-        return s.first.dx <= s.last.dx ? s : s.reversed.toList();
-      }).toList();
-      normalized.sort((a, b) {
-        final ax = a.isEmpty ? 0.0 : a.map((p) => p.dx).reduce(math.min);
-        final bx = b.isEmpty ? 0.0 : b.map((p) => p.dx).reduce(math.min);
-        return ax.compareTo(bx);
-      });
-
-      final stitched = _strokeService.stitchStrokes(
-        normalized,
-        maxGap: (fontSize * 0.08).clamp(3.0, 18.0),
-      );
-
-      // Offset strokes to position
-      final placed = stitched.map((s) {
-        return s.map((p) => Offset(p.dx + x, p.dy + lineY)).toList();
-      }).toList();
+        final glyphCenter = Offset(
+          cursorX + (renderedGlyph.w / (2.0 * scaleUp)),
+          lineY +
+              (glyph.baselineShiftEm * fontSize) +
+              (renderedGlyph.h / (2.0 * scaleUp)),
+        );
+        final charPlaced = glyphStrokes
+            .map((s) => s.map((p) => p + glyphCenter).toList(growable: false))
+            .toList(growable: false);
+        final oriented = _orientStrokesForNaturalFlow(
+          charPlaced,
+          startNear: previousEnd,
+        );
+        if (oriented.isNotEmpty) {
+          previousEnd = oriented.last.last;
+        }
+        placed.addAll(oriented);
+        cursorX += advance;
+      }
 
       // Create and commit vector object
       final linePlan = StrokePlan(placed);
+      final textBaseWidth =
+          (playbackConfig.width * _chalkPreset.strokeWidthScale * 0.58)
+              .clamp(0.35, 100.0);
+      final textOpacity =
+          (playbackConfig.opacity * _chalkPreset.opacityScale).clamp(0.05, 1.0);
+      const textPasses = 1;
+      const textJitterAmp = 0.0;
       final obj = VectorObject(
         plan: linePlan,
-        baseWidth: playbackConfig.width,
-        passOpacity: playbackConfig.opacity,
-        passes: playbackConfig.passes,
-        jitterAmp: playbackConfig.jitterAmp,
+        baseWidth: textBaseWidth,
+        passOpacity: textOpacity,
+        passes: textPasses,
+        jitterAmp: textJitterAmp,
         jitterFreq: playbackConfig.jitterFreq,
       );
       board.add(obj);
@@ -929,14 +1078,19 @@ class WhiteboardOrchestrator extends ChangeNotifier {
             url: imageUrl,
             x: ((action['x'] as num?) ?? (placement?['x'] as num?))?.toDouble(),
             y: ((action['y'] as num?) ?? (placement?['y'] as num?))?.toDouble(),
-            width: ((action['width'] as num?) ?? (placement?['width'] as num?))?.toDouble(),
-            height: ((action['height'] as num?) ?? (placement?['height'] as num?))?.toDouble(),
+            width: ((action['width'] as num?) ?? (placement?['width'] as num?))
+                ?.toDouble(),
+            height:
+                ((action['height'] as num?) ?? (placement?['height'] as num?))
+                    ?.toDouble(),
             name: action['name'] as String?,
           );
         }
       } else if (text.isNotEmpty) {
         // Handle text-based actions
-        final preferOutline = type == 'heading' && centerlineParams.preferOutlineHeadings;
+        final preferOutline = type == 'heading' &&
+            centerlineParams.preferOutlineHeadings &&
+            _chalkPreset.preferOutlineHeadings;
         await placeBlock(
           type: type,
           text: text,

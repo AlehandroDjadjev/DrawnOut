@@ -82,7 +82,7 @@ def _torch_and_cv2_post_config(cpu_threads: int) -> None:
 def init_hot_models(
     *,
     qwen_model_id: str = "Qwen/Qwen3-VL-2B-Instruct",
-    siglip_model_id: str = "google/siglip-so400m-patch14-384",
+    siglip_model_id: str = "google/siglip2-giant-opt-patch16-384",
     minilm_model_id: str = "sentence-transformers/all-MiniLM-L6-v2",
     gpu_index: int = 0,
     cpu_threads: int = 4,

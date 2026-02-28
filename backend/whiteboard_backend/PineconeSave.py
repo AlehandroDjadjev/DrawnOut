@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import os
-import time
-from typing import Any, Dict, List, Optional, Tuple
+import time as _time
+from typing import Any, Dict, List, Optional
 
 from pinecone.grpc import PineconeGRPC as Pinecone  # per docs
-from pinecone import ServerlessSpec
 
 from dotenv import load_dotenv
 from pathlib import Path
@@ -14,16 +13,16 @@ from pathlib import Path
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 
+def _log(msg: str) -> None:
+    ts = _time.strftime("%H:%M:%S")
+    print(f"[{ts}][PineconeSave] {msg}", flush=True)
+
+
 # -----------------------------
 # SETTINGS (env-driven)
 # -----------------------------
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
-PINECONE_CLOUD = os.getenv("PINECONE_CLOUD", "aws")
-PINECONE_REGION = os.getenv("PINECONE_REGION", "us-east-1")
-PINECONE_INDEX_PREFIX = os.getenv("PINECONE_INDEX_PREFIX", "img-meta")
-
-# If you want a different metric, change it, but cosine is typical for embeddings
-PINECONE_METRIC = os.getenv("PINECONE_METRIC", "cosine")
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY") or os.getenv("Pinecone-API-Key", "")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "lesson-images")
 
 UPSERT_BATCH = int(os.getenv("PINECONE_UPSERT_BATCH", "100"))
 
@@ -38,22 +37,12 @@ def _vec_dim(v: Any) -> Optional[int]:
     return None
 
 
-def _ensure_index(pc: Pinecone, index_name: str, dim: int) -> None:
-    if pc.has_index(index_name):
-        return
-
-    pc.create_index(
-        name=index_name,
-        vector_type="dense",
-        dimension=int(dim),
-        metric=str(PINECONE_METRIC),
-        spec=ServerlessSpec(cloud=str(PINECONE_CLOUD), region=str(PINECONE_REGION)),
-        deletion_protection="disabled",
-        tags={"component": "image_pipeline"},
-    )
-    # Create is async; wait until it exists
-    while not pc.has_index(index_name):
-        time.sleep(0.5)
+def _index_exists(pc: Pinecone, index_name: str) -> bool:
+    try:
+        pc.describe_index(index_name)
+        return True
+    except Exception:
+        return False
 
 
 def _open_index(pc: Pinecone, index_name: str):
@@ -67,45 +56,20 @@ def _open_index(pc: Pinecone, index_name: str):
     return pc.Index(host=host)
 
 
-def _minimal_index_plan(prompt_dim: Optional[int], clip_dim: Optional[int], context_dim: Optional[int]) -> Dict[str, Tuple[str, str]]:
-    """
-    Returns:
-      {
-        "prompt":  (index_name, namespace),
-        "clip":    (index_name, namespace),
-        "context": (index_name, namespace),
-      }
-    Strategy:
-      - If all 3 dims match -> single index, namespaces prompt/clip/context.
-      - Else if prompt_dim == context_dim -> share one index with namespaces prompt/context, clip separate.
-      - Else -> 3 indexes.
-    """
-    # If any are missing, we still generate a name; caller will skip missing vectors.
-    def idx(name: str, dim: Optional[int]) -> str:
-        d = dim if dim is not None else 0
-        return f"{PINECONE_INDEX_PREFIX}-{name}-{d}"
-
-    if prompt_dim and clip_dim and context_dim and (prompt_dim == clip_dim == context_dim):
-        shared = f"{PINECONE_INDEX_PREFIX}-all-{prompt_dim}"
-        return {
-            "prompt": (shared, "prompt"),
-            "clip": (shared, "clip"),
-            "context": (shared, "context"),
-        }
-
-    if prompt_dim and context_dim and (prompt_dim == context_dim):
-        shared = f"{PINECONE_INDEX_PREFIX}-promptctx-{prompt_dim}"
-        return {
-            "prompt": (shared, "prompt"),
-            "context": (shared, "context"),
-            "clip": (idx("clip", clip_dim), "clip"),
-        }
-
-    return {
-        "prompt": (idx("prompt", prompt_dim), "prompt"),
-        "clip": (idx("clip", clip_dim), "clip"),
-        "context": (idx("context", context_dim), "context"),
-    }
+def _index_dimension(pc: Pinecone, index_name: str) -> int:
+    desc = pc.describe_index(index_name)
+    dim = getattr(desc, "dimension", None)
+    if dim is None and isinstance(desc, dict):
+        dim = desc.get("dimension")
+    if dim is None:
+        spec = getattr(desc, "spec", None)
+        if spec is not None:
+            dim = getattr(spec, "dimension", None)
+        if dim is None and isinstance(spec, dict):
+            dim = spec.get("dimension")
+    if dim is None:
+        raise RuntimeError(f"Could not resolve dimension for index: {index_name}")
+    return int(dim)
 
 
 def upsert_image_metadata_embeddings(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -122,7 +86,10 @@ def upsert_image_metadata_embeddings(jobs: List[Dict[str, Any]]) -> Dict[str, An
 
     Returns a summary dict (counts + index plan).
     """
+    _log(f"upsert called with {len(jobs)} job(s)")
+
     if not PINECONE_API_KEY:
+        _log("ERROR: PINECONE_API_KEY is missing")
         raise RuntimeError("PINECONE_API_KEY is missing in environment variables.")
 
     # Infer dims from first available vector of each type
@@ -140,29 +107,48 @@ def upsert_image_metadata_embeddings(jobs: List[Dict[str, Any]]) -> Dict[str, An
         if prompt_dim and clip_dim and context_dim:
             break
 
-    plan = _minimal_index_plan(prompt_dim, clip_dim, context_dim)
+    _log(f"Inferred dims: prompt={prompt_dim}, clip={clip_dim}, context={context_dim}")
 
     pc = Pinecone(api_key=PINECONE_API_KEY)
 
-    # Ensure required indexes exist
-    needed_indexes = {}
-    for kind, (index_name, _) in plan.items():
-        # only create index if we actually have that vector kind present
-        dim = {"prompt": prompt_dim, "clip": clip_dim, "context": context_dim}.get(kind)
+    if not _index_exists(pc, PINECONE_INDEX_NAME):
+        _log(f"ERROR: Index ‘{PINECONE_INDEX_NAME}’ not found")
+        raise RuntimeError(
+            f"Pinecone index not found: ‘{PINECONE_INDEX_NAME}’. "
+            "Set PINECONE_INDEX_NAME to an existing index."
+        )
+
+    index_dim = _index_dimension(pc, PINECONE_INDEX_NAME)
+    _log(f"Index ‘{PINECONE_INDEX_NAME}’ dimension: {index_dim}")
+    dims = {"prompt": prompt_dim, "clip": clip_dim, "context": context_dim}
+    plan: Dict[str, tuple[str, str]] = {}
+    skipped_modalities: Dict[str, str] = {}
+    for kind, dim in dims.items():
         if dim is None:
+            skipped_modalities[kind] = "missing_vector"
             continue
-        needed_indexes[index_name] = dim
+        if int(dim) != int(index_dim):
+            skipped_modalities[kind] = f"dim_mismatch(vector={dim}, index={index_dim})"
+            continue
+        plan[kind] = (PINECONE_INDEX_NAME, kind)
 
-    for index_name, dim in needed_indexes.items():
-        _ensure_index(pc, index_name, dim)
+    if skipped_modalities:
+        _log(f"Skipped modalities: {skipped_modalities}")
+    _log(f"Upsert plan: {list(plan.keys())}")
 
-    # Open indexes once
-    opened = {name: _open_index(pc, name) for name in needed_indexes.keys()}
+    if not plan:
+        _log(f"ERROR: No embeddings match index dimension {index_dim}")
+        raise RuntimeError(
+            f"No embeddings match Pinecone index dimension {index_dim} "
+            f"for index ‘{PINECONE_INDEX_NAME}’."
+        )
+
+    index = _open_index(pc, PINECONE_INDEX_NAME)
 
     counts = {"prompt": 0, "clip": 0, "context": 0}
 
-    # Build per-kind upsert payloads
-    per_kind_vectors: Dict[str, List[Dict[str, Any]]] = {"prompt": [], "clip": [], "context": []}
+    # Build per-kind upsert payloads for compatible modalities only.
+    per_kind_vectors: Dict[str, List[Dict[str, Any]]] = {k: [] for k in plan.keys()}
 
     for j in jobs:
         pid = str(j.get("processed_id", "")).strip()
@@ -179,34 +165,36 @@ def upsert_image_metadata_embeddings(jobs: List[Dict[str, Any]]) -> Dict[str, An
             **meta,
         }
 
-
         v_prompt = j.get("prompt_embedding")
-        if _vec_dim(v_prompt) is not None:
+        if "prompt" in plan and _vec_dim(v_prompt) is not None:
             per_kind_vectors["prompt"].append({"id": pid, "values": v_prompt, "metadata": base_meta})
 
         v_clip = j.get("clip_embedding")
-        if _vec_dim(v_clip) is not None:
+        if "clip" in plan and _vec_dim(v_clip) is not None:
             per_kind_vectors["clip"].append({"id": pid, "values": v_clip, "metadata": base_meta})
 
         v_ctx = j.get("context_embedding")
-        if _vec_dim(v_ctx) is not None:
+        if "context" in plan and _vec_dim(v_ctx) is not None:
             per_kind_vectors["context"].append({"id": pid, "values": v_ctx, "metadata": base_meta})
 
     # Upsert per kind in batches
     for kind, vectors in per_kind_vectors.items():
         if not vectors:
+            _log(f"  {kind}: 0 vectors (empty)")
             continue
-        index_name, namespace = plan[kind]
-        if index_name not in opened:
-            continue
-        idx = opened[index_name]
+        _, namespace = plan[kind]
+        _log(f"  {kind}: upserting {len(vectors)} vectors to namespace=’{namespace}’")
 
         for batch in _chunked(vectors, UPSERT_BATCH):
-            idx.upsert(vectors=batch, namespace=namespace)  # per docs examples
+            index.upsert(vectors=batch, namespace=namespace)  # per docs examples
             counts[kind] += len(batch)
 
+    _log(f"Upsert complete: {counts}")
     return {
         "index_plan": plan,
+        "index_name": PINECONE_INDEX_NAME,
+        "index_dimension": index_dim,
         "dims": {"prompt": prompt_dim, "clip": clip_dim, "context": context_dim},
+        "skipped_modalities": skipped_modalities,
         "upserted": counts,
     }

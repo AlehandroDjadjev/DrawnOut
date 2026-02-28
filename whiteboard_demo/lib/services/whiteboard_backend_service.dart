@@ -245,6 +245,47 @@ class WhiteboardBackendService {
     }
   }
 
+  /// Fetch text strokes from create_text_object API (same as visual_whiteboard).
+  /// Returns the full response including strokes, or null on failure.
+  /// Does not check [enabled] — used to draw text when backend is reachable.
+  Future<Map<String, dynamic>?> fetchTextStrokes({
+    required String prompt,
+    required Offset origin,
+    required double letterSize,
+    required double letterGap,
+  }) async {
+    if (baseUrl.trim().isEmpty) return null;
+
+    try {
+      final uri = _apiUri('/api/whiteboard/objects/text/');
+      final body = json.encode({
+        'prompt': prompt,
+        'x': origin.dx,
+        'y': origin.dy,
+        'letter_size': letterSize,
+        'letter_gap': letterGap,
+      });
+
+      final resp = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: body,
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (resp.statusCode >= 400) return null;
+
+      final decoded = json.decode(resp.body);
+      if (decoded is! Map || decoded['strokes'] is! List) return null;
+
+      return Map<String, dynamic>.from(decoded);
+    } catch (e) {
+      debugPrint('fetchTextStrokes failed: $e');
+      return null;
+    }
+  }
+
   /// Update a text object's content or position
   Future<void> updateText({
     required String name,

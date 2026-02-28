@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
@@ -90,45 +91,65 @@ class TextSketchService {
   /// Render text to PNG image bytes.
   ///
   /// Returns the raw PNG bytes suitable for vectorization.
-  Future<Uint8List> renderTextToPng(String text, double fontSize) async {
-    final style = const TextStyle(color: Colors.black);
-    final tp = TextPainter(
-      text: TextSpan(text: text, style: style.copyWith(fontSize: fontSize)),
-      textDirection: TextDirection.ltr,
-    )..layout();
-
-    final pad = 10.0;
-    final w = (tp.width + pad * 2).ceil();
-    final h = (tp.height + pad * 2).ceil();
-
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(
-      recorder,
-      Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+  Future<Uint8List> renderTextToPng(
+    String text,
+    double fontSize, {
+    TextStyle? textStyle,
+    int texturePasses = 0,
+    double textureAlpha = 0.18,
+    double textureJitterPx = 0.8,
+  }) async {
+    final rendered = await _renderText(
+      text: text,
+      fontSize: fontSize,
+      textStyle: textStyle,
+      texturePasses: texturePasses,
+      textureAlpha: textureAlpha,
+      textureJitterPx: textureJitterPx,
     );
-    canvas.drawRect(
-      Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
-      Paint()..color = Colors.white,
-    );
-    tp.paint(canvas, Offset(pad, pad));
-
-    final pic = recorder.endRecording();
-    final img = await pic.toImage(w, h);
-    final data = await img.toByteData(format: ui.ImageByteFormat.png);
-    return data!.buffer.asUint8List();
+    return rendered.bytes;
   }
 
   /// Render a single line of text to PNG with dimension info.
   ///
   /// Returns a [RenderedLine] containing the PNG bytes and pixel dimensions.
-  Future<RenderedLine> renderTextLine(String text, double fontSize) async {
-    final style = const TextStyle(color: Colors.black);
+  Future<RenderedLine> renderTextLine(
+    String text,
+    double fontSize, {
+    TextStyle? textStyle,
+    int texturePasses = 0,
+    double textureAlpha = 0.18,
+    double textureJitterPx = 0.8,
+  }) async {
+    return _renderText(
+      text: text,
+      fontSize: fontSize,
+      textStyle: textStyle,
+      texturePasses: texturePasses,
+      textureAlpha: textureAlpha,
+      textureJitterPx: textureJitterPx,
+    );
+  }
+
+  Future<RenderedLine> _renderText({
+    required String text,
+    required double fontSize,
+    TextStyle? textStyle,
+    int texturePasses = 0,
+    double textureAlpha = 0.18,
+    double textureJitterPx = 0.8,
+  }) async {
+    final baseStyle = (textStyle ?? const TextStyle()).copyWith(
+      color: Colors.black,
+      fontSize: fontSize,
+    );
+
     final tp = TextPainter(
-      text: TextSpan(text: text, style: style.copyWith(fontSize: fontSize)),
+      text: TextSpan(text: text, style: baseStyle),
       textDirection: TextDirection.ltr,
     )..layout();
 
-    final pad = 10.0;
+    final pad = math.max(10.0, fontSize * 0.22);
     final w = (tp.width + pad * 2).ceil();
     final h = (tp.height + pad * 2).ceil();
 
@@ -142,6 +163,26 @@ class TextSketchService {
       Paint()..color = Colors.white,
     );
     tp.paint(canvas, Offset(pad, pad));
+
+    final passes = texturePasses.clamp(0, 8);
+    if (passes > 0 && textureAlpha > 0) {
+      final alpha = textureAlpha.clamp(0.02, 0.5);
+      final jitter = textureJitterPx.clamp(0.2, 3.0);
+      final roughStyle = baseStyle.copyWith(
+        color: Colors.black.withValues(alpha: alpha),
+      );
+      final rand = math.Random(text.hashCode ^ (fontSize * 100).round());
+
+      for (int i = 0; i < passes; i++) {
+        final passPainter = TextPainter(
+          text: TextSpan(text: text, style: roughStyle),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        final dx = (rand.nextDouble() * 2 - 1) * jitter;
+        final dy = (rand.nextDouble() * 2 - 1) * jitter;
+        passPainter.paint(canvas, Offset(pad + dx, pad + dy));
+      }
+    }
 
     final pic = recorder.endRecording();
     final img = await pic.toImage(w, h);
@@ -166,9 +207,8 @@ class TextSketchService {
       fontSize,
       preferOutline: preferOutline,
     );
-    final mergeDist = useCenterline
-        ? centerlineConfig.mergeDistanceFor(fontSize)
-        : 10.0;
+    final mergeDist =
+        useCenterline ? centerlineConfig.mergeDistanceFor(fontSize) : 10.0;
 
     return {
       'worldScale': vectorConfig.worldScale,

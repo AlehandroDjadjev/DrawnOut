@@ -1,21 +1,57 @@
+import 'dart:math' as math;
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import '../models/stroke_types.dart';
 import '../models/drawable_stroke.dart';
+import '../models/stroke_types.dart';
 import '../models/timeline.dart';
 import '../services/stroke_builder_service.dart';
 import '../services/stroke_timing_service.dart';
 import '../services/whiteboard_backend_service.dart';
-import '../vectorizer.dart';
+import '../services/backend_vectorizer.dart';
+import '../whiteboard/text/chalk_text_preset.dart';
+import '../whiteboard/text/text_normalizer.dart';
+import '../whiteboard/services/backend_stroke_service.dart' hide CubicSegment;
+
+/// Text item rendered as a Rive overlay on top of the whiteboard canvas.
+class WhiteboardRiveTextLayer {
+  final String id;
+  final String objectName;
+  final String text;
+  final Offset origin;
+  final double fontSize;
+  final int replayToken;
+
+  const WhiteboardRiveTextLayer({
+    required this.id,
+    required this.objectName,
+    required this.text,
+    required this.origin,
+    required this.fontSize,
+    required this.replayToken,
+  });
+
+  WhiteboardRiveTextLayer copyWith({
+    int? replayToken,
+  }) {
+    return WhiteboardRiveTextLayer(
+      id: id,
+      objectName: objectName,
+      text: text,
+      origin: origin,
+      fontSize: fontSize,
+      replayToken: replayToken ?? this.replayToken,
+    );
+  }
+}
 
 /// Main controller for whiteboard state and operations
 class WhiteboardController extends ChangeNotifier {
   // Configuration
   static const double targetResolution = 2000.0;
-  static const double basePenWidthPx = 3.0;
+  static const double basePenWidthPx = 2.4;
   static const double boardWidth = 2000.0;
   static const double boardHeight = 2000.0;
 
@@ -27,6 +63,7 @@ class WhiteboardController extends ChangeNotifier {
   // State
   List<DrawableStroke> _staticStrokes = [];
   List<DrawableStroke> _animStrokes = [];
+  List<WhiteboardRiveTextLayer> _riveTextLayers = [];
   final List<String> _drawnObjectNames = [];
   String? _selectedEraseName;
   String _status = 'Ready';
@@ -39,16 +76,24 @@ class WhiteboardController extends ChangeNotifier {
 
   // Text rendering settings
   final double _letterGap = 20.0;
+  final String _chalkPresetId = ChalkTextPreset.classicId;
+
+  /// Use cubic BÃ©zier glyph strokes (DrawnOutWhiteboard-style). Set false for Rive overlay.
+  bool _useRiveText = false;
+  int _textReplayToken = 0;
 
   // Getters
   List<DrawableStroke> get staticStrokes => _staticStrokes;
   List<DrawableStroke> get animStrokes => _animStrokes;
+  List<WhiteboardRiveTextLayer> get riveTextLayers =>
+      List.unmodifiable(_riveTextLayers);
   List<DrawableStroke> get allStrokes => [..._staticStrokes, ..._animStrokes];
   List<String> get drawnObjectNames => List.unmodifiable(_drawnObjectNames);
   String? get selectedEraseName => _selectedEraseName;
   String get status => _status;
   double get animValue => _animValue;
   bool get isAnimating => _isAnimating;
+  bool get useRiveText => _useRiveText;
   StrokeTimingConfig get timingConfig => _timingService.config;
 
   WhiteboardController({
@@ -58,7 +103,15 @@ class WhiteboardController extends ChangeNotifier {
     String baseUrl = 'http://127.0.0.1:8000',
   })  : _strokeBuilder = strokeBuilder ?? StrokeBuilderService(),
         _timingService = timingService ?? StrokeTimingService(),
-        _backendService = backendService ?? WhiteboardBackendService(baseUrl: baseUrl);
+        _backendService =
+            backendService ?? WhiteboardBackendService(baseUrl: baseUrl);
+
+  /// Toggle between Rive text overlays and vectorized text strokes.
+  void setUseRiveText(bool enabled) {
+    if (_useRiveText == enabled) return;
+    _useRiveText = enabled;
+    notifyListeners();
+  }
 
   /// Initialize with animation controller
   void initAnimation(TickerProvider vsync) {
@@ -157,9 +210,10 @@ class WhiteboardController extends ChangeNotifier {
 
     try {
       // Fetch JSON from backend
-      final url = '${_backendService.baseUrl}/api/wb/generate/vectors/$fileName';
+      final url =
+          '${_backendService.baseUrl}/api/wb/generate/vectors/$fileName';
       final resp = await http.get(Uri.parse(url));
-      
+
       if (resp.statusCode != 200) {
         _status = 'Failed to load $fileName: HTTP ${resp.statusCode}';
         notifyListeners();
@@ -173,7 +227,8 @@ class WhiteboardController extends ChangeNotifier {
         return;
       }
 
-      final format = (decoded['vector_format'] as String?)?.toLowerCase() ?? 'polyline';
+      final format =
+          (decoded['vector_format'] as String?)?.toLowerCase() ?? 'polyline';
       final List strokesJson = decoded['strokes'] as List;
       final srcWidth = (decoded['width'] as num?)?.toDouble() ?? 1000.0;
       final srcHeight = (decoded['height'] as num?)?.toDouble() ?? 1000.0;
@@ -188,10 +243,14 @@ class WhiteboardController extends ChangeNotifier {
           for (final seg in s['segments']) {
             if (seg is List && seg.length >= 8) {
               segs.add(CubicSegment(
-                p0: Offset((seg[0] as num).toDouble(), (seg[1] as num).toDouble()),
-                c1: Offset((seg[2] as num).toDouble(), (seg[3] as num).toDouble()),
-                c2: Offset((seg[4] as num).toDouble(), (seg[5] as num).toDouble()),
-                p1: Offset((seg[6] as num).toDouble(), (seg[7] as num).toDouble()),
+                p0: Offset(
+                    (seg[0] as num).toDouble(), (seg[1] as num).toDouble()),
+                c1: Offset(
+                    (seg[2] as num).toDouble(), (seg[3] as num).toDouble()),
+                c2: Offset(
+                    (seg[4] as num).toDouble(), (seg[5] as num).toDouble()),
+                p1: Offset(
+                    (seg[6] as num).toDouble(), (seg[7] as num).toDouble()),
               ));
             }
           }
@@ -203,7 +262,8 @@ class WhiteboardController extends ChangeNotifier {
           final points = <Offset>[];
           for (final p in s['points']) {
             if (p is List && p.length >= 2) {
-              points.add(Offset((p[0] as num).toDouble(), (p[1] as num).toDouble()));
+              points.add(
+                  Offset((p[0] as num).toDouble(), (p[1] as num).toDouble()));
             }
           }
           if (points.length >= 2) polys.add(StrokePolyline(points));
@@ -289,21 +349,28 @@ class WhiteboardController extends ChangeNotifier {
     _commitAnimToStatic();
 
     try {
-      // Use local text-to-vector rendering
-      final strokes = await _renderTextToStrokes(text, letterSize, origin);
-      
-      if (strokes.isEmpty) {
+      if (_useRiveText) {
+        _addRiveTextLayer(
+          text: text,
+          origin: origin,
+          letterSize: letterSize,
+        );
+        return;
+      }
+
+      // DrawnOutWhiteboard path: glyph API â†’ cubic BÃ©zier â†’ buildStrokesForText
+      final newStrokes = await _buildTextStrokes(
+        text,
+        origin,
+        letterSize,
+        letterGap,
+      );
+
+      if (newStrokes.isEmpty) {
         _status = 'No strokes generated for "$text"';
         notifyListeners();
         return;
       }
-
-      // Convert polylines to drawable strokes
-      final newStrokes = _buildDrawableStrokesFromPolylines(
-        strokes, 
-        text, 
-        origin,
-      );
 
       _animStrokes = newStrokes;
       _animIsText = true;
@@ -322,125 +389,179 @@ class WhiteboardController extends ChangeNotifier {
     }
   }
 
-  /// Render text to PNG and vectorize it locally
+  void _addRiveTextLayer({
+    required String text,
+    required Offset origin,
+    required double letterSize,
+  }) {
+    _animController?.stop();
+    _animStrokes = [];
+    _animValue = 0.0;
+    _isAnimating = false;
+    _animIsText = true;
+
+    final uniqueId = 'rive_text_${DateTime.now().microsecondsSinceEpoch}';
+    final newLayer = WhiteboardRiveTextLayer(
+      id: uniqueId,
+      objectName: text,
+      text: text,
+      origin: origin,
+      fontSize: letterSize,
+      replayToken: _textReplayToken,
+    );
+    _riveTextLayers = [..._riveTextLayers, newLayer];
+
+    if (!_drawnObjectNames.contains(text)) {
+      _drawnObjectNames.add(text);
+    }
+    _selectedEraseName ??= text;
+
+    _status = 'Writing "$text" (Rive)';
+    notifyListeners();
+  }
+
+  /// Render text as per-character strokes using the backend vectorizer.
   Future<List<List<Offset>>> _renderTextToStrokes(
-    String text, 
+    String text,
     double fontSize,
     Offset worldOffset,
   ) async {
-    // Render text to PNG bytes using TextPainter
-    final pngBytes = await _renderTextToPng(text, fontSize);
-    
-    // Use centerline mode for smaller fonts, outline for larger
-    final centerlineMode = fontSize < 80;
-    final mergeDist = centerlineMode 
-        ? (fontSize * 0.12).clamp(8.0, 24.0) 
-        : 10.0;
-    
-    // Vectorize the PNG using local OpenCV.js
-    final strokes = await Vectorizer.vectorize(
-      bytes: pngBytes,
-      worldScale: 1.0,
-      edgeMode: 'Canny',
-      blurK: 3,
-      cannyLo: 30.0,
-      cannyHi: 120.0,
-      epsilon: centerlineMode ? 0.6 : 0.8,
-      resampleSpacing: centerlineMode ? 0.8 : 1.0,
-      minPerimeter: 12.0,
-      retrExternalOnly: false,
-      angleThresholdDeg: 85.0,
-      angleWindow: 3,
-      smoothPasses: centerlineMode ? 2 : 1,
-      mergeParallel: true,
-      mergeMaxDist: mergeDist,
-      minStrokeLen: 4.0,
-      minStrokePoints: 3,
-    );
+    final base = _backendService.baseUrl.trim();
+    if (base.isEmpty) {
+      debugPrint('Backend vectorizer URL is empty; cannot render text');
+      return const [];
+    }
 
-    // Normalize stroke direction and order by x position
-    final normalized = strokes.map((s) {
-      if (s.isEmpty) return s;
-      return s.first.dx <= s.last.dx ? s : s.reversed.toList();
-    }).toList();
-    normalized.sort((a, b) {
-      final ax = a.map((p) => p.dx).reduce((x, y) => x < y ? x : y);
-      final bx = b.map((p) => p.dx).reduce((x, y) => x < y ? x : y);
-      return ax.compareTo(bx);
-    });
+    final out = <List<Offset>>[];
+    final scaleUp = fontSize < 24 ? (24.0 / fontSize) : 1.0;
+    final drawFontSize = fontSize * scaleUp;
+    final glyphs = TextNormalizer.expandScriptGlyphs(text);
+    var cursorX = 0.0;
+    Offset? previousEnd;
 
-    // Stitch nearby endpoints
-    final stitched = _stitchStrokes(normalized, maxGap: (fontSize * 0.08).clamp(3.0, 18.0));
-    
-    // Apply world offset
-    return stitched.map((s) => s.map((p) => p + worldOffset).toList()).toList();
+    for (final glyph in glyphs) {
+      final glyphFontSize = drawFontSize * glyph.sizeFactor;
+      final glyphStyle = _textStyleFor(glyphFontSize);
+      final advance = _measureTextWidth(glyph.value, glyphStyle) / scaleUp;
+      if (glyph.value.trim().isEmpty) {
+        cursorX += advance;
+        continue;
+      }
+
+      final pngBytes = await _renderTextToPng(glyph.value, glyphFontSize);
+      final imageSize =
+          _imageSizeForText(glyph.value, glyphStyle, glyphFontSize);
+
+      final glyphStrokes = await BackendVectorizer.vectorize(
+        baseUrl: base,
+        bytes: pngBytes,
+        worldScale: 1.0,
+        sourceWidth: imageSize.width,
+        sourceHeight: imageSize.height,
+      );
+
+      final glyphOffset = worldOffset +
+          Offset(
+            cursorX,
+            glyph.baselineShiftEm * fontSize,
+          ) +
+          Offset(imageSize.width / 2.0, imageSize.height / 2.0);
+
+      final placed = glyphStrokes
+          .map((s) => s.map((p) => (p + glyphOffset) / scaleUp).toList())
+          .toList();
+      final oriented = _orientStrokesForNaturalFlow(
+        placed,
+        startNear: previousEnd,
+      );
+      if (oriented.isNotEmpty) {
+        previousEnd = oriented.last.last;
+      }
+      out.addAll(oriented);
+      cursorX += advance;
+    }
+
+    return out;
   }
 
   /// Render text to PNG bytes using Flutter's TextPainter
   Future<Uint8List> _renderTextToPng(String text, double fontSize) async {
-    final style = const TextStyle(color: Colors.black);
+    final style = _textStyleFor(fontSize);
     final tp = TextPainter(
-      text: TextSpan(text: text, style: style.copyWith(fontSize: fontSize)),
+      text: TextSpan(text: text, style: style),
       textDirection: TextDirection.ltr,
     )..layout();
-    
-    const pad = 10.0;
+
+    final pad = math.max(10.0, fontSize * 0.22);
     final w = (tp.width + pad * 2).ceil();
     final h = (tp.height + pad * 2).ceil();
 
     final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()));
+    final canvas =
+        Canvas(recorder, Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()));
     canvas.drawRect(
       Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
       Paint()..color = Colors.white,
     );
-    tp.paint(canvas, const Offset(pad, pad));
-    
+    tp.paint(canvas, Offset(pad, pad));
+
+    // Keep glyph input clean for vectorization; texture is added by stroke pass.
+
     final pic = recorder.endRecording();
     final img = await pic.toImage(w, h);
     final data = await img.toByteData(format: ui.ImageByteFormat.png);
     return data!.buffer.asUint8List();
   }
 
-  /// Stitch strokes with nearby endpoints
-  List<List<Offset>> _stitchStrokes(List<List<Offset>> strokes, {double maxGap = 3.0}) {
-    if (strokes.isEmpty) return strokes;
-    final remaining = List<List<Offset>>.from(strokes);
-    final out = <List<Offset>>[];
-    var current = remaining.removeAt(0);
-    
-    while (remaining.isNotEmpty) {
-      int bestIdx = -1;
-      bool reverse = false;
-      double best = maxGap;
-      
-      for (int i = 0; i < remaining.length; i++) {
-        final s = remaining[i];
-        final dStart = (s.first - current.last).distance;
-        final dEnd = (s.last - current.last).distance;
-        if (dStart < best) {
-          best = dStart;
-          bestIdx = i;
-          reverse = false;
-        }
-        if (dEnd < best) {
-          best = dEnd;
-          bestIdx = i;
-          reverse = true;
-        }
+  TextStyle _textStyleFor(double fontSize) {
+    final preset = ChalkTextPreset.byId(_chalkPresetId);
+    return preset.toTextStyle(fontSize: fontSize).copyWith(color: Colors.black);
+  }
+
+  double _measureTextWidth(String text, TextStyle style) {
+    if (text.isEmpty) return 0.0;
+    final tp = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    return tp.width;
+  }
+
+  Size _imageSizeForText(String text, TextStyle style, double fontSize) {
+    final tp = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final pad = math.max(10.0, fontSize * 0.22);
+    final w = (tp.width + pad * 2).ceilToDouble();
+    final h = (tp.height + pad * 2).ceilToDouble();
+    return Size(w, h);
+  }
+
+  List<List<Offset>> _orientStrokesForNaturalFlow(
+    List<List<Offset>> strokes, {
+    Offset? startNear,
+  }) {
+    final ordered = <List<Offset>>[];
+    Offset? anchor = startNear;
+    for (final stroke in strokes.where((s) => s.length >= 2)) {
+      if (anchor == null) {
+        ordered.add(stroke);
+        anchor = stroke.last;
+        continue;
       }
-      
-      if (bestIdx == -1) {
-        out.add(current);
-        current = remaining.removeAt(0);
+      final dStart = (stroke.first - anchor).distance;
+      final dEnd = (stroke.last - anchor).distance;
+      if (dEnd < dStart) {
+        final reversed = stroke.reversed.toList(growable: false);
+        ordered.add(reversed);
+        anchor = reversed.last;
       } else {
-        var s = remaining.removeAt(bestIdx);
-        if (reverse) s = s.reversed.toList();
-        current = [...current, ...s];
+        ordered.add(stroke);
+        anchor = stroke.last;
       }
     }
-    out.add(current);
-    return out;
+    return ordered;
   }
 
   /// Convert polylines to drawable strokes using the stroke builder service
@@ -454,9 +575,9 @@ class WhiteboardController extends ChangeNotifier {
         .where((p) => p.length >= 2)
         .map((p) => StrokePolyline(p))
         .toList();
-    
+
     if (polys.isEmpty) return [];
-    
+
     // Compute bounds for proper scaling
     double minX = double.infinity, minY = double.infinity;
     double maxX = -double.infinity, maxY = -double.infinity;
@@ -470,7 +591,7 @@ class WhiteboardController extends ChangeNotifier {
     }
     final srcWidth = maxX - minX;
     final srcHeight = maxY - minY;
-    
+
     // Use stroke builder to create drawable strokes
     return _strokeBuilder.buildStrokesForObject(
       jsonName: name,
@@ -483,7 +604,6 @@ class WhiteboardController extends ChangeNotifier {
     );
   }
 
-
   // Layout tracking for auto-positioning
   double _nextY = 100.0;
   static const double _headingSize = 120.0;
@@ -494,15 +614,16 @@ class WhiteboardController extends ChangeNotifier {
 
   /// Handle drawing actions from timeline
   ///
-  /// Processes all action types: heading, bullet, subbullet, label, formula, sketch_image
+  /// Accumulates strokes from ALL actions into one continuous animation
+  /// (matching segment audio duration) instead of replacing per-action.
   Future<void> handleDrawingActions(List<DrawingAction> actions) async {
     debugPrint('handleDrawingActions called with ${actions.length} actions');
-    
+
     if (actions.isEmpty) {
       debugPrint('No drawing actions to handle');
       return;
     }
-    
+
     // Log action type distribution
     final actionTypes = <String, int>{};
     for (final a in actions) {
@@ -511,108 +632,115 @@ class WhiteboardController extends ChangeNotifier {
     for (final entry in actionTypes.entries) {
       debugPrint('   - ${entry.key}: ${entry.value}');
     }
-    
+
+    _commitAnimToStatic();
+    final allStrokes = <DrawableStroke>[];
+    var isText = false;
+
     for (int i = 0; i < actions.length; i++) {
       final action = actions[i];
-      final textPreview = action.text.length > 30 
-          ? '${action.text.substring(0, 30)}...' 
+      final textPreview = action.text.length > 30
+          ? '${action.text.substring(0, 30)}...'
           : action.text;
       debugPrint('  [$i] Action type: ${action.type}, text: "$textPreview"');
-      
+
       try {
         switch (action.type) {
           case 'heading':
-            // Heading: large text, centered or left-aligned
             final placement = action.placementValues;
-            final hasPlacement = action.placement != null && 
+            final hasPlacement = action.placement != null &&
                 (placement.x != 0.0 || placement.y != 0.0);
-            
             final x = hasPlacement ? placement.x : _leftMargin;
             final y = hasPlacement ? placement.y : _nextY;
-            final fontSize = (action.style?['fontSize'] as num?)?.toDouble() ?? _headingSize;
-            
-            debugPrint('    -> Adding heading at ($x, $y) size=$fontSize');
-            await addText(
+            final fontSize =
+                (action.style?['fontSize'] as num?)?.toDouble() ?? _headingSize;
+            final headingText = TextNormalizer.normalizeForAction(
+              type: action.type,
               text: action.text,
-              origin: Offset(x, y),
-              letterSize: fontSize,
             );
-            
-            // Update next Y position
-            if (!hasPlacement) {
-              _nextY = y + fontSize * _lineSpacing + 40;
-            }
-            debugPrint('    Heading added, nextY=$_nextY');
+            final strokes = await _buildTextStrokes(
+              headingText,
+              Offset(x, y),
+              fontSize,
+              _letterGap,
+            );
+            allStrokes.addAll(strokes);
+            isText = true;
+            if (!hasPlacement) _nextY = y + fontSize * _lineSpacing + 40;
             break;
-            
+
           case 'bullet':
           case 'subbullet':
-            // Bullet points with indentation
             final placement = action.placementValues;
-            final hasPlacement = action.placement != null && 
+            final hasPlacement = action.placement != null &&
                 (placement.x != 0.0 || placement.y != 0.0);
-            
             final level = action.level ?? (action.type == 'subbullet' ? 1 : 0);
             final indent = _leftMargin + (level * _bulletIndent);
             final x = hasPlacement ? placement.x : indent;
             final y = hasPlacement ? placement.y : _nextY;
-            final fontSize = (action.style?['fontSize'] as num?)?.toDouble() ?? _bulletSize;
-            
-            // Add bullet marker for non-subbullets
-            final bulletText = action.type == 'subbullet' 
-                ? '  - ${action.text}' 
-                : '• ${action.text}';
-            
-            debugPrint('    -> Adding ${action.type} at ($x, $y) level=$level');
-            await addText(
-              text: bulletText,
-              origin: Offset(x, y),
-              letterSize: fontSize,
+            final fontSize =
+                (action.style?['fontSize'] as num?)?.toDouble() ?? _bulletSize;
+            final bulletText = TextNormalizer.normalizeForAction(
+              type: action.type,
+              text: action.text,
             );
-            
-            // Update next Y position
-            if (!hasPlacement) {
-              _nextY = y + fontSize * _lineSpacing;
-            }
-            debugPrint('    Bullet added, nextY=$_nextY');
+            final strokes = await _buildTextStrokes(
+              bulletText,
+              Offset(x, y),
+              fontSize,
+              _letterGap,
+            );
+            allStrokes.addAll(strokes);
+            isText = true;
+            if (!hasPlacement) _nextY = y + fontSize * _lineSpacing;
             break;
-            
+
           case 'label':
           case 'formula':
-            // Labels and formulas use placement if provided
             final placement = action.placementValues;
-            final hasPlacement = action.placement != null && 
+            final hasPlacement = action.placement != null &&
                 (placement.x != 0.0 || placement.y != 0.0);
-            
             final x = hasPlacement ? placement.x : _leftMargin;
             final y = hasPlacement ? placement.y : _nextY;
-            final fontSize = (action.style?['fontSize'] as num?)?.toDouble() ?? _bulletSize;
-            
-            debugPrint('    -> Adding ${action.type} at ($x, $y)');
-            await addText(
+            final fontSize =
+                (action.style?['fontSize'] as num?)?.toDouble() ?? _bulletSize;
+            final formulaText = TextNormalizer.normalizeForAction(
+              type: action.type,
               text: action.text,
-              origin: Offset(x, y),
-              letterSize: fontSize,
             );
-            
-            if (!hasPlacement) {
-              _nextY = y + fontSize * _lineSpacing;
-            }
-            debugPrint('    ${action.type} added');
+            final strokes = await _buildTextStrokes(
+              formulaText,
+              Offset(x, y),
+              fontSize,
+              _letterGap,
+            );
+            allStrokes.addAll(strokes);
+            isText = true;
+            if (!hasPlacement) _nextY = y + fontSize * _lineSpacing;
             break;
-            
+
           case 'sketch_image':
-            // Image action - use ImageSketchService
             debugPrint('    -> sketch_image action');
-            final imageUrl = action.resolvedImageUrl;
-            if (imageUrl != null && imageUrl.isNotEmpty) {
-              debugPrint('      URL: ${imageUrl.length > 50 ? '${imageUrl.substring(0, 50)}...' : imageUrl}');
+            final strokesJson = action.metadata?['strokes'];
+            if (strokesJson is Map<String, dynamic>) {
+              final parsed = BackendStrokeService.parseJson(strokesJson);
+              if (parsed != null) {
+                final placement = action.placementValues;
+                final x = placement.x != 0.0 ? placement.x : _leftMargin;
+                final y = placement.y != 0.0 ? placement.y : _nextY;
+                final drawables = BackendStrokeService.buildDrawableStrokes(
+                  strokes: parsed.strokes,
+                  srcWidth: parsed.srcWidth,
+                  srcHeight: parsed.srcHeight,
+                  origin: Offset(x, y),
+                  label: 'sketch_image',
+                );
+                allStrokes.addAll(drawables);
+                _nextY = y + parsed.srcHeight * 0.5 + 40;
+              }
             }
-            // Note: Full sketch_image handling requires ImageSketchService integration
-            // with layout state. For now, log the action.
-            debugPrint('    sketch_image requires full layout integration');
             break;
-            
+
           default:
             debugPrint('    Unknown action type: ${action.type}');
         }
@@ -621,26 +749,78 @@ class WhiteboardController extends ChangeNotifier {
         debugPrint('    Stack: $st');
       }
     }
-    
-    debugPrint('handleDrawingActions completed');
+
+    if (allStrokes.isNotEmpty) {
+      _animStrokes = allStrokes;
+      _animIsText = isText;
+      for (final a in actions) {
+        final name = a.text.isNotEmpty
+            ? a.text
+            : (a.isSketchImage ? 'sketch_image' : '');
+        if (name.isNotEmpty && !_drawnObjectNames.contains(name)) {
+          _drawnObjectNames.add(name);
+        }
+      }
+      _selectedEraseName ??=
+          _drawnObjectNames.isNotEmpty ? _drawnObjectNames.last : null;
+      _status = 'Drawing ${allStrokes.length} strokes';
+      notifyListeners();
+      _startAnimation();
+    }
+    debugPrint('handleDrawingActions completed: ${allStrokes.length} strokes');
   }
-  
+
+  /// Build drawable strokes for text (glyph path or vectorizer fallback).
+  /// Does not animate; used by handleDrawingActions for accumulation.
+  Future<List<DrawableStroke>> _buildTextStrokes(
+    String text,
+    Offset origin,
+    double letterSize,
+    double letterGap,
+  ) async {
+    if (text.isEmpty) return [];
+    if (_useRiveText) return []; // Rive path doesn't produce strokes
+
+    // Try backend create_text_object first (same as visual_whiteboard; works on web)
+    final strokeData = await _backendService.fetchTextStrokes(
+      prompt: text,
+      origin: origin,
+      letterSize: letterSize,
+      letterGap: letterGap,
+    );
+    if (strokeData != null) {
+      final parsed = BackendStrokeService.parseJson(strokeData);
+      if (parsed != null && parsed.strokes.isNotEmpty) {
+        return BackendStrokeService.buildDrawableStrokesFromWorldSpace(
+          strokes: parsed.strokes,
+          origin: origin,
+          label: text,
+        );
+      }
+    }
+
+    // Fallback: render to PNG and vectorize (requires /api/wb/vectorize/ or local)
+    final strokes = await _renderTextToStrokes(text, letterSize, origin);
+    return _buildDrawableStrokesFromPolylines(strokes, text, origin);
+  }
+
   /// Reset layout state (call when starting a new lesson)
   void resetLayout() {
     _nextY = 100.0;
     notifyListeners();
   }
-  
+
   /// Handle drawing actions with explicit duration (from dictation detection)
   ///
   /// This method is called by TimelinePlaybackController with the calculated
   /// draw duration based on dictation detection.
   Future<void> handleDrawingActionsWithDuration(
-    List<DrawingAction> actions, 
+    List<DrawingAction> actions,
     double drawDurationSeconds,
   ) async {
-    debugPrint('handleDrawingActionsWithDuration: ${actions.length} actions, ${drawDurationSeconds.toStringAsFixed(1)}s');
-    
+    debugPrint(
+        'handleDrawingActionsWithDuration: ${actions.length} actions, ${drawDurationSeconds.toStringAsFixed(1)}s');
+
     // TODO: Use drawDurationSeconds to set animation controller duration
     // For now, delegate to standard handler
     await handleDrawingActions(actions);
@@ -652,6 +832,8 @@ class WhiteboardController extends ChangeNotifier {
 
     _staticStrokes = _staticStrokes.where((s) => s.jsonName != name).toList();
     _animStrokes = _animStrokes.where((s) => s.jsonName != name).toList();
+    _riveTextLayers =
+        _riveTextLayers.where((layer) => layer.objectName != name).toList();
     _drawnObjectNames.remove(name);
 
     if (_drawnObjectNames.isEmpty) {
@@ -666,7 +848,8 @@ class WhiteboardController extends ChangeNotifier {
       _isAnimating = false;
     }
 
-    _status = 'Erased "$name". Remaining: ${allStrokes.length} strokes';
+    final remaining = allStrokes.length + _riveTextLayers.length;
+    _status = 'Erased "$name". Remaining: $remaining objects';
     notifyListeners();
 
     // Sync to backend
@@ -689,10 +872,12 @@ class WhiteboardController extends ChangeNotifier {
     _animController?.stop();
     _staticStrokes = [];
     _animStrokes = [];
+    _riveTextLayers = [];
     _drawnObjectNames.clear();
     _selectedEraseName = null;
     _animValue = 0.0;
     _isAnimating = false;
+    _textReplayToken = 0;
     _status = 'Board cleared';
     notifyListeners();
   }
@@ -700,6 +885,15 @@ class WhiteboardController extends ChangeNotifier {
   /// Replay the current animation
   void replayAnimation() {
     if (_animStrokes.isEmpty) {
+      if (_riveTextLayers.isNotEmpty) {
+        _textReplayToken++;
+        _riveTextLayers = _riveTextLayers
+            .map((layer) => layer.copyWith(replayToken: _textReplayToken))
+            .toList();
+        _status = 'Replaying text animation';
+        notifyListeners();
+        return;
+      }
       _status = 'No animation to replay';
       notifyListeners();
       return;

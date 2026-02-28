@@ -8,6 +8,7 @@ import '../services/timeline_api_service.dart';
 import '../services/lesson_api_service.dart';
 import '../whiteboard/painters/whiteboard_painter.dart';
 import '../services/stroke_timing_service.dart' show StrokeTimingConfig;
+import '../widgets/rive_chalk_text_overlay.dart';
 
 /// Lesson context passed to the whiteboard
 class LessonContext {
@@ -64,7 +65,7 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
   void initState() {
     super.initState();
   }
-  
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -73,21 +74,22 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
       _initializeControllers();
     }
   }
-  
+
   void _initializeControllers() {
     // Get config service for backend URL
     final configService = Provider.of<AppConfigService>(context, listen: false);
     final baseUrl = configService.backendUrl;
-    
+
     _controller = WhiteboardController(baseUrl: baseUrl);
     _controller.initAnimation(this);
-    
+
     _playbackController = TimelinePlaybackController();
     _playbackController.setBaseUrl(baseUrl);
-    
+
     // Set the drawing callback
-    _playbackController.onDrawingActionsTriggered = _controller.handleDrawingActions;
-    
+    _playbackController.onDrawingActionsTriggered =
+        _controller.handleDrawingActions;
+
     _playbackController.onTimelineCompleted = _onLessonComplete;
 
     _initialize();
@@ -100,29 +102,29 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
     } catch (e) {
       debugPrint('Backend load skipped: $e');
     }
-    
+
     // If we have a lesson context, start or load the lesson
     if (widget.lessonContext != null) {
       await _initializeLesson(widget.lessonContext!);
     }
-    
+
     if (mounted) {
       setState(() => _isLoading = false);
     }
   }
-  
+
   Future<void> _initializeLesson(LessonContext lessonCtx) async {
     if (!mounted) return;
-    
+
     final configService = Provider.of<AppConfigService>(context, listen: false);
     final baseUrl = configService.backendUrl;
-    
+
     // Reset whiteboard layout for new lesson
     _controller.resetLayout();
     _controller.clear();
-    
+
     int? sessionId = lessonCtx.sessionId;
-    
+
     // If we have a topic but no sessionId, show image source then TTS popup, then start a new lesson
     if (sessionId == null && lessonCtx.topic != null) {
       final useExistingImages = await _showImageSourceDialog();
@@ -138,7 +140,8 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
         return;
       }
       try {
-        debugPrint('Starting new lesson for topic: ${lessonCtx.topic}, useExistingImages: $useExistingImages, useElevenlabsTts: $useElevenlabsTts');
+        debugPrint(
+            'Starting new lesson for topic: ${lessonCtx.topic}, useExistingImages: $useExistingImages, useElevenlabsTts: $useElevenlabsTts');
         final lessonApi = LessonApiService(baseUrl: baseUrl);
         final session = await lessonApi.startLesson(
           topic: lessonCtx.topic!,
@@ -162,7 +165,7 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
         return;
       }
     }
-    
+
     // Now load the timeline if we have a session
     if (sessionId != null && mounted) {
       await _loadTimeline(sessionId);
@@ -171,16 +174,17 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
 
   Future<void> _loadTimeline(int sessionId) async {
     try {
-      final configService = Provider.of<AppConfigService>(context, listen: false);
+      final configService =
+          Provider.of<AppConfigService>(context, listen: false);
       final api = TimelineApiService(baseUrl: configService.backendUrl);
-      
+
       // Use generateTimeline instead of getSessionTimeline
       // generateTimeline will return cached timeline if exists, or generate a new one
       debugPrint('Generating/loading timeline for session $sessionId...');
       final timeline = await api.generateTimeline(sessionId);
       debugPrint('Timeline loaded: ${timeline.segments.length} segments');
       await _playbackController.loadTimeline(timeline);
-      
+
       // Auto-start playback after loading
       debugPrint('Auto-starting lesson playback...');
       await _playbackController.play();
@@ -199,6 +203,53 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
 
   void _onLessonComplete() {
     widget.onLessonComplete?.call();
+  }
+
+  Rect _textLayerScreenRect(
+    WhiteboardRiveTextLayer layer,
+    WhiteboardViewportTransform viewport,
+  ) {
+    final charCount = layer.text.trim().isEmpty ? 1 : layer.text.length;
+    final worldW = (layer.fontSize * 0.62 * charCount).clamp(60.0, 1800.0);
+    final worldH = (layer.fontSize * 1.45).clamp(40.0, 600.0);
+    final topLeft = viewport.worldToScreen(layer.origin);
+    final width = (worldW * viewport.scale).clamp(40.0, 2400.0);
+    final height = (worldH * viewport.scale).clamp(24.0, 1200.0);
+    return Rect.fromLTWH(topLeft.dx, topLeft.dy, width, height);
+  }
+
+  List<Widget> _buildRiveTextOverlays({
+    required Size size,
+  }) {
+    final layers = _controller.riveTextLayers;
+    if (layers.isEmpty) return const <Widget>[];
+
+    final viewport = WhiteboardPainter.computeViewportTransform(
+      size,
+      boardWidth: WhiteboardController.boardWidth,
+      boardHeight: WhiteboardController.boardHeight,
+      padding: 80.0,
+    );
+    final paused = _playbackController.isPaused;
+
+    return layers.map((layer) {
+      final rect = _textLayerScreenRect(layer, viewport);
+      return Positioned(
+        key: ValueKey('${layer.id}_${layer.replayToken}'),
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+        child: IgnorePointer(
+          child: RiveChalkTextOverlay(
+            text: layer.text,
+            fontSize: layer.fontSize * viewport.scale,
+            replayToken: layer.replayToken,
+            paused: paused,
+          ),
+        ),
+      );
+    }).toList(growable: false);
   }
 
   /// Shows a dialog at lesson start: use existing DB images vs start research.
@@ -389,7 +440,7 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
                       borderRadius: BorderRadius.circular(12),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.1),
+                          color: Colors.black.withValues(alpha: 0.1),
                           blurRadius: 8,
                           offset: const Offset(0, 2),
                         ),
@@ -397,21 +448,36 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
                     ),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(12),
-                      child: RepaintBoundary(
-                        child: CustomPaint(
-                          painter: WhiteboardPainter(
-                            staticStrokes: _controller.staticStrokes,
-                            animStrokes: _controller.animStrokes,
-                            animationT: _controller.animValue,
-                            basePenWidth: 3.0,
-                            stepMode: false,
-                            stepStrokeCount: 0,
-                            boardWidth: 2000.0,
-                            boardHeight: 2000.0,
-                            strokeColor: Colors.black,
-                          ),
-                          child: const SizedBox.expand(),
-                        ),
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final canvasSize = Size(
+                            constraints.maxWidth,
+                            constraints.maxHeight,
+                          );
+                          return RepaintBoundary(
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                CustomPaint(
+                                  painter: WhiteboardPainter(
+                                    staticStrokes: _controller.staticStrokes,
+                                    animStrokes: _controller.animStrokes,
+                                    animationT: _controller.animValue,
+                                    basePenWidth: 3.0,
+                                    stepMode: false,
+                                    stepStrokeCount: 0,
+                                    boardWidth: WhiteboardController.boardWidth,
+                                    boardHeight:
+                                        WhiteboardController.boardHeight,
+                                    strokeColor: Colors.black,
+                                  ),
+                                  child: const SizedBox.expand(),
+                                ),
+                                ..._buildRiveTextOverlays(size: canvasSize),
+                              ],
+                            ),
+                          );
+                        },
                       ),
                     ),
                   ),
@@ -420,7 +486,8 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
                 // Status bar
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   color: isDark ? Colors.grey[850] : Colors.grey[200],
                   child: Text(
                     _controller.status,
@@ -484,7 +551,9 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
             label: 'Text',
           ),
           NavigationDestination(
-            icon: Icon(devMode.isEnabled ? Icons.image_outlined : Icons.replay_outlined),
+            icon: Icon(devMode.isEnabled
+                ? Icons.image_outlined
+                : Icons.replay_outlined),
             label: devMode.isEnabled ? 'Image' : 'Replay',
           ),
           const NavigationDestination(
@@ -617,7 +686,7 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
 
   void _showEraseBottomSheet(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    
+
     showModalBottomSheet(
       context: context,
       backgroundColor: isDark ? Colors.grey[900] : Colors.white,
@@ -626,7 +695,7 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
       ),
       builder: (ctx) {
         final names = _controller.drawnObjectNames;
-        
+
         return Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -645,15 +714,15 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
                 )
               else
                 ...names.map((name) => ListTile(
-                  title: Text(name),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete, color: Colors.red),
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      _controller.eraseObject(name);
-                    },
-                  ),
-                )),
+                      title: Text(name),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          _controller.eraseObject(name);
+                        },
+                      ),
+                    )),
               const SizedBox(height: 8),
               SizedBox(
                 width: double.infinity,
@@ -694,7 +763,8 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
             children: [
               Row(
                 children: [
-                  const Icon(Icons.developer_mode, color: Colors.orange, size: 20),
+                  const Icon(Icons.developer_mode,
+                      color: Colors.orange, size: 20),
                   const SizedBox(width: 8),
                   Text(
                     'Load Vector Image (Dev)',
@@ -721,7 +791,8 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
                         labelText: 'X',
                         border: OutlineInputBorder(),
                       ),
-                      keyboardType: const TextInputType.numberWithOptions(signed: true),
+                      keyboardType:
+                          const TextInputType.numberWithOptions(signed: true),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -732,7 +803,8 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
                         labelText: 'Y',
                         border: OutlineInputBorder(),
                       ),
-                      keyboardType: const TextInputType.numberWithOptions(signed: true),
+                      keyboardType:
+                          const TextInputType.numberWithOptions(signed: true),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -743,7 +815,8 @@ class _WhiteboardPageMobileState extends State<WhiteboardPageMobile>
                         labelText: 'Scale',
                         border: OutlineInputBorder(),
                       ),
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
                     ),
                   ),
                 ],
@@ -852,7 +925,6 @@ class _DeveloperPanelState extends State<_DeveloperPanel> {
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
           ),
           const Divider(),
-          
           _buildSlider(
             'Global Speed',
             _config.globalSpeedMultiplier,
@@ -863,10 +935,9 @@ class _DeveloperPanelState extends State<_DeveloperPanel> {
               _updateConfig();
             }),
           ),
-          
           const SizedBox(height: 16),
-          const Text('Stroke Timing', style: TextStyle(fontWeight: FontWeight.bold)),
-          
+          const Text('Stroke Timing',
+              style: TextStyle(fontWeight: FontWeight.bold)),
           _buildSlider(
             'Min Stroke Time (s)',
             _config.minStrokeTimeSec,
@@ -877,7 +948,6 @@ class _DeveloperPanelState extends State<_DeveloperPanel> {
               _updateConfig();
             }),
           ),
-          
           _buildSlider(
             'Max Stroke Time (s)',
             _config.maxStrokeTimeSec,
@@ -888,7 +958,6 @@ class _DeveloperPanelState extends State<_DeveloperPanel> {
               _updateConfig();
             }),
           ),
-          
           _buildSlider(
             'Length Factor (s/1000px)',
             _config.lengthTimePerKPxSec,
@@ -899,7 +968,6 @@ class _DeveloperPanelState extends State<_DeveloperPanel> {
               _updateConfig();
             }),
           ),
-          
           _buildSlider(
             'Curvature Extra (s)',
             _config.curvatureExtraMaxSec,
@@ -910,10 +978,9 @@ class _DeveloperPanelState extends State<_DeveloperPanel> {
               _updateConfig();
             }),
           ),
-          
           const SizedBox(height: 16),
-          const Text('Travel Timing', style: TextStyle(fontWeight: FontWeight.bold)),
-          
+          const Text('Travel Timing',
+              style: TextStyle(fontWeight: FontWeight.bold)),
           _buildSlider(
             'Base Travel (s)',
             _config.baseTravelTimeSec,
@@ -924,7 +991,6 @@ class _DeveloperPanelState extends State<_DeveloperPanel> {
               _updateConfig();
             }),
           ),
-          
           _buildSlider(
             'Travel per 1000px (s)',
             _config.travelTimePerKPxSec,

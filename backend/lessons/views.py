@@ -26,6 +26,7 @@ class StartLessonView(APIView):
     def post(self, request):
         topic = request.data.get('topic') or 'Pythagorean Theorem'
         use_existing_images = request.data.get('use_existing_images', False) in (True, 'true', '1')
+        use_elevenlabs_tts = request.data.get('use_elevenlabs_tts', False) in (True, 'true', '1')
         engine = TutorEngine()
         plan = engine.build_lesson_plan(topic)
 
@@ -37,11 +38,12 @@ class StartLessonView(APIView):
             is_waiting_for_question=False,
             is_completed=False,
             use_existing_images=use_existing_images,
+            use_elevenlabs_tts=use_elevenlabs_tts,
         )
 
         # Speak the first step
         step_text = engine.continue_step(plan[0])
-        audio_path = engine.synthesize_speech(step_text)
+        audio_path = engine.synthesize_speech(step_text, use_elevenlabs_tts=use_elevenlabs_tts)
         Utterance.objects.create(session=session, role='tutor', text=step_text, audio_file=audio_path)
 
         # Do not wait for questions by default; frontend handles raise-hand after playback
@@ -587,4 +589,3 @@ class MarkLessonCompleteView(APIView):
         session.is_completed = True
         session.save(update_fields=['is_completed', 'updated_at'])
         return Response({'status': 'completed'})
-

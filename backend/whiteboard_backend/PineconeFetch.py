@@ -3,22 +3,26 @@ from __future__ import annotations
 
 import os
 import json
+import time as _time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from collections import defaultdict
 
 import numpy as np
 
 from dotenv import load_dotenv
 
+
+def _log(msg: str) -> None:
+    ts = _time.strftime("%H:%M:%S")
+    print(f"[{ts}][PineconeFetch] {msg}", flush=True)
+
 from pinecone.grpc import PineconeGRPC as Pinecone
-from pinecone import ServerlessSpec  # not used here, but keep consistent with your save script
 
 # Embedders
 from sentence_transformers import SentenceTransformer
 import torch
-from transformers import AutoProcessor, SiglipModel
+from transformers import AutoProcessor, AutoModel
 
 
 # ------------------------------------------------------------
@@ -31,23 +35,15 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 # ------------------------------------------------------------
 # ENV SETTINGS
 # ------------------------------------------------------------
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
-PINECONE_CLOUD = os.getenv("PINECONE_CLOUD", "aws")
-PINECONE_REGION = os.getenv("PINECONE_REGION", "us-east-1")
-PINECONE_INDEX_PREFIX = os.getenv("PINECONE_INDEX_PREFIX", "img-meta")
-
-PINECONE_METRIC = os.getenv("PINECONE_METRIC", "cosine")
-
-# Optional: if you saved your plan to disk, fetch will reuse it.
-# If missing, it will rebuild the same deterministic plan from dims.
-PLAN_PATH = Path(os.getenv("PINECONE_PLAN_PATH", "")) if os.getenv("PINECONE_PLAN_PATH") else (Path(__file__).resolve().parent / "pinecone_index_plan.json")
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY") or os.getenv("Pinecone-API-Key", "")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "lesson-images")
 
 
 # ------------------------------------------------------------
 # MODELS
 # ------------------------------------------------------------
 MINILM_NAME = os.getenv("MINILM_NAME", "all-MiniLM-L6-v2")
-SIGLIP_NAME = os.getenv("SIGLIP_NAME", "google/siglip-base-patch16-384")
+SIGLIP_NAME = os.getenv("SIGLIP_NAME", "google/siglip2-giant-opt-patch16-384")
 
 
 # ------------------------------------------------------------
@@ -55,11 +51,11 @@ SIGLIP_NAME = os.getenv("SIGLIP_NAME", "google/siglip-base-patch16-384")
 # ------------------------------------------------------------
 _minilm_model: Optional[SentenceTransformer] = None
 _siglip_processor: Optional[Any] = None
-_siglip_model: Optional[SiglipModel] = None
+_siglip_model: Optional[Any] = None
 _siglip_device: Optional[torch.device] = None
 _pc: Optional[Pinecone] = None
 _opened_indexes: Dict[str, Any] = {}
-_plan_cache: Dict[Tuple[int, int, int], Dict[str, Tuple[str, str]]] = {}
+_plan_cache: Dict[Tuple[int, int, int, int], Dict[str, Tuple[str, str]]] = {}
 
 import threading
 
@@ -174,69 +170,60 @@ def _get_index(index_name: str):
     return idx
 
 
+def _index_dimension(pc: Pinecone, index_name: str) -> int:
+    desc = pc.describe_index(index_name)
+    dim = getattr(desc, "dimension", None)
+    if dim is None and isinstance(desc, dict):
+        dim = desc.get("dimension")
+    if dim is None:
+        spec = getattr(desc, "spec", None)
+        if spec is not None:
+            dim = getattr(spec, "dimension", None)
+        if dim is None and isinstance(spec, dict):
+            dim = spec.get("dimension")
+    if dim is None:
+        raise RuntimeError(f"Could not resolve dimension for index: {index_name}")
+    return int(dim)
+
+
+def _fixed_index_plan(
+    index_dim: int,
+    prompt_dim: int,
+    clip_dim: int,
+    context_dim: int,
+) -> Tuple[Dict[str, Tuple[str, str]], Dict[str, str]]:
+    dim_map = {"prompt": prompt_dim, "clip": clip_dim, "context": context_dim}
+    plan: Dict[str, Tuple[str, str]] = {}
+    skipped: Dict[str, str] = {}
+    for kind, dim in dim_map.items():
+        if int(dim) != int(index_dim):
+            skipped[kind] = f"dim_mismatch(vector={dim}, index={index_dim})"
+            continue
+        plan[kind] = (PINECONE_INDEX_NAME, kind)
+    return plan, skipped
+
+
+def _normalized_weights(
+    available_modalities: List[str],
+    base_weights: Tuple[float, float, float],
+) -> Dict[str, float]:
+    base = {
+        "prompt": float(base_weights[0]),
+        "clip": float(base_weights[1]),
+        "context": float(base_weights[2]),
+    }
+    selected = {k: base[k] for k in available_modalities if k in base}
+    total = sum(selected.values())
+    if total <= 0:
+        n = max(1, len(available_modalities))
+        return {k: 1.0 / n for k in available_modalities}
+    return {k: v / total for k, v in selected.items()}
+
+
 
 # ------------------------------------------------------------
 # PLAN
 # ------------------------------------------------------------
-def _minimal_index_plan(prompt_dim: Optional[int], clip_dim: Optional[int], context_dim: Optional[int]) -> Dict[str, Tuple[str, str]]:
-    """
-    Returns:
-      {
-        "prompt":  (index_name, namespace),
-        "clip":    (index_name, namespace),
-        "context": (index_name, namespace),
-      }
-
-    Strategy mirrors your save script:
-      - If all 3 dims match -> single index, namespaces prompt/clip/context.
-      - Else if prompt_dim == context_dim -> share one index (prompt/context), clip separate.
-      - Else -> 3 indexes.
-    """
-    def idx(name: str, dim: Optional[int]) -> str:
-        d = dim if dim is not None else 0
-        return f"{PINECONE_INDEX_PREFIX}-{name}-{d}"
-
-    if prompt_dim and clip_dim and context_dim and (prompt_dim == clip_dim == context_dim):
-        shared = f"{PINECONE_INDEX_PREFIX}-all-{prompt_dim}"
-        return {
-            "prompt": (shared, "prompt"),
-            "clip": (shared, "clip"),
-            "context": (shared, "context"),
-        }
-
-    if prompt_dim and context_dim and (prompt_dim == context_dim):
-        shared = f"{PINECONE_INDEX_PREFIX}-promptctx-{prompt_dim}"
-        return {
-            "prompt": (shared, "prompt"),
-            "context": (shared, "context"),
-            "clip": (idx("clip", clip_dim), "clip"),
-        }
-
-    return {
-        "prompt": (idx("prompt", prompt_dim), "prompt"),
-        "clip": (idx("clip", clip_dim), "clip"),
-        "context": (idx("context", context_dim), "context"),
-    }
-
-
-def load_plan_or_build(prompt_dim: int, clip_dim: int, context_dim: int) -> Dict[str, Tuple[str, str]]:
-    """
-    If PLAN_PATH exists, load it.
-    Else, build a deterministic plan from dims (same naming as save script).
-    """
-    if PLAN_PATH.exists():
-        raw = json.loads(PLAN_PATH.read_text(encoding="utf-8"))
-        out: Dict[str, Tuple[str, str]] = {}
-        for k, v in raw.items():
-            # support {"prompt": ["index","ns"]} OR {"prompt": ("index","ns")}
-            if isinstance(v, (list, tuple)) and len(v) == 2:
-                out[str(k)] = (str(v[0]), str(v[1]))
-        if out:
-            return out
-
-    return _minimal_index_plan(prompt_dim, clip_dim, context_dim)
-
-
 # ------------------------------------------------------------
 # EMBEDDERS
 # ------------------------------------------------------------
@@ -285,7 +272,7 @@ def embed_siglip_text(text: str) -> List[float]:
     # If ImagePipeline injected hot SigLIP, use it; otherwise lazy-load locally.
     if _siglip_processor is None or _siglip_model is None or _siglip_device is None:
         _siglip_processor = AutoProcessor.from_pretrained(SIGLIP_NAME)
-        _siglip_model = SiglipModel.from_pretrained(SIGLIP_NAME)
+        _siglip_model = AutoModel.from_pretrained(SIGLIP_NAME)
         _siglip_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         _siglip_model.to(_siglip_device)
         _siglip_model.eval()
@@ -428,40 +415,39 @@ def fetch_best_processed(
     context_dim = len(q_context)
     clip_dim = len(q_clip)
 
-    # 2) Resolve index plan (load from file or rebuild deterministically)
-    plan = load_plan_or_build(prompt_dim, clip_dim, context_dim)
-
-    # 3) Connect + open needed indexes
+    # 2) Open the one configured index and keep only compatible modalities.
     pc = Pinecone(api_key=PINECONE_API_KEY)
+    if not _index_exists(pc, PINECONE_INDEX_NAME):
+        raise RuntimeError(
+            f"Index not found: '{PINECONE_INDEX_NAME}'. "
+            "Set PINECONE_INDEX_NAME to an existing index."
+        )
+    index_dim = _index_dimension(pc, PINECONE_INDEX_NAME)
+    plan, skipped_modalities = _fixed_index_plan(index_dim, prompt_dim, clip_dim, context_dim)
+    if not plan:
+        raise RuntimeError(
+            f"No compatible modalities for index '{PINECONE_INDEX_NAME}' "
+            f"(index_dim={index_dim}, prompt_dim={prompt_dim}, clip_dim={clip_dim}, context_dim={context_dim})."
+        )
 
-    # unique index names -> open once
-    needed_index_names = sorted({plan[k][0] for k in plan.keys()})
+    index = _open_index(pc, PINECONE_INDEX_NAME)
 
-    for name in needed_index_names:
-        if not _index_exists(pc, name):
-            raise RuntimeError(
-                f"Index not found: {name}. "
-                f"Either your save script created different names, or you need to save/load the plan."
-            )
-
-    opened = {name: _open_index(pc, name) for name in needed_index_names}
-
-    # 4) Query each modality
+    # 3) Query each compatible modality.
     prompt_matches: List[Match] = []
     clip_matches: List[Match] = []
     context_matches: List[Match] = []
 
-    # prompt
-    i_name, ns = plan["prompt"]
-    prompt_matches = _query_one(opened[i_name], namespace=ns, vector=q_prompt, top_k=top_k_per_modality)
+    if "prompt" in plan:
+        _, ns = plan["prompt"]
+        prompt_matches = _query_one(index, namespace=ns, vector=q_prompt, top_k=top_k_per_modality)
 
-    # clip (siglip)
-    i_name, ns = plan["clip"]
-    clip_matches = _query_one(opened[i_name], namespace=ns, vector=q_clip, top_k=top_k_per_modality)
+    if "clip" in plan:
+        _, ns = plan["clip"]
+        clip_matches = _query_one(index, namespace=ns, vector=q_clip, top_k=top_k_per_modality)
 
-    # context
-    i_name, ns = plan["context"]
-    context_matches = _query_one(opened[i_name], namespace=ns, vector=q_context, top_k=top_k_per_modality)
+    if "context" in plan:
+        _, ns = plan["context"]
+        context_matches = _query_one(index, namespace=ns, vector=q_context, top_k=top_k_per_modality)
 
     # 5) Build per-modality score dicts
     s_prompt = {m.processed_id: float(m.score) for m in prompt_matches}
@@ -473,7 +459,9 @@ def fetch_best_processed(
     n_clip = _minmax_norm(s_clip)
     n_ctx = _minmax_norm(s_ctx)
 
-    w_prompt, w_clip, w_ctx = weights
+    available_modalities = list(plan.keys())
+    weight_map = _normalized_weights(available_modalities, weights)
+    effective_min_modalities = max(1, min(int(min_modalities), len(available_modalities)))
 
     # 7) Fuse (weighted sum) + enforce overlap requirement
     all_ids = set(n_prompt.keys()) | set(n_clip.keys()) | set(n_ctx.keys())
@@ -492,17 +480,21 @@ def fetch_best_processed(
         sc = float(n_clip.get(pid, 0.0))
         sx = float(n_ctx.get(pid, 0.0))
 
-        if pid in n_prompt:
+        if "prompt" in plan and pid in n_prompt:
             hits += 1
-        if pid in n_clip:
+        if "clip" in plan and pid in n_clip:
             hits += 1
-        if pid in n_ctx:
+        if "context" in plan and pid in n_ctx:
             hits += 1
 
-        if hits < int(min_modalities):
+        if hits < effective_min_modalities:
             continue
 
-        final = (w_prompt * sp) + (w_clip * sc) + (w_ctx * sx)
+        final = (
+            weight_map.get("prompt", 0.0) * sp
+            + weight_map.get("clip", 0.0) * sc
+            + weight_map.get("context", 0.0) * sx
+        )
 
         fused.append({
             "processed_id": pid,
@@ -520,6 +512,10 @@ def fetch_best_processed(
         "best_processed_id": best,
         "ranking": fused[: int(return_top_n)],
         "used_plan": {k: [v[0], v[1]] for k, v in plan.items()},
+        "index_name": PINECONE_INDEX_NAME,
+        "index_dimension": index_dim,
+        "skipped_modalities": skipped_modalities,
+        "effective_min_modalities": effective_min_modalities,
         "dims": {"prompt": prompt_dim, "clip": clip_dim, "context": context_dim},
     }
 
@@ -540,27 +536,49 @@ def fetch_processed_ids_for_prompt(
     if not prompt:
         return []
 
+    _log(f"fetch('{prompt[:60]}') top_n={top_n} min_mod={min_modalities} min_score={min_final_score}")
+
     # embed prompt twice (minilm prompt+context), and siglip once
     q_prompt = embed_minilm(prompt)
     q_context = q_prompt
     q_clip = embed_siglip_text(prompt)
 
-    dims_key = (len(q_prompt), len(q_clip), len(q_context))
+    prompt_dim = len(q_prompt)
+    clip_dim = len(q_clip)
+    context_dim = len(q_context)
+
+    pc = _get_pc()
+    if not _index_exists(pc, PINECONE_INDEX_NAME):
+        _log(f"  Index '{PINECONE_INDEX_NAME}' not found -- returning []")
+        return []
+
+    index_dim = _index_dimension(pc, PINECONE_INDEX_NAME)
+    dims_key = (prompt_dim, clip_dim, context_dim, index_dim)
 
     # plan caching
     plan = _plan_cache.get(dims_key)
     if plan is None:
-        plan = load_plan_or_build(dims_key[0], dims_key[1], dims_key[2])
+        plan, _ = _fixed_index_plan(index_dim, prompt_dim, clip_dim, context_dim)
         _plan_cache[dims_key] = plan
+    if not plan:
+        _log(f"  No compatible modalities (index_dim={index_dim}) -- returning []")
+        return []
 
-    # open indexes once
-    idx_prompt = _get_index(plan["prompt"][0])
-    idx_clip = _get_index(plan["clip"][0])
-    idx_ctx = _get_index(plan["context"][0])
+    _log(f"  plan modalities: {list(plan.keys())}  index_dim={index_dim}")
 
-    prompt_matches = _query_one(idx_prompt, namespace=plan["prompt"][1], vector=q_prompt, top_k=top_k_per_modality)
-    clip_matches   = _query_one(idx_clip,   namespace=plan["clip"][1],   vector=q_clip,   top_k=top_k_per_modality)
-    ctx_matches    = _query_one(idx_ctx,    namespace=plan["context"][1],vector=q_context,top_k=top_k_per_modality)
+    idx = _get_index(PINECONE_INDEX_NAME)
+    prompt_matches: List[Match] = []
+    clip_matches: List[Match] = []
+    ctx_matches: List[Match] = []
+
+    if "prompt" in plan:
+        prompt_matches = _query_one(idx, namespace=plan["prompt"][1], vector=q_prompt, top_k=top_k_per_modality)
+    if "clip" in plan:
+        clip_matches = _query_one(idx, namespace=plan["clip"][1], vector=q_clip, top_k=top_k_per_modality)
+    if "context" in plan:
+        ctx_matches = _query_one(idx, namespace=plan["context"][1], vector=q_context, top_k=top_k_per_modality)
+
+    _log(f"  matches: prompt={len(prompt_matches)}, clip={len(clip_matches)}, context={len(ctx_matches)}")
 
     s_prompt = {m.processed_id: float(m.score) for m in prompt_matches}
     s_clip   = {m.processed_id: float(m.score) for m in clip_matches}
@@ -579,23 +597,28 @@ def fetch_processed_ids_for_prompt(
     fused = []
     all_ids = set(n_prompt.keys()) | set(n_clip.keys()) | set(n_ctx.keys())
 
-    # weights: (prompt, siglip, context)
-    w_prompt, w_clip, w_ctx = (0.35, 0.40, 0.25)
+    # weights: (prompt, siglip, context), normalized to available modalities.
+    weight_map = _normalized_weights(list(plan.keys()), (0.35, 0.40, 0.25))
+    effective_min_modalities = max(1, min(int(min_modalities), len(plan)))
 
     prompt_norm = prompt.strip().lower()
 
     for pid in all_ids:
         hits = 0
-        if pid in n_prompt: hits += 1
-        if pid in n_clip:   hits += 1
-        if pid in n_ctx:    hits += 1
-        if hits < int(min_modalities):
+        if "prompt" in plan and pid in n_prompt: hits += 1
+        if "clip" in plan and pid in n_clip:   hits += 1
+        if "context" in plan and pid in n_ctx:    hits += 1
+        if hits < effective_min_modalities:
             continue
 
         sp = float(n_prompt.get(pid, 0.0))
         sc = float(n_clip.get(pid, 0.0))
         sx = float(n_ctx.get(pid, 0.0))
-        final = (w_prompt * sp) + (w_clip * sc) + (w_ctx * sx)
+        final = (
+            weight_map.get("prompt", 0.0) * sp
+            + weight_map.get("clip", 0.0) * sc
+            + weight_map.get("context", 0.0) * sx
+        )
 
         md = meta_by_id.get(pid, {}) or {}
         if require_base_context_match:
@@ -608,10 +631,12 @@ def fetch_processed_ids_for_prompt(
     fused.sort(key=lambda x: (x[0], x[1]), reverse=True)
 
     if not fused:
+        _log(f"  fused candidates: 0 -- returning []")
         return []
 
     # accept policy: top candidate must pass min_final_score
     if fused[0][0] < float(min_final_score):
+        _log(f"  best score {fused[0][0]:.3f} < min_final_score {min_final_score} -- returning []")
         return []
 
     # return top_n pids that also satisfy score >= min_final_score
@@ -622,6 +647,8 @@ def fetch_processed_ids_for_prompt(
         out.append(pid)
         if len(out) >= int(top_n):
             break
+
+    _log(f"  returning {len(out)} id(s): {out}")
     return out
 
 

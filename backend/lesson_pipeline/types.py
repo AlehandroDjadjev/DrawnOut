@@ -159,6 +159,8 @@ def image_candidate_to_dict(candidate: ImageCandidate) -> Dict[str, Any]:
 
 def resolved_image_to_dict(resolved: ResolvedImage) -> Dict[str, Any]:
     """Convert ResolvedImage to dict for serialization"""
+    meta = resolved.metadata or {}
+    _PROMOTED = ('pipeline_id', 'strokes', 'embedding')
     return {
         'tag': {
             'id': resolved.tag.id,
@@ -171,7 +173,14 @@ def resolved_image_to_dict(resolved: ResolvedImage) -> Dict[str, Any]:
         'base_image_url': resolved.base_image_url,
         'final_image_url': resolved.final_image_url,
         'vector_id': resolved.vector_id,
-        'metadata': resolved.metadata,
+        # Whiteboard pipeline fields — populated when images come from
+        # whiteboard_backend/image-pipeline/.
+        # strokes: cubic Bézier JSON the whiteboard draws directly.
+        # embedding: SigLIP vector (used for similarity matching).
+        'pipeline_id': meta.get('pipeline_id'),
+        'strokes': meta.get('strokes'),
+        'embedding': meta.get('embedding'),
+        'metadata': {k: v for k, v in meta.items() if k not in _PROMOTED},
     }
 
 

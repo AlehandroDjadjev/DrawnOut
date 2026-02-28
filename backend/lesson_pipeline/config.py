@@ -35,7 +35,12 @@ class AppConfig:
     # Retry configuration (embeddings: minimal retries to skip failed embeds faster)
     max_retries: int = 3
     retry_backoff_seconds: float = 2.0
-    
+
+    # Whiteboard image pipeline (whiteboard_backend/image-pipeline/)
+    # Override via WHITEBOARD_PIPELINE_URL env var.
+    whiteboard_pipeline_url: str = "http://127.0.0.1:8000/api/wb/pipeline/image-pipeline/"
+    whiteboard_pipeline_timeout: int = 600  # seconds — pipeline can be slow first run
+
     # Logging
     log_level: str = "INFO"
 
@@ -66,7 +71,14 @@ def load_config() -> AppConfig:
         # Retry
         max_retries=int(os.getenv('MAX_RETRIES', '3')),
         retry_backoff_seconds=float(os.getenv('RETRY_BACKOFF_SECONDS', '2.0')),
-        
+
+        # Whiteboard image pipeline
+        whiteboard_pipeline_url=os.getenv(
+            'WHITEBOARD_PIPELINE_URL',
+            'http://127.0.0.1:8000/api/wb/pipeline/image-pipeline/',
+        ),
+        whiteboard_pipeline_timeout=int(os.getenv('WHITEBOARD_PIPELINE_TIMEOUT', '600')),
+
         # Logging
         log_level=os.getenv('LOG_LEVEL', 'INFO'),
     )

@@ -8,16 +8,16 @@ from PIL import Image, UnidentifiedImageError
 # keep your SiglipBackend as-is, but I strongly recommend this small safety tweak:
 # (this does NOT change your existing comments)
 class SiglipBackend:
-    def __init__(self, model_name: str = "google/siglip-base-patch16-384", device: Optional[str] = None):
+    def __init__(self, model_name: str = "google/siglip2-giant-opt-patch16-384", device: Optional[str] = None):
         import torch
-        from transformers import SiglipProcessor, SiglipModel
+        from transformers import AutoModel, AutoProcessor
 
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
 
-        self.model = SiglipModel.from_pretrained(model_name).to(self.device)
-        self.processor = SiglipProcessor.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name).to(self.device)
+        self.processor = AutoProcessor.from_pretrained(model_name)
         self.model.eval()
 
     @staticmethod

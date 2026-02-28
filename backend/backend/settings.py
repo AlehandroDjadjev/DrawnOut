@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     'wb_preprocess',
     'wb_vectorize',
     'wb_generate',
+    'whiteboard_backend',
     'market',
     'test_gen',
     'vision',  # SigLIP2 zero-shot classification & embeddings

@@ -150,7 +150,7 @@ def _torch_post_config(cpu_threads: int) -> None:
 def ensure_hot_models(
     *,
     qwen_model_id: str = "Qwen/Qwen3-VL-2B-Instruct",
-    siglip_model_id: str = "google/siglip-so400m-patch14-384",
+    siglip_model_id: str = "google/siglip2-giant-opt-patch16-384",
     minilm_model_id: str = "sentence-transformers/all-MiniLM-L6-v2",
     gpu_index: int = 0,
     cpu_threads: int = _PIPE_CPU_THREADS,
@@ -855,11 +855,16 @@ def _pipeline_worker(
         # ADDED: Build Pinecone embedding jobs now
         # -------------------------
         embedding_jobs: List[Dict[str, Any]] = []
+        _meta_miss_count = 0
         for t in text_items:
             src = str(t.get("source_path", ""))
             processed_id = str(t.get("processed_id", f"processed_{int(t.get('idx', 0))}"))
             meta_entry = _resolve_meta_for_source(meta_ctx_map, src)
             if not meta_entry:
+                _meta_miss_count += 1
+                if _meta_miss_count <= 3:
+                    _log(f"[Pinecone] _resolve_meta_for_source returned None for src='{src}'")
+                    _log(f"  norm_path='{_norm_path(src)}'")
                 continue
 
             prompt_emb = meta_entry.get("prompt_embedding")
@@ -883,6 +888,13 @@ def _pipeline_worker(
                 "meta": meta_small,
             })
 
+        if _meta_miss_count > 3:
+            _log(f"[Pinecone] ... and {_meta_miss_count - 3} more meta misses (total: {_meta_miss_count})")
+        _log(f"[Pinecone] embedding_jobs built: {len(embedding_jobs)} out of {len(text_items)} text_items")
+        if len(embedding_jobs) == 0 and len(text_items) > 0:
+            _log("[Pinecone WARNING] ALL embedding jobs were skipped -- _resolve_meta_for_source() returned None for every item")
+            _log(f"[Pinecone DEBUG] meta_ctx_map has {len(meta_ctx_map)} keys")
+
 
         # -------------------------
         # ADDED: Pinecone save thread (PARALLEL to ImageClusters)
@@ -890,8 +902,13 @@ def _pipeline_worker(
         def _run_pinecone_save() -> None:
             try:
                 if not embedding_jobs:
+                    _log("[Pinecone] No embedding jobs to upsert -- skipping PineconeSave entirely")
                     return
+                _log(f"[Pinecone] Upserting {len(embedding_jobs)} embedding jobs to Pinecone...")
                 summary = PineconeSave.upsert_image_metadata_embeddings(embedding_jobs)
+                _log(f"[Pinecone] Upsert complete: {summary.get('upserted', {})}")
+                if summary.get("skipped_modalities"):
+                    _log(f"[Pinecone] Skipped modalities: {summary['skipped_modalities']}")
                 try:
                     (out_dir / "pinecone_upsert_summary.json").write_text(
                         json.dumps(summary, indent=2, ensure_ascii=False),
@@ -901,13 +918,13 @@ def _pipeline_worker(
                     pass
             except BaseException as e:
                 handle.errors["pinecone"] = f"{type(e).__name__}: {e}"
-                print("[bg][ERR] Pinecone save thread crashed:")
+                _log(f"[Pinecone ERROR] save thread crashed: {type(e).__name__}: {e}")
                 traceback.print_exc()
             finally:
                 handle.pinecone_done.set()
 
-        #pine_thread = threading.Thread(target=_run_pinecone_save, name="pinecone_save", daemon=False)
-        #pine_thread.start()
+        pine_thread = threading.Thread(target=_run_pinecone_save, name="pinecone_save", daemon=False)
+        pine_thread.start()
 
         print("[9/10] ImageClusters (in-memory)...")
         with stage("ImageClusters.cluster_in_memory"):
@@ -917,7 +934,7 @@ def _pipeline_worker(
                 save_outputs=True,
             )
 
-        #pine_thread.join()  # <-- ensure Pinecone is finished before exiting pipeline section
+        pine_thread.join()  # <-- ensure Pinecone is finished before exiting pipeline section
 
         # Build qwen packs (now only the selected images exist in text_items)
         qwen_packs: Dict[int, Dict[str, Any]] = {}
@@ -1180,6 +1197,234 @@ def _parse_cli(argv: List[str]) -> Dict[str, Any]:
     return args
 
 
+def _load_processed_to_unique() -> Dict[str, str]:
+    """Load the saved processed_id → unique_source_path mapping from disk."""
+    p2u_file = BASE_DIR / "PipelineOutputs" / "processed_to_unique.json"
+    if p2u_file.exists():
+        try:
+            return json.loads(p2u_file.read_text(encoding="utf-8")) or {}
+        except Exception:
+            pass
+    return {}
+
+
+def _enrich_image_entry(
+    processed_id: str,
+    p2u: Dict[str, str],
+    meta_ctx_map: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    For a single processed_id, collect:
+      - image_b64 / image_mime  (base64-encoded source image)
+      - embedding               (SigLIP clip_embedding vector)
+      - strokes                 (full vectorized stroke JSON)
+    """
+    import base64
+
+    entry: Dict[str, Any] = {"id": processed_id}
+
+    # ---- strokes ----
+    stroke_dir = BASE_DIR / "StrokeVectors"
+    stroke_data: Optional[Dict[str, Any]] = None
+    for candidate in [
+        stroke_dir / f"{processed_id}.json",
+        stroke_dir / f"processed_{processed_id}.json",
+    ]:
+        if candidate.exists():
+            try:
+                stroke_data = json.loads(candidate.read_text(encoding="utf-8"))
+                break
+            except Exception:
+                pass
+    entry["strokes"] = stroke_data
+
+    # ---- image (base64) ----
+    unique_src = p2u.get(processed_id) or ""
+    img_bytes: Optional[bytes] = None
+    img_mime = "image/jpeg"
+
+    if unique_src:
+        src_path = Path(unique_src)
+        if src_path.exists():
+            try:
+                img_bytes = src_path.read_bytes()
+                img_mime = "image/png" if src_path.suffix.lower() == ".png" else "image/jpeg"
+            except Exception:
+                pass
+
+    # fallback: ProccessedImages/{processed_id}.{ext}
+    if img_bytes is None:
+        proc_dir = BASE_DIR / "ProccessedImages"
+        for ext in [".png", ".jpg", ".jpeg"]:
+            pp = proc_dir / f"{processed_id}{ext}"
+            if pp.exists():
+                try:
+                    img_bytes = pp.read_bytes()
+                    img_mime = "image/png" if ext == ".png" else "image/jpeg"
+                    break
+                except Exception:
+                    pass
+
+    if img_bytes is not None:
+        entry["image_b64"] = base64.b64encode(img_bytes).decode("ascii")
+        entry["image_mime"] = img_mime
+    else:
+        entry["image_b64"] = None
+        entry["image_mime"] = None
+
+    # ---- embedding ----
+    embedding: Optional[List[float]] = None
+    if unique_src:
+        meta_entry = _resolve_meta_for_source(meta_ctx_map, unique_src)
+        if meta_entry:
+            embedding = meta_entry.get("clip_embedding")
+            if not embedding:
+                embedding = _pick_best_context_embedding(meta_entry)
+            if not embedding:
+                embedding = meta_entry.get("prompt_embedding")
+    entry["embedding"] = embedding
+
+    return entry
+
+
+def get_images_full(
+    prompt_or_map: Any,
+    subj: Optional[str] = None,
+    *,
+    top_n_per_prompt: int = 2,
+    min_final_score: float = 0.78,
+    min_modalities: int = 3,
+    top_k_per_modality: int = 50,
+    model_id: str = "Qwen/Qwen3-VL-2B-Instruct",
+    gpu_index: int = 0,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Extended version of get_images() that returns full data per image:
+      { prompt: [{ id, image_b64, image_mime, embedding, strokes }, ...] }
+
+    Behavior is identical to get_images() for fetching/researching/pipeline;
+    after IDs are resolved the results are enriched from disk artifacts.
+    """
+    # ---- resolve IDs (same logic as get_images) ----
+    prompt_to_topic: Dict[str, str] = {}
+    if isinstance(prompt_or_map, str):
+        p = prompt_or_map.strip()
+        t = (subj or "").strip()
+        if p and t:
+            prompt_to_topic[p] = t
+    elif isinstance(prompt_or_map, dict):
+        for k, v in prompt_or_map.items():
+            if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip():
+                prompt_to_topic[k.strip()] = v.strip()
+
+    if not prompt_to_topic:
+        return {}
+
+    if not REMOTE_API:
+        ensure_hot_models(
+            qwen_model_id=model_id,
+            gpu_index=gpu_index,
+            cpu_threads=_PIPE_CPU_THREADS,
+            warmup=False,
+            load_siglip=True,
+            load_minilm=True,
+        )
+
+    results_ids: Dict[str, List[str]] = {}
+    misses: Dict[str, str] = {}
+
+    _log(f"[get_images_full] {len(prompt_to_topic)} prompt(s) to process")
+
+    for prompt, topic in prompt_to_topic.items():
+        try:
+            ids = PineconeFetch.fetch_processed_ids_for_prompt(
+                prompt,
+                top_n=top_n_per_prompt,
+                top_k_per_modality=top_k_per_modality,
+                min_modalities=min_modalities,
+                min_final_score=min_final_score,
+                require_base_context_match=False,
+            )
+            if ids:
+                _log(f"[Pinecone HIT] prompt='{prompt}' -> ids={ids}")
+                results_ids[prompt] = ids
+            else:
+                _log(f"[Pinecone MISS] prompt='{prompt}' -> no results above threshold")
+                misses[prompt] = topic
+        except Exception as exc:
+            _log(f"[Pinecone ERROR] prompt='{prompt}': {type(exc).__name__}: {exc}")
+            traceback.print_exc()
+            misses[prompt] = topic
+
+    handle: Optional["PipelineHandle"] = None
+
+    if misses:
+        _log(f"[Research] Running ImageResearcher for {len(misses)} miss(es): {list(misses.keys())}")
+        try:
+            ImageResearcher.research_many(misses)
+            _log("[Research] ImageResearcher.research_many() completed")
+        except Exception as exc:
+            _log(f"[Research ERROR] ImageResearcher.research_many() failed: {type(exc).__name__}: {exc}")
+            traceback.print_exc()
+
+        _log("[Pipeline] Starting run_pipeline_blocking()...")
+        handle = run_pipeline_blocking(
+            model_id=model_id,
+            debug_save=False,
+            parallel_cpu=True,
+            gpu_index=gpu_index,
+            allowed_base_contexts=list(misses.keys()),
+        )
+        _log("[Pipeline] run_pipeline_blocking() finished")
+
+        if handle.errors:
+            for err_key, err_msg in handle.errors.items():
+                _log(f"[Pipeline ERROR][{err_key}] {err_msg}")
+
+        by_ctx = getattr(handle, "selected_ids_by_base_context", {}) or {}
+        _log(f"[Pipeline] selected_ids_by_base_context keys: {list(by_ctx.keys())}")
+        for prompt in misses.keys():
+            picked = by_ctx.get(prompt, [])
+            if isinstance(picked, list) and picked:
+                results_ids[prompt] = [str(x) for x in picked if str(x)]
+                _log(f"[Pipeline PICK] prompt='{prompt}' -> ids={results_ids[prompt]}")
+            else:
+                _log(f"[Pinecone RETRY] prompt='{prompt}'")
+                try:
+                    ids = PineconeFetch.fetch_processed_ids_for_prompt(
+                        prompt,
+                        top_n=top_n_per_prompt,
+                        top_k_per_modality=top_k_per_modality,
+                        min_modalities=min_modalities,
+                        min_final_score=min_final_score,
+                        require_base_context_match=False,
+                    )
+                    if ids:
+                        _log(f"[Pinecone RETRY HIT] prompt='{prompt}' -> ids={ids}")
+                        results_ids[prompt] = ids
+                    else:
+                        _log(f"[Pinecone RETRY MISS] prompt='{prompt}' -> still no results")
+                except Exception as exc:
+                    _log(f"[Pinecone RETRY ERROR] prompt='{prompt}': {type(exc).__name__}: {exc}")
+                    traceback.print_exc()
+
+    # ---- enrich IDs with image, embedding, strokes ----
+    p2u: Dict[str, str] = {}
+    if handle is not None:
+        p2u = dict(getattr(handle, "processed_to_unique", {}) or {})
+    p2u.update(_load_processed_to_unique())
+
+    meta_ctx_map = load_image_metadata_context_map()
+
+    full_results: Dict[str, List[Dict[str, Any]]] = {}
+    for prompt, ids in results_ids.items():
+        full_results[prompt] = [
+            _enrich_image_entry(pid, p2u, meta_ctx_map) for pid in ids
+        ]
+
+    return full_results
+
+
 def get_images(
     prompt_or_map: Any,
     subj: Optional[str] = None,
@@ -1243,7 +1488,7 @@ def get_images(
                 top_k_per_modality=top_k_per_modality,
                 min_modalities=min_modalities,
                 min_final_score=min_final_score,
-                require_base_context_match=True,
+                require_base_context_match=False,
             )
             if ids:
                 results[prompt] = ids
@@ -1285,7 +1530,7 @@ def get_images(
                     top_k_per_modality=top_k_per_modality,
                     min_modalities=min_modalities,
                     min_final_score=min_final_score,
-                    require_base_context_match=True,
+                    require_base_context_match=False,
                 )
                 if ids:
                     results[prompt] = ids

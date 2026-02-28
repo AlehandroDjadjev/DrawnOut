@@ -1,0 +1,10 @@
+﻿Rive Asset Attribution
+
+File: dynamic_text_animation.riv
+Source: https://rive.app/marketplace/19314-36318-dynamic-text-animation/
+Runtime file URL: https://public.rive.app/community/runtime-files/19314-36318-dynamic-text-animation.riv
+Author: marvin.te
+License: CC BY 4.0
+Date downloaded: 2026-02-22
+
+If redistributed, keep attribution per CC BY terms.

@@ -31,6 +31,7 @@ urlpatterns = [
     path('api/wb/preprocess/', include('wb_preprocess.urls')),
     path('api/wb/vectorize/', include('wb_vectorize.urls')),
     path('api/wb/generate/', include('wb_generate.urls')),
+    path('api/wb/pipeline/', include('whiteboard_backend.urls')),
     path('api/vision/', include('vision.urls')),  # SigLIP2 endpoints
     path('api/market/', include('market.urls')),
     # NOTE: Whiteboard object API disabled - imggen models not ready

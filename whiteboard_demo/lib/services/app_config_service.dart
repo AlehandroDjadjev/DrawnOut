@@ -1,19 +1,21 @@
-import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'platform_stub.dart'
+    if (dart.library.io) 'platform_io.dart' as platform;
 
 /// Central configuration service for app settings
 class AppConfigService extends ChangeNotifier {
   static const String _backendUrlKey = 'backendUrl';
-  
+
   /// Get platform-appropriate default URL
   /// Android emulator uses 10.0.2.2 to reach host's localhost
-  /// Other platforms use 127.0.0.1
+  /// Web uses localhost for CORS; native uses 127.0.0.1
   static String get _defaultBackendUrl {
-    if (!kIsWeb && Platform.isAndroid) {
+    if (!kIsWeb && platform.isAndroid) {
       return 'http://10.0.2.2:8000';
     }
-    return 'http://127.0.0.1:8000';
+    return kIsWeb ? 'http://localhost:8000' : 'http://127.0.0.1:8000';
   }
   
   late String _backendUrl;

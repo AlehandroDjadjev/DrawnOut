@@ -220,6 +220,13 @@ class TimelineGeneratorService:
                             if url:
                                 action['image_url'] = url
                                 logger.info(f"Updated sketch_image '{img_id}' with URL: {url[:60]}...")
+                            # Carry stroke/vector data even when there is no URL
+                            if img_data.get('vector_id') or img_data.get('strokes'):
+                                metadata = action.setdefault('metadata', {})
+                                if img_data.get('vector_id'):
+                                    metadata['vector_id'] = img_data['vector_id']
+                                if img_data.get('strokes'):
+                                    metadata['strokes'] = img_data['strokes']
                         
                         # If still no URL, check by prompt matching as fallback
                         if not action.get('image_url'):
@@ -292,6 +299,8 @@ class TimelineGeneratorService:
                         'style': attrs.get('style', img_data.get('style', 'diagram')),
                         'notes': attrs.get('notes', ''),
                         'source': img_data.get('source', 'unknown'),
+                        'vector_id': img_data.get('vector_id', ''),
+                        'strokes': img_data.get('strokes'),
                     }
                 }
                 

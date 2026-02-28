@@ -9,6 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  rive: ^0.14.3
   js: ^0.7.1
   file_picker: ^10.3.10
   opencv_dart: ^1.4.3
@@ -31,3 +32,18 @@ flutter:
   
   assets:
     - assets/.env
+    - assets/rive/dynamic_text_animation.riv
+
+  fonts:
+    - family: Schoolbell
+      fonts:
+        - asset: assets/fonts/Schoolbell-Regular.ttf
+    - family: PatrickHand
+      fonts:
+        - asset: assets/fonts/PatrickHand-Regular.ttf
+    - family: PermanentMarker
+      fonts:
+        - asset: assets/fonts/PermanentMarker-Regular.ttf
+    - family: CaveatBrush
+      fonts:
+        - asset: assets/fonts/CaveatBrush-Regular.ttf

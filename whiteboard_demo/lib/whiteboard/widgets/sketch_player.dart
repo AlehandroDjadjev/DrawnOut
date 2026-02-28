@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../core/stroke_plan.dart';
 import '../core/placed_image.dart';
@@ -44,14 +45,18 @@ class _SketchPlayerState extends State<SketchPlayer>
   late Path _fullPath;
   late double _totalLen;
 
+  /// Minimum duration so strokes animate visibly (not "spat out" instantly).
+  static const double _minDurationSeconds = 1.0;
+
   @override
   void initState() {
     super.initState();
     _fullPath = widget.plan.toPath();
     _totalLen = _computeTotalLen(_fullPath);
+    final sec = math.max(widget.totalSeconds, _minDurationSeconds);
     _anim = AnimationController(
       vsync: this,
-      duration: Duration(milliseconds: (widget.totalSeconds * 1000).round()),
+      duration: Duration(milliseconds: (sec * 1000).round()),
     )
       ..addListener(() => setState(() {}))
       ..forward();
@@ -64,8 +69,8 @@ class _SketchPlayerState extends State<SketchPlayer>
         oldWidget.totalSeconds != widget.totalSeconds) {
       _fullPath = widget.plan.toPath();
       _totalLen = _computeTotalLen(_fullPath);
-      _anim.duration =
-          Duration(milliseconds: (widget.totalSeconds * 1000).round());
+      final sec = math.max(widget.totalSeconds, _minDurationSeconds);
+      _anim.duration = Duration(milliseconds: (sec * 1000).round());
       _anim
         ..reset()
         ..forward();
