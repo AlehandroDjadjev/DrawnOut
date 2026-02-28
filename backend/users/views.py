@@ -1,9 +1,14 @@
 from rest_framework.generics import CreateAPIView
 from .models import CustomUser, Avatar
-from .serializers import CustomUserSerializer, AvatarSerializer
+from .serializers import (
+    AvatarSerializer,
+    CustomUserSerializer,
+    EmailOrUsernameTokenObtainPairSerializer,
+)
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 
 # 1. List all profile pictures
@@ -59,6 +64,10 @@ class RegisterView(CreateAPIView):
     queryset = CustomUser.objects.all()
     serializer_class = CustomUserSerializer
     permission_classes = [permissions.AllowAny]
+
+
+class EmailOrUsernameTokenObtainPairView(TokenObtainPairView):
+    serializer_class = EmailOrUsernameTokenObtainPairSerializer
 
     
 class ProfileView(APIView):

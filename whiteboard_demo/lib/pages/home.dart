@@ -7,12 +7,18 @@ import '../theme_provider.dart';
 import '../ui/apple_ui.dart';
 import '../providers/developer_mode_provider.dart';
 import '../services/auth_service.dart';
+import 'lessons_page.dart';
 import 'profile_page.dart';
 import 'owned_items.dart';
 import 'negotiations_page.dart';
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  final int initialIndex;
+
+  const HomePage({
+    super.key,
+    this.initialIndex = 0,
+  });
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -31,8 +37,14 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    _selectedIndex = widget.initialIndex;
     _fetchNotifications();
     _fetchProfile();
+  }
+
+  void _selectTab(int index) {
+    if (!mounted) return;
+    setState(() => _selectedIndex = index);
   }
 
   Future<void> _fetchProfile() async {
@@ -113,14 +125,21 @@ class _HomePageState extends State<HomePage> {
 
     final List<Widget> pages = [
       _buildHomeContent(theme),
+      const LessonsPage(embedded: true),
       const ProfilePage(),
     ];
+
+    final title = switch (_selectedIndex) {
+      0 => 'Home',
+      1 => 'Lessons',
+      _ => 'Profile',
+    };
 
     return Scaffold(
       key: _scaffoldKey,
       drawer: _buildDrawer(theme),
       appBar: AppBar(
-        title: Text(_selectedIndex == 0 ? 'Home' : 'Profile'),
+        title: Text(title),
         centerTitle: true,
         actions: [
           // Notification bell
@@ -240,14 +259,18 @@ class _HomePageState extends State<HomePage> {
         type: BottomNavigationBarType.fixed,
         selectedItemColor: theme.colorScheme.primary,
         unselectedItemColor: theme.colorScheme.onSurface.withOpacity(0.6),
-        onTap: (index) => setState(() => _selectedIndex = index),
+        onTap: _selectTab,
         items: [
           BottomNavigationBarItem(
             icon: _navIcon(Icons.home_outlined, 0, theme),
             label: 'Home',
           ),
           BottomNavigationBarItem(
-            icon: _navIcon(Icons.person_outline_rounded, 1, theme),
+            icon: _navIcon(Icons.menu_book_outlined, 1, theme),
+            label: 'Lessons',
+          ),
+          BottomNavigationBarItem(
+            icon: _navIcon(Icons.person_outline_rounded, 2, theme),
             label: 'Profile',
           ),
         ],
@@ -336,7 +359,7 @@ class _HomePageState extends State<HomePage> {
             title: const Text("All Lessons"),
             onTap: () {
               Navigator.pop(context);
-              Navigator.pushNamed(context, '/lessons');
+              _selectTab(1);
             },
           ),
 
@@ -387,17 +410,6 @@ class _HomePageState extends State<HomePage> {
             },
           ),
 
-          // Whiteboard
-          ListTile(
-            leading:
-                Icon(Icons.draw_outlined, color: theme.colorScheme.primary),
-            title: const Text('Whiteboard'),
-            onTap: () {
-              Navigator.pop(context);
-              Navigator.pushNamed(context, '/whiteboard');
-            },
-          ),
-
           // Settings
           ListTile(
             leading: Icon(Icons.settings, color: theme.colorScheme.primary),
@@ -445,7 +457,7 @@ class _HomePageState extends State<HomePage> {
               const AppleHeader(
                 title: 'Welcome',
                 subtitle:
-                    'Learn, interact, and practice with your AI tutor. Start with a quick lesson or jump into the whiteboard.',
+                    'Learn, interact, and practice with your AI tutor. Start with a quick lesson from the lessons tab.',
               ),
               const SizedBox(height: 16),
               isWide
@@ -478,7 +490,7 @@ class _HomePageState extends State<HomePage> {
                           icon: Icons.menu_book,
                           title: 'Lessons',
                           subtitle: 'Browse all lessons',
-                          onTap: () => Navigator.pushNamed(context, '/lessons'),
+                          onTap: () => _selectTab(1),
                         ),
                         const SizedBox(height: 12),
                         _QuickActionCard(
@@ -490,48 +502,6 @@ class _HomePageState extends State<HomePage> {
                       ],
                     ),
               const SizedBox(height: 12),
-              _QuickActionCard(
-                icon: Icons.draw_outlined,
-                title: 'Whiteboard',
-                subtitle: 'Practice and explore',
-                onTap: () => Navigator.pushNamed(context, '/whiteboard'),
-              ),
-              const SizedBox(height: 20),
-              const AppleSectionTitle(title: 'Available lesson'),
-              const SizedBox(height: 10),
-              AppleCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Pythagoras Theorem',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: -0.2,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'Explore the relationship between the sides of a right-angled triangle and understand one of the most fundamental theorems in mathematics.',
-                      style: theme.textTheme.bodyMedium?.copyWith(height: 1.25),
-                    ),
-                    const SizedBox(height: 14),
-                    ApplePrimaryButton(
-                      label: 'Start lesson',
-                      onPressed: () {
-                        Navigator.pushNamed(
-                          context,
-                          '/whiteboard',
-                          arguments: {
-                            'topic': 'Pythagorean Theorem',
-                            'title': 'Pythagoras Theorem',
-                          },
-                        );
-                      },
-                    ),
-                  ],
-                ),
-              ),
             ],
           ),
         ),

@@ -6,7 +6,12 @@ import '../models/timeline.dart';
 class TimelineApiService {
   final String baseUrl;
 
-  TimelineApiService({this.baseUrl = 'http://localhost:8000'});
+  TimelineApiService({
+    this.baseUrl = const String.fromEnvironment(
+      'BACKEND_URL',
+      defaultValue: 'http://127.0.0.1:8001',
+    ),
+  });
 
   String _api(String path) =>
       '${baseUrl.replaceFirst(RegExp(r'/+$'), '')}/api$path';

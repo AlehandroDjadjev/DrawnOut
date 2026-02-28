@@ -3,11 +3,16 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:math' as math;
 import 'dart:ui' show Offset;
+import 'package:flutter/foundation.dart' show debugPrint;
 
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as html;
+import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 
-import 'dart:js_util' as js_util;
+@JS('cvVectorizeContours')
+external JSPromise<JSAny?> _jsCvVectorizeContours(
+    JSUint8ClampedArray pixels, int width, int height, JSString optionsJson);
 
 class Vectorizer {
   static Future<List<List<Offset>>> vectorize({
@@ -67,18 +72,26 @@ class Vectorizer {
 
     // 3) Convert to world coords and apply Dart-side shaping
     final List<List<Offset>> rawStrokes = [];
-
     if (jsResult == null) return rawStrokes;
 
     final polylines = (jsResult as Map)['polylines'] as List? ?? const [];
+    if (polylines.isEmpty) {
+      debugPrint('⚠️ Vectorizer: JS returned no polylines');
+      return const [];
+    }
     for (final pl in polylines.cast<List>()) {
       var polyWorld = pl
+          .where((p) => p.length >= 2)
           .map((p) => Offset(
                 ((p as List)[0] as num).toDouble(),
                 ((p)[1] as num).toDouble(),
               ))
           .map((p) => Offset((p.dx - cx) * worldScale, (p.dy - cy) * worldScale))
           .toList();
+
+      if (polyWorld.length < 2) {
+        continue;
+      }
 
       if (smoothPasses > 0) {
         polyWorld = _smoothPolyline(polyWorld, passes: smoothPasses);
@@ -140,35 +153,25 @@ class Vectorizer {
     html.ImageData imageData,
     Map<String, dynamic> options,
   ) async {
-    // Call global cvVectorizeContours(imageData, opts) which returns a Promise.
-    final jsOpts = js_util.jsify(options);
-
-    final promise = js_util.callMethod(
-      js_util.globalThis,
-      'cvVectorizeContours',
-      [imageData, jsOpts],
-    );
-
-    final jsObject = await _promiseToFuture<Object?>(promise);
-    if (jsObject == null) return null;
-
-    // Convert to JSON-safe structure: JSON.stringify in JS, then jsonDecode in Dart.
     try {
-      final jsonObj = js_util.getProperty(js_util.globalThis, 'JSON');
-      final jsonStr = js_util.callMethod(jsonObj, 'stringify', [jsObject]);
-      if (jsonStr is String && jsonStr.isNotEmpty) {
-        return jsonDecode(jsonStr);
+      final fn = globalContext['cvVectorizeContours'];
+      if (fn == null) {
+        debugPrint(
+            '⚠️ cvVectorizeContours not on window — is opencv_glue.js loaded?');
+        return null;
       }
-    } catch (_) {
-      // Fallback below
+      final pixels = imageData.data.toJS;
+      final width = imageData.width;
+      final height = imageData.height;
+      final optionsJson = jsonEncode(options).toJS;
+      final result =
+          await _jsCvVectorizeContours(pixels, width, height, optionsJson)
+              .toDart;
+      return result?.dartify();
+    } catch (e) {
+      debugPrint('⚠️ Vectorizer JS bridge failed: $e');
+      return null;
     }
-
-    return jsObject;
-  }
-
-  static Future<T?> _promiseToFuture<T>(dynamic promise) {
-    // Modern Dart interop: Promise -> Future without allowInterop.
-    return js_util.promiseToFuture<T?>(promise);
   }
 
   // --- Dart-side shaping helpers (same as native) ---

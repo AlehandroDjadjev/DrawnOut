@@ -1,11 +1,18 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions, generics
+from rest_framework.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
 from users.models import CustomUser
+from django.utils import timezone
 
-from .models import LessonSession, Utterance, Lesson
-from .serializers import LessonSessionSerializer, UtteranceSerializer, LessonSerializer
+from .models import LessonSession, Utterance, Lesson, LessonProgress
+from .serializers import (
+    LessonSessionSerializer,
+    UtteranceSerializer,
+    LessonSerializer,
+    LessonWithProgressSerializer,
+)
 from .services import TutorEngine
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny
@@ -20,11 +27,59 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError
 
 
+def _mark_lesson_started(user, lesson: Lesson) -> None:
+    if user is None or not getattr(user, 'is_authenticated', False):
+        return
+    if lesson is None:
+        return
+
+    lp, _ = LessonProgress.objects.get_or_create(user=user, lesson=lesson)
+    if lp.state == LessonProgress.State.COMPLETED:
+        return
+
+    now = timezone.now()
+    lp.state = LessonProgress.State.IN_PROGRESS
+    if lp.started_at is None:
+        lp.started_at = now
+    lp.completed_at = None
+    lp.save(update_fields=['state', 'started_at', 'completed_at', 'updated_at'])
+
+
+def _mark_lesson_completed(user, lesson: Lesson) -> None:
+    if user is None or not getattr(user, 'is_authenticated', False):
+        return
+    if lesson is None:
+        return
+
+    lp, _ = LessonProgress.objects.get_or_create(user=user, lesson=lesson)
+    now = timezone.now()
+    lp.state = LessonProgress.State.COMPLETED
+    if lp.started_at is None:
+        lp.started_at = now
+    if lp.completed_at is None:
+        lp.completed_at = now
+    lp.save(update_fields=['state', 'started_at', 'completed_at', 'updated_at'])
+
+
 class StartLessonView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        topic = request.data.get('topic') or 'Pythagorean Theorem'
+        lesson_obj = None
+        lesson_id = request.data.get('lesson_id')
+        if lesson_id is not None:
+            try:
+                lesson_obj = Lesson.objects.get(id=int(lesson_id))
+            except (ValueError, TypeError, Lesson.DoesNotExist):
+                lesson_obj = None
+
+        topic = request.data.get('topic') or (lesson_obj.title if lesson_obj else 'Pythagorean Theorem')
+        if lesson_obj is None and topic:
+            # Best-effort linking: if topic matches a known lesson title, link it.
+            try:
+                lesson_obj = Lesson.objects.get(title__iexact=str(topic).strip())
+            except Lesson.DoesNotExist:
+                lesson_obj = None
         use_existing_images = request.data.get('use_existing_images', False) in (True, 'true', '1')
         use_elevenlabs_tts = request.data.get('use_elevenlabs_tts', False) in (True, 'true', '1')
         engine = TutorEngine()
@@ -32,6 +87,7 @@ class StartLessonView(APIView):
 
         session = LessonSession.objects.create(
             user=request.user if request.user and request.user.is_authenticated else None,
+            lesson=lesson_obj,
             topic=topic,
             lesson_plan=plan,
             current_step_index=0,
@@ -49,6 +105,9 @@ class StartLessonView(APIView):
         # Do not wait for questions by default; frontend handles raise-hand after playback
         session.is_waiting_for_question = False
         session.save(update_fields=["is_waiting_for_question", "updated_at"])
+
+        if session.user_id and session.lesson_id:
+            _mark_lesson_started(request.user, lesson_obj)
 
         serializer = LessonSessionSerializer(session)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -86,6 +145,9 @@ class NextSegmentView(APIView):
             # Frontend controls raise-hand; keep waiting flag false
             session.is_waiting_for_question = False
         session.save(update_fields=["current_step_index", "is_completed", "is_waiting_for_question", "updated_at"])
+
+        if session.is_completed and session.user_id and session.lesson_id:
+            _mark_lesson_completed(session.user, session.lesson)
 
         return Response(LessonSessionSerializer(session).data)
 
@@ -149,6 +211,9 @@ class RaiseHandView(APIView):
 
         session.save(update_fields=["current_step_index", "is_waiting_for_question", "is_completed", "updated_at"])
 
+        if session.is_completed and session.user_id and session.lesson_id:
+            _mark_lesson_completed(session.user, session.lesson)
+
         return Response(LessonSessionSerializer(session).data)
 
 
@@ -185,6 +250,9 @@ class LiveChatView(APIView):
         else:
             session.is_completed = True
         session.save(update_fields=["current_step_index", "is_completed", "updated_at"])
+
+        if session.is_completed and session.user_id and session.lesson_id:
+            _mark_lesson_completed(session.user, session.lesson)
         data = LessonSessionSerializer(session).data
         data['live'] = False
         return Response(data)
@@ -523,8 +591,99 @@ class LessonGetView(APIView):
         
 
 class LessonsListView(generics.ListAPIView):
-    queryset = Lesson.objects.all()
+    pagination_class = None
     serializer_class = LessonSerializer
+
+    def get_serializer_class(self):
+        # If authenticated, include per-lesson progress state.
+        if getattr(self.request, 'user', None) is not None and self.request.user.is_authenticated:
+            return LessonWithProgressSerializer
+        return LessonSerializer
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        user = getattr(self.request, 'user', None)
+        if user is None or not user.is_authenticated:
+            return ctx
+
+        # Build a progress map for the lessons in the current queryset.
+        lessons = list(self.get_queryset().only('id', 'title'))
+        lesson_ids = [l.id for l in lessons]
+        title_to_id = { (l.title or '').strip().lower(): l.id for l in lessons }
+
+        progress_by_lesson_id = {lid: 'not_started' for lid in lesson_ids}
+
+        # 1) Persisted per-user per-lesson progress.
+        progress_rows = (
+            LessonProgress.objects
+            .filter(user=user, lesson_id__in=lesson_ids)
+            .values('lesson_id', 'state')
+        )
+        for row in progress_rows:
+            lid = row.get('lesson_id')
+            state = row.get('state')
+            if lid and state:
+                progress_by_lesson_id[lid] = state
+
+        # 2) Back-compat fallback: infer progress from sessions if no persisted
+        # progress exists yet.
+        linked = (
+            LessonSession.objects
+            .filter(user=user, lesson_id__in=lesson_ids)
+            .values('lesson_id', 'is_completed')
+        )
+        for row in linked:
+            lid = row.get('lesson_id')
+            if not lid:
+                continue
+            if progress_by_lesson_id.get(lid) != 'not_started':
+                continue
+            progress_by_lesson_id[lid] = 'completed' if row.get('is_completed') else 'in_progress'
+
+        unlinked = (
+            LessonSession.objects
+            .filter(user=user, lesson__isnull=True)
+            .values('topic', 'is_completed')
+        )
+        for row in unlinked:
+            topic = (row.get('topic') or '').strip().lower()
+            lid = title_to_id.get(topic)
+            if not lid:
+                continue
+            if progress_by_lesson_id.get(lid) != 'not_started':
+                continue
+            progress_by_lesson_id[lid] = 'completed' if row.get('is_completed') else 'in_progress'
+
+        ctx['progress_by_lesson_id'] = progress_by_lesson_id
+        return ctx
+
+    def get_queryset(self):
+        qs = Lesson.objects.all().order_by('title')
+
+        subject = (self.request.query_params.get('subject') or '').strip().lower()
+        difficulty = (self.request.query_params.get('difficulty') or '').strip().lower()
+
+        if subject:
+            valid_subjects = {k for k, _ in Lesson.SUBJECT_CHOICES}
+            if subject not in valid_subjects:
+                raise ValidationError({
+                    'subject': [
+                        f"Invalid subject '{subject}'. Valid: {sorted(valid_subjects)}"
+                    ]
+                })
+            qs = qs.filter(subject=subject)
+
+        if difficulty:
+            valid_difficulties = {k for k, _ in Lesson.DIFFICULTY_CHOICES}
+            if difficulty not in valid_difficulties:
+                raise ValidationError({
+                    'difficulty': [
+                        f"Invalid difficulty '{difficulty}'. Valid: {sorted(valid_difficulties)}"
+                    ]
+                })
+            qs = qs.filter(difficulty=difficulty)
+
+        return qs
 
 
 class LessonHistoryView(APIView):
@@ -575,9 +734,51 @@ class LessonHistoryView(APIView):
                 'timeline_id': tl.id,
                 'total_duration': tl.total_duration,
                 'segment_count': tl.segment_records.count(),
+                'resume_segment_index': s.resume_segment_index,
+                'resume_playback_time': s.resume_playback_time,
             })
 
         return Response(results)
+
+
+class SaveProgressView(APIView):
+    """Persist the current playback position so the user can resume later."""
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, session_id):
+        # Try to find the session — for authenticated users, scope to their own.
+        if request.user and request.user.is_authenticated:
+            session = get_object_or_404(LessonSession, pk=session_id, user=request.user)
+        else:
+            session = get_object_or_404(LessonSession, pk=session_id)
+
+        segment_index = request.data.get('segment_index')
+        playback_time = request.data.get('playback_time')
+
+        if segment_index is None or playback_time is None:
+            return Response(
+                {'error': 'segment_index and playback_time are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            segment_index = int(segment_index)
+            playback_time = float(playback_time)
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'segment_index must be int, playback_time must be float'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        session.resume_segment_index = segment_index
+        session.resume_playback_time = playback_time
+        session.save(update_fields=['resume_segment_index', 'resume_playback_time', 'updated_at'])
+
+        return Response({
+            'status': 'saved',
+            'resume_segment_index': session.resume_segment_index,
+            'resume_playback_time': session.resume_playback_time,
+        })
 
 
 class MarkLessonCompleteView(APIView):
@@ -588,4 +789,12 @@ class MarkLessonCompleteView(APIView):
         session = get_object_or_404(LessonSession, pk=session_id, user=request.user)
         session.is_completed = True
         session.save(update_fields=['is_completed', 'updated_at'])
+
+        lesson = session.lesson
+        if lesson is None:
+            # Back-compat: infer lesson by matching the topic to a lesson title.
+            lesson = Lesson.objects.filter(title__iexact=(session.topic or '').strip()).first()
+
+        if lesson is not None:
+            _mark_lesson_completed(request.user, lesson)
         return Response({'status': 'completed'})

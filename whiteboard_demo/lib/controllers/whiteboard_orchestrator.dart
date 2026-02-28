@@ -199,7 +199,6 @@ class WhiteboardOrchestrator extends ChangeNotifier {
   // Services
   final StrokeService _strokeService = const StrokeService();
   final TextSketchService _textSketchService = const TextSketchService();
-  late ImageSketchService _imageSketchService;
 
   // Core state
   final List<VectorObject> board = [];
@@ -237,14 +236,11 @@ class WhiteboardOrchestrator extends ChangeNotifier {
   // Timers
   Timer? autoNextTimer;
 
-  WhiteboardOrchestrator({this.baseUrl = 'http://localhost:8000'}) {
-    _imageSketchService = ImageSketchService(baseUrl: baseUrl);
-  }
+  WhiteboardOrchestrator({this.baseUrl = 'http://localhost:8000'});
 
   /// Update the base URL for API calls.
   void setBaseUrl(String url) {
     baseUrl = url.trim().isEmpty ? 'http://localhost:8000' : url.trim();
-    _imageSketchService = ImageSketchService(baseUrl: baseUrl);
     api = AssistantApiClient(baseUrl);
     timelineApi = TimelineApiClient(baseUrl);
     timelineController?.setBaseUrl(baseUrl);

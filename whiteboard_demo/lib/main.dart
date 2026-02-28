@@ -21,6 +21,7 @@ import 'planner.dart';
 import 'models/timeline.dart';
 import 'services/auth_service.dart';
 import 'services/timeline_api.dart';
+import 'services/lesson_api_service.dart';
 import 'controllers/timeline_playback_controller.dart';
 import 'controllers/whiteboard_orchestrator.dart';
 import 'services/lesson_pipeline_api.dart';
@@ -29,11 +30,9 @@ import 'theme_provider.dart';
 import 'pages/login.dart';
 import 'pages/signup.dart';
 import 'pages/home.dart';
-import 'pages/lessons_page.dart';
 import 'pages/settings_page.dart';
 import 'pages/auth_gate.dart';
 import 'pages/market_page.dart';
-import 'pages/whiteboard_page.dart';
 import 'pages/lesson_history_page.dart';
 
 // Whiteboard module
@@ -117,17 +116,11 @@ class DrawnOutApp extends StatelessWidget {
         '/login': (context) => const LoginPage(),
         '/signup': (context) => const SignupPage(),
         '/home': (context) => const HomePage(),
-        '/lessons': (context) => const LessonsPage(),
+        '/lessons': (context) => const HomePage(initialIndex: 1),
         '/settings': (context) => const SettingsPage(),
         '/market': (context) => const MarketPage(),
         '/history': (context) => const LessonHistoryPage(),
         '/whiteboard': (context) => const WhiteboardPageWrapper(),
-        '/whiteboard/user': (context) =>
-            const WhiteboardPageWrapper(startInDeveloperMode: false),
-        '/whiteboard/dev': (context) =>
-            const WhiteboardPageWrapper(startInDeveloperMode: true),
-        '/whiteboard/mobile': (context) => const WhiteboardPageMobile(),
-        '/whiteboard/legacy': (context) => const WhiteboardPageWrapper(),
       },
     );
   }
@@ -154,16 +147,22 @@ class WhiteboardPageWrapper extends StatelessWidget {
     String? title;
     int? sessionId;
     bool rewatch = false;
+    bool continueLesson = false;
+    double resumePlaybackTime = 0.0;
     if (args is Map<String, dynamic>) {
       topic = args['topic'] as String?;
       title = args['title'] as String?;
       sessionId = args['session_id'] as int?;
       rewatch = (args['rewatch'] as bool?) ?? false;
+      continueLesson = (args['continue_lesson'] as bool?) ?? false;
+      resumePlaybackTime = (args['resume_playback_time'] as num?)?.toDouble() ?? 0.0;
     }
     return WhiteboardPage(
       autoStartTopic: topic,
       lessonTitle: title,
-      autoStartSessionId: rewatch ? sessionId : null,
+      autoStartSessionId: (rewatch || continueLesson) ? sessionId : null,
+      continueLesson: continueLesson,
+      resumePlaybackTime: resumePlaybackTime,
     );
   }
 }
@@ -178,12 +177,18 @@ class WhiteboardPage extends StatefulWidget {
 
   /// If set, skips generation and replays a saved timeline for this session.
   final int? autoStartSessionId;
+  /// If true, seeks to the saved position instead of playing from the start.
+  final bool continueLesson;
+  /// The saved playback time (seconds) to resume from (minus a 2s buffer).
+  final double resumePlaybackTime;
 
   const WhiteboardPage({
     super.key,
     this.autoStartTopic,
     this.lessonTitle,
     this.autoStartSessionId,
+    this.continueLesson = false,
+    this.resumePlaybackTime = 0.0,
   });
 
   @override
@@ -212,8 +217,6 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
   // Services
   final _strokeService = const StrokeService();
-  final _textSketchService = const TextSketchService();
-  late ImageSketchService _imageSketchService;
 
   // Delegate board/plan/raster/busy to orchestrator
   List<VectorObject> get _board => _orchestrator.board;
@@ -339,6 +342,10 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   bool _lessonAutoStarted = false;
   bool _lessonComplete = false;
 
+  // ── Continue / resume progress state ────────────────────────────────────
+  Timer? _progressSaveTimer;
+  LessonApiService? _lessonApiService;
+
   /// True when the whiteboard was opened for a lesson (auto-start or rewatch),
   /// false when the user is just using the free-draw whiteboard.
   bool get _isInLessonSession =>
@@ -349,12 +356,18 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   /// Tracks the last-known pause state so we only call setState on transitions.
   bool _drawingPaused = false;
 
+  /// Incremented every time onSegmentChanged fires so in-flight drawing
+  /// futures can detect they've been superseded and exit cleanly.
+  int _drawingGeneration = 0;
+
   void _onTimelinePauseChanged() {
     final paused = _timelineController?.isPaused ?? false;
     if (paused != _drawingPaused && mounted) {
-      setState(() {
-        _drawingPaused = paused;
-      });
+      setState(() { _drawingPaused = paused; });
+      // Save progress whenever the user pauses
+      if (paused) {
+        _savePlaybackProgress();
+      }
     }
   }
 
@@ -412,11 +425,6 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
   void initState() {
     super.initState();
 
-    // Initialize image sketch service with default base URL
-    _imageSketchService = ImageSketchService(
-      baseUrl: _defaultApiUrl,
-    );
-
     // Initialize whiteboard orchestrator with current backend URL
     _orchestrator = WhiteboardOrchestrator(baseUrl: _defaultApiUrl);
     // Rebuild this widget whenever orchestrator state changes
@@ -434,10 +442,18 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     };
     _timelineController!.onSegmentChanged = (index) {
       debugPrint('📍 Segment $index started');
+      // Invalidate any in-flight drawing future from the previous segment.
+      _drawingGeneration++;
+      // Clear the canvas AND reset the layout cursor so each segment starts
+      // fresh from the top of the whiteboard.
       _clearBoard();
+      // _clearBoard already nulls _layout via clearBoard(), so the next call
+      // to _ensureLayout() in _handleSyncedDrawingActions will create a fresh
+      // layout with cursorY = cfg.page.top.
     };
     _timelineController!.onTimelineCompleted = () {
       debugPrint('✅ Timeline completed!');
+      _stopProgressSaveTimer();
       if (mounted) setState(() => _lessonComplete = true);
       // Persist completion status in the backend
       _markSessionComplete();
@@ -454,7 +470,14 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       // Rewatch mode: load a saved timeline directly (no generation step)
       if (!_lessonAutoStarted && widget.autoStartSessionId != null) {
         _lessonAutoStarted = true;
-        Future.microtask(() => _rewatchLesson(widget.autoStartSessionId!));
+        if (widget.continueLesson && widget.resumePlaybackTime > 0) {
+          Future.microtask(() => _continueLesson(
+            widget.autoStartSessionId!,
+            widget.resumePlaybackTime,
+          ));
+        } else {
+          Future.microtask(() => _rewatchLesson(widget.autoStartSessionId!));
+        }
       }
       // Auto-start lesson if topic was provided via route arguments
       else if (!_lessonAutoStarted && widget.autoStartTopic != null) {
@@ -518,6 +541,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
   @override
   void dispose() {
+    // Save progress one final time before leaving
+    _savePlaybackProgress();
+    _stopProgressSaveTimer();
     _timelineController?.removeListener(_onTimelinePauseChanged);
     _timelineController?.stop();
     _timelineController?.dispose();
@@ -1091,6 +1117,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       // 5. Start playback
       debugPrint('▶️ Starting synchronized playback...');
       await _timelineController!.play();
+      _startProgressSaveTimer();
     } catch (e, st) {
       debugPrint('❌ Synchronized lesson error: $e\n$st');
       _showError('Error: $e');
@@ -1191,6 +1218,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
       debugPrint('▶️ Starting synchronized playback...');
       await _timelineController!.play();
+      _startProgressSaveTimer();
     } catch (e, st) {
       debugPrint('❌ Auto-start lesson error: $e\n$st');
       if (mounted) {
@@ -1370,6 +1398,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
 
       debugPrint('▶️ Starting rewatch playback...');
       await _timelineController!.play();
+      _startProgressSaveTimer();
     } catch (e, st) {
       debugPrint('❌ Rewatch lesson error: $e\n$st');
       if (mounted) {
@@ -1378,6 +1407,109 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           _lessonLoadingError = e.toString();
         });
       }
+    }
+  }
+
+  /// Continue a lesson from a saved playback position (minus a 2-second buffer).
+  Future<void> _continueLesson(int sessionId, double resumeTime) async {
+    setState(() {
+      _lessonLoading = true;
+      _lessonLoadingStage = 'Loading saved lesson...';
+      _lessonLoadingProgress = 0.0;
+      _lessonLoadingError = null;
+    });
+
+    try {
+      debugPrint('▶️ Continuing lesson session $sessionId from ${resumeTime}s');
+
+      final baseUrl = _effectiveBaseUrl;
+      _api = AssistantApiClient(baseUrl);
+      _timelineApi = TimelineApiClient(baseUrl);
+      _timelineController!.setBaseUrl(baseUrl);
+      _sessionId = sessionId;
+      _lessonApiService = LessonApiService(baseUrl: baseUrl);
+
+      if (!mounted) return;
+
+      setState(() {
+        _lessonLoadingStage = 'Fetching timeline data...';
+        _lessonLoadingProgress = 0.4;
+      });
+
+      final timeline = await _timelineApi!.getSessionTimeline(sessionId);
+      debugPrint('✅ Timeline loaded: ${timeline.segments.length} segments, ${timeline.totalDuration}s');
+
+      if (!mounted) return;
+
+      setState(() {
+        _lessonLoadingStage = 'Preparing playback...';
+        _lessonLoadingProgress = 0.8;
+      });
+      await _timelineController!.loadTimeline(timeline);
+
+      if (!mounted) return;
+
+      setState(() {
+        _lessonLoading = false;
+        _lessonLoadingStage = '';
+        _lessonLoadingProgress = 1.0;
+      });
+
+      // Seek to 2 seconds before the saved position (so the user gets context)
+      final seekTo = (resumeTime - 2.0).clamp(0.0, timeline.totalDuration);
+      debugPrint('▶️ Seeking to ${seekTo}s (saved was ${resumeTime}s)...');
+      await _timelineController!.seekToTime(seekTo);
+
+      // Start auto-saving progress
+      _startProgressSaveTimer();
+    } catch (e, st) {
+      debugPrint('❌ Continue lesson error: $e\n$st');
+      if (mounted) {
+        setState(() {
+          _lessonLoadingStage = 'Failed to load lesson';
+          _lessonLoadingError = e.toString();
+        });
+      }
+    }
+  }
+
+  /// Start a periodic timer that saves playback progress every 5 seconds.
+  void _startProgressSaveTimer() {
+    _progressSaveTimer?.cancel();
+    _lessonApiService ??= LessonApiService(baseUrl: _effectiveBaseUrl);
+    _progressSaveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _savePlaybackProgress();
+    });
+  }
+
+  /// Stop the periodic progress-save timer.
+  void _stopProgressSaveTimer() {
+    _progressSaveTimer?.cancel();
+    _progressSaveTimer = null;
+  }
+
+  /// Persist the current playback position to the backend.
+  Future<void> _savePlaybackProgress() async {
+    if (_sessionId == null) return;
+    final controller = _timelineController;
+    if (controller == null || !controller.isPlaying) return;
+
+    final segmentIndex = controller.currentSegmentIndex;
+    final playbackTime = controller.currentTime;
+    if (playbackTime <= 0) return;
+
+    try {
+      final baseUrl = _effectiveBaseUrl;
+      final authService = AuthService(baseUrl: baseUrl);
+      await authService.authenticatedPost(
+        '$baseUrl/api/lessons/$_sessionId/save-progress/',
+        body: json.encode({
+          'segment_index': segmentIndex,
+          'playback_time': playbackTime,
+        }),
+      );
+    } catch (e) {
+      debugPrint('⚠️ Auto-save progress failed: $e');
     }
   }
 
@@ -1403,8 +1535,13 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       return;
     }
 
+    // Snapshot generation at entry. If onSegmentChanged fires mid-execution
+    // it increments _drawingGeneration and nulls _layout, so we abort.
+    final myGen = _drawingGeneration;
+
     try {
       await _ensureLayout();
+      if (_drawingGeneration != myGen || _layout == null) return;
 
       // ── DEBUG: Log full actions from backend (for decoding trace) ────────
       debugPrint('🔍 DECODE │ RAW ACTIONS FROM BACKEND (${actions.length} total):');
@@ -1487,6 +1624,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       // Generate strokes
       final accum = <List<Offset>>[];
       for (final action in actions) {
+        // Abort if a new segment has started (layout was wiped by clearBoard)
+        if (_drawingGeneration != myGen || _layout == null) return;
+
         // ── Handle sketch_image actions ────────────────────────────────────
         if (action.isSketchImage) {
           debugPrint('🖼️ Processing sketch_image action (synced)');
@@ -1512,6 +1652,9 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
         );
       }
 
+      // Abort if superseded during action processing
+      if (_drawingGeneration != myGen) return;
+
       if (accum.isEmpty) {
         debugPrint('⚠️ No strokes generated');
         return;
@@ -1526,22 +1669,24 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
             .add(Duration(milliseconds: (drawDuration * 1000).round()));
       });
 
-      // Wait for animation — pause-aware: the timer only counts down while
-      // playback is active, so pausing freezes both the SketchPlayer and this
-      // countdown. Use 100% so the full path (e.g. crossbars on "t") is drawn.
-      final totalWaitMs = (drawDuration * 1000).round();
+      // Wait for animation — pause-aware and generation-aware.
+      // Exits immediately if a new segment fires, so we never block the next
+      // segment's drawing from starting on time.
+      final totalWaitMs = (drawDuration * 1000 * 0.95).round();
       var elapsedMs = 0;
       const tickMs = 100;
       while (elapsedMs < totalWaitMs) {
         await Future.delayed(const Duration(milliseconds: tickMs));
+        // Exit if a new segment started
+        if (_drawingGeneration != myGen) return;
         // Only count time when not paused
         if (!(_timelineController?.isPaused ?? false)) {
           elapsedMs += tickMs;
         }
       }
 
-      // Commit to board
-      if (_plan != null) {
+      // Commit to board (only if still the active segment)
+      if (_drawingGeneration == myGen && _plan != null) {
         _commitCurrentSketch();
         debugPrint('✅ Committed to board (total: ${_board.length})');
       }
@@ -1711,8 +1856,12 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           );
 
     // Drop tiny decorative strokes (dots/specks) to keep result simple
-    final filtered =
+    var filtered =
         _strokeService.filterStrokes(strokes, minLength: 24.0, minExtent: 8.0);
+    if (filtered.isEmpty) {
+      debugPrint('⚠️ Diagram vectorization returned no usable strokes, using fallback geometry');
+      filtered = _fallbackImageStrokes(img.width.toDouble(), img.height.toDouble());
+    }
 
     // Scale to fit targetW while preserving aspect; vectorizer uses image px→world, so scale proportionally
     // Convert top-left content-space → world center, then add center offset
@@ -2196,15 +2345,19 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
     }
 
     if (strokes.isEmpty) {
-      debugPrint('⚠️ Vectorization produced no strokes');
-      return false;
+      debugPrint('⚠️ Vectorization produced no strokes, using fallback geometry');
+      strokes = _fallbackImageStrokes(img.width.toDouble(), img.height.toDouble());
     }
 
     debugPrint('   ✏️ Vectorized: ${strokes.length} strokes');
 
     // ── Step 6: Filter and transform strokes ───────────────────────────────
-    final filtered =
+    var filtered =
         _strokeService.filterStrokes(strokes, minLength: 24.0, minExtent: 8.0);
+    if (filtered.isEmpty) {
+      debugPrint('⚠️ Filter removed all image strokes, using fallback geometry');
+      filtered = _fallbackImageStrokes(img.width.toDouble(), img.height.toDouble());
+    }
 
     // Calculate scale factor for strokes (image px → target size)
     final effScale = targetW / math.max(1, img.width);
@@ -2798,6 +2951,25 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
       y = maxBottom + st.config.gutterY;
       if (y > st.config.page.height - st.config.page.bottom) return y;
     }
+  }
+
+  List<List<Offset>> _fallbackImageStrokes(double imageWidth, double imageHeight) {
+    final w = math.max(20.0, imageWidth);
+    final h = math.max(20.0, imageHeight);
+    final hw = w / 2.0;
+    final hh = h / 2.0;
+
+    return [
+      [
+        Offset(-hw, -hh),
+        Offset(hw, -hh),
+        Offset(hw, hh),
+        Offset(-hw, hh),
+        Offset(-hw, -hh),
+      ],
+      [Offset(-hw, -hh), Offset(hw, hh)],
+      [Offset(-hw, hh), Offset(hw, -hh)],
+    ];
   }
 
   // Stroke filtering and stitching are now handled by _strokeService
@@ -3553,7 +3725,7 @@ class _WhiteboardPageState extends State<WhiteboardPage> {
           TextField(
             controller: _apiUrlCtrl,
             decoration: const InputDecoration(
-                labelText: 'Backend URL (e.g. http://localhost:8000)'),
+                labelText: 'Backend URL (e.g. http://127.0.0.1:8000)'),
           ),
           const SizedBox(height: 8),
           // NEW: Lesson Pipeline with Intelligent Images

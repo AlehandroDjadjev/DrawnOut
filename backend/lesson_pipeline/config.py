@@ -47,9 +47,15 @@ class AppConfig:
 
 def load_config() -> AppConfig:
     """Load configuration from environment variables"""
+    pinecone_api_key = (
+        os.getenv('PINECONE_API_KEY', '').strip()
+        or os.getenv('Pinecone-API-Key', '').strip()  # legacy key name
+        or os.getenv('PINECONE-API-KEY', '').strip()  # legacy/typo variants
+    )
+
     return AppConfig(
-        # Pinecone (use existing env var names from lessons app)
-        pinecone_api_key=os.getenv('Pinecone-API-Key', ''),
+        # Pinecone
+        pinecone_api_key=pinecone_api_key,
         pinecone_environment=os.getenv('PINECONE_ENVIRONMENT', 'us-east-1'),  # Just region, not cloud+region
         pinecone_index_name=os.getenv('PINECONE_INDEX_NAME', 'lesson-images'),
         

@@ -1,273 +1,713 @@
+import 'dart:convert';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:provider/provider.dart';
 
-/// Available lesson data
-class Lesson {
-  final int id;
-  final String title;
-  final String description;
-  final String topic;
-  final String difficulty;
-  final int? sessionId;
-  final Duration estimatedDuration;
-  final IconData icon;
+import '../models/lesson_list_item.dart';
+import '../services/app_config_service.dart';
+import '../services/auth_service.dart';
+import '../services/lesson_api_service.dart';
+import '../ui/apple_ui.dart';
 
-  const Lesson({
-    required this.id,
-    required this.title,
-    required this.description,
-    required this.topic,
-    this.difficulty = 'Beginner',
-    this.sessionId,
-    this.estimatedDuration = const Duration(minutes: 5),
-    this.icon = Icons.school,
+/// Apple-style lessons browser.
+///
+/// Pulls lessons from `GET /api/lessons/list/` and displays the backend
+/// `progress_state` as a pill badge.
+class LessonsPage extends StatefulWidget {
+  final bool embedded;
+
+  const LessonsPage({
+    super.key,
+    this.embedded = false,
   });
+
+  @override
+  State<LessonsPage> createState() => _LessonsPageState();
 }
 
-/// Page displaying available lessons for selection
-class LessonsPage extends StatelessWidget {
-  const LessonsPage({super.key});
+class _LessonsPageState extends State<LessonsPage> {
+  bool _loading = true;
+  String? _error;
+  List<LessonListItem> _lessons = const [];
+  String? _selectedSubject;
+  String? _selectedDifficulty;
+  bool _hasTokens = false;
+  String _query = '';
 
-  // Sample lessons - in production these would come from backend
-  static const List<Lesson> _lessons = [
-    Lesson(
-      id: 1,
-      title: 'Pythagoras Theorem',
-      description: 'Explore the relationship between the sides of a right-angled triangle.',
-      topic: 'Mathematics',
-      difficulty: 'Beginner',
-      sessionId: 1,
-      estimatedDuration: Duration(minutes: 8),
-      icon: Icons.square_foot,
-    ),
-    Lesson(
-      id: 2,
-      title: 'Quadratic Equations',
-      description: 'Learn to solve equations of the form ax² + bx + c = 0.',
-      topic: 'Mathematics',
-      difficulty: 'Intermediate',
-      sessionId: 2,
-      estimatedDuration: Duration(minutes: 12),
-      icon: Icons.functions,
-    ),
-    Lesson(
-      id: 3,
-      title: 'Newton\'s Laws of Motion',
-      description: 'Understand the fundamental laws governing object movement.',
-      topic: 'Physics',
-      difficulty: 'Beginner',
-      sessionId: 3,
-      estimatedDuration: Duration(minutes: 10),
-      icon: Icons.speed,
-    ),
-    Lesson(
-      id: 4,
-      title: 'Photosynthesis',
-      description: 'Discover how plants convert sunlight into energy.',
-      topic: 'Biology',
-      difficulty: 'Beginner',
-      sessionId: 4,
-      estimatedDuration: Duration(minutes: 7),
-      icon: Icons.eco,
-    ),
-  ];
+  /// UI-only progress: once a lesson is clicked, show it as "In progress".
+  ///
+  /// This is intentionally local and ephemeral until backend completion
+  /// tracking is wired up.
+  final Set<int> _clickedLessonIds = <int>{};
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _reload();
+    });
+  }
+
+  Future<void> _reload() async {
+    final config = context.read<AppConfigService>();
+
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      final authService = AuthService(baseUrl: config.backendUrl);
+      final hasTokens = await authService.hasTokens();
+
+      final api = LessonApiService(baseUrl: config.backendUrl);
+      api.onSessionExpired = () {
+        if (!mounted) return;
+        Navigator.pushNamedAndRemoveUntil(context, '/login', (r) => false);
+      };
+
+      final lessons = await api.listLessons(
+        subject: _selectedSubject,
+        difficulty: _selectedDifficulty,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _hasTokens = hasTokens;
+        _lessons = lessons;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = e.toString();
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final query = _query.trim().toLowerCase();
+    final lessonsToDisplay = query.isEmpty
+        ? _lessons
+        : _lessons
+            .where((l) => l.title.toLowerCase().contains(query))
+            .toList(growable: false);
 
-    // Group lessons by topic
-    final lessonsByTopic = <String, List<Lesson>>{};
-    for (final lesson in _lessons) {
-      lessonsByTopic.putIfAbsent(lesson.topic, () => []).add(lesson);
+    final subjects = _extractUnique(
+      _lessons.map((l) => l.subject).whereType<String>(),
+    );
+    final difficulties = _extractUnique(
+      _lessons.map((l) => l.difficulty).whereType<String>(),
+    );
+
+
+    final grouped = <String, List<LessonListItem>>{};
+    for (final l in lessonsToDisplay) {
+      final key = (l.subject == null || l.subject!.trim().isEmpty)
+          ? 'Other'
+          : l.subject!.trim();
+      grouped.putIfAbsent(key, () => []).add(l);
+    }
+
+    final scrollView = CustomScrollView(
+      physics: const BouncingScrollPhysics(
+        parent: AlwaysScrollableScrollPhysics(),
+      ),
+      slivers: [
+        CupertinoSliverRefreshControl(onRefresh: _reload),
+        if (!widget.embedded)
+          CupertinoSliverNavigationBar(
+            largeTitle: const Text('Lessons'),
+            middle: const Text('Lessons'),
+            border: null,
+            backgroundColor:
+                (isDark ? const Color(0xFF000000) : const Color(0xFFF2F2F7))
+                    .withOpacity(0.85),
+          ),
+        SliverPadding(
+          padding: EdgeInsets.fromLTRB(20, widget.embedded ? 16 : 4, 20, 24),
+          sliver: SliverToBoxAdapter(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 900),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Pick a lesson. Every lesson shows its status.',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurface.withOpacity(0.70),
+                        height: 1.25,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    AppleCard(
+                      frosted: true,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      child: CupertinoSearchTextField(
+                        placeholder: 'Search lessons',
+                        onChanged: (v) => setState(() => _query = v),
+                        style: theme.textTheme.bodyMedium,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    if (!_loading)
+                      _FiltersCard(
+                        subjects: subjects,
+                        difficulties: difficulties,
+                        selectedSubject: _selectedSubject,
+                        selectedDifficulty: _selectedDifficulty,
+                        canClear: _selectedSubject != null ||
+                            _selectedDifficulty != null ||
+                            _query.trim().isNotEmpty,
+                        onClear: () {
+                          setState(() {
+                            _selectedSubject = null;
+                            _selectedDifficulty = null;
+                            _query = '';
+                          });
+                          _reload();
+                        },
+                        onSubjectChanged: (v) {
+                          setState(() => _selectedSubject = v);
+                          _reload();
+                        },
+                        onDifficultyChanged: (v) {
+                          setState(() => _selectedDifficulty = v);
+                          _reload();
+                        },
+                      ),
+                    const SizedBox(height: 12),
+                    if (!_hasTokens)
+                      AppleCard(
+                        frosted: true,
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.info_outline,
+                              color:
+                                  theme.colorScheme.onSurface.withOpacity(0.65),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                'Log in to track progress across devices. You can still browse lessons.',
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: theme.colorScheme.onSurface
+                                      .withOpacity(0.75),
+                                  height: 1.25,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (_error != null) ...[
+                      const SizedBox(height: 10),
+                      AppleErrorBanner(message: _error!),
+                    ],
+                    const SizedBox(height: 14),
+                    if (_loading)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 32),
+                        child: Center(
+                          child: Column(
+                            children: [
+                              const CircularProgressIndicator(),
+                              const SizedBox(height: 12),
+                              Text(
+                                'Loading lessons…',
+                                style: theme.textTheme.bodyMedium,
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                    else if (lessonsToDisplay.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 24),
+                        child: AppleCard(
+                          frosted: true,
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.menu_book,
+                                color: theme.colorScheme.onSurface
+                                    .withOpacity(0.6),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  'No lessons found for these filters.',
+                                  style: theme.textTheme.bodyMedium,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                    else
+                      ...grouped.entries.map((entry) {
+                        final subject = entry.key;
+                        final lessons = entry.value;
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 14),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              AppleSectionTitle(title: subject),
+                              const SizedBox(height: 10),
+                              ...lessons.map(
+                                (lesson) => _LessonRow(
+                                  lesson: lesson,
+                                  progressState: _effectiveProgressState(lesson),
+                                  onTap: () => _openLesson(lesson),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      }),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+
+    if (widget.embedded) {
+      return scrollView;
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Lessons'),
-        backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-        foregroundColor: colorScheme.primary,
-        elevation: 1,
-      ),
-      body: ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: lessonsByTopic.length,
-        itemBuilder: (context, index) {
-          final topic = lessonsByTopic.keys.elementAt(index);
-          final lessons = lessonsByTopic[topic]!;
-
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Text(
-                  topic,
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: colorScheme.primary,
-                  ),
-                ),
-              ),
-              ...lessons.map((lesson) => _LessonCard(
-                lesson: lesson,
-                onTap: () => _startLesson(context, lesson),
-              )),
-              const SizedBox(height: 8),
-            ],
-          );
-        },
-      ),
+      body: AppleBackground(child: scrollView),
     );
   }
 
-  void _startLesson(BuildContext context, Lesson lesson) {
+  void _openLesson(LessonListItem lesson) {
+    if (lesson.progressState != LessonProgressState.completed) {
+      setState(() {
+        _clickedLessonIds.add(lesson.id);
+      });
+    }
+    HapticFeedback.selectionClick();
+
+    // If the lesson is in-progress, try to find the saved session and continue
+    if (lesson.progressState == LessonProgressState.inProgress) {
+      _continueOrRewatch(lesson);
+      return;
+    }
+
     Navigator.pushNamed(
       context,
       '/whiteboard',
       arguments: {
         'topic': lesson.title,
         'title': lesson.title,
+        'lesson_id': lesson.id,
       },
     );
   }
+
+  /// For in-progress lessons, fetch the user's session history, find the
+  /// matching session, and navigate with continue parameters.
+  Future<void> _continueOrRewatch(LessonListItem lesson) async {
+    try {
+      final base = (dotenv.env['API_URL'] ?? 'http://127.0.0.1:8000').trim();
+      final authService = AuthService(baseUrl: base);
+      final resp = await authService.authenticatedGet('$base/api/lessons/history/');
+
+      if (!mounted) return;
+
+      if (resp.statusCode == 200) {
+        final sessions = jsonDecode(resp.body) as List<dynamic>;
+        // Find the session matching this lesson's topic
+        final match = sessions.cast<Map<String, dynamic>>().where((s) {
+          final topic = (s['topic'] as String? ?? '').trim().toLowerCase();
+          return topic == lesson.title.trim().toLowerCase();
+        }).firstOrNull;
+
+        if (match != null) {
+          final resumeTime = (match['resume_playback_time'] as num?)?.toDouble() ?? 0.0;
+          final isCompleted = (match['is_completed'] as bool?) ?? false;
+
+          Navigator.pushNamed(
+            context,
+            '/whiteboard',
+            arguments: {
+              'session_id': match['id'],
+              'topic': lesson.title,
+              'title': lesson.title,
+              'rewatch': true,
+              'continue_lesson': !isCompleted && resumeTime > 0,
+              'resume_playback_time': resumeTime,
+            },
+          );
+          return;
+        }
+      }
+    } catch (e) {
+      debugPrint('Failed to fetch history for continue: $e');
+    }
+
+    // Fallback: start a fresh lesson if we couldn't find the session
+    if (!mounted) return;
+    Navigator.pushNamed(
+      context,
+      '/whiteboard',
+      arguments: {
+        'topic': lesson.title,
+        'title': lesson.title,
+        'lesson_id': lesson.id,
+      },
+    );
+  }
+
+  LessonProgressState _effectiveProgressState(LessonListItem lesson) {
+    final api = lesson.progressState;
+    if (api == LessonProgressState.completed) return api;
+    if (api == LessonProgressState.inProgress) return api;
+    return _clickedLessonIds.contains(lesson.id)
+        ? LessonProgressState.inProgress
+        : LessonProgressState.notStarted;
+  }
+
+  static List<String> _extractUnique(Iterable<String> items) {
+    final seen = <String>{};
+    final out = <String>[];
+    for (final raw in items) {
+      final v = raw.trim();
+      if (v.isEmpty) continue;
+      if (seen.add(v)) out.add(v);
+    }
+    out.sort();
+    return out;
+  }
 }
 
-class _LessonCard extends StatelessWidget {
-  final Lesson lesson;
-  final VoidCallback onTap;
+class _FiltersCard extends StatelessWidget {
+  final List<String> subjects;
+  final List<String> difficulties;
+  final String? selectedSubject;
+  final String? selectedDifficulty;
+  final bool canClear;
+  final VoidCallback onClear;
+  final ValueChanged<String?> onSubjectChanged;
+  final ValueChanged<String?> onDifficultyChanged;
 
-  const _LessonCard({
-    required this.lesson,
-    required this.onTap,
+  const _FiltersCard({
+    required this.subjects,
+    required this.difficulties,
+    required this.selectedSubject,
+    required this.selectedDifficulty,
+    required this.canClear,
+    required this.onClear,
+    required this.onSubjectChanged,
+    required this.onDifficultyChanged,
   });
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
 
-    Color difficultyColor;
-    switch (lesson.difficulty) {
-      case 'Beginner':
-        difficultyColor = Colors.green;
-        break;
-      case 'Intermediate':
-        difficultyColor = Colors.orange;
-        break;
-      case 'Advanced':
-        difficultyColor = Colors.red;
-        break;
-      default:
-        difficultyColor = Colors.grey;
-    }
-
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      color: isDark ? Colors.grey[850] : Colors.white,
-      elevation: 2,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
+    return AppleCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AppleSectionTitle(
+            title: 'Filters',
+            trailing: canClear
+                ? TextButton(
+                    onPressed: onClear,
+                    child: const Text('Clear'),
+                  )
+                : null,
+          ),
+          const SizedBox(height: 10),
+          ApplePillRow(
             children: [
-              // Icon
-              Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  color: colorScheme.primary.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(
-                  lesson.icon,
-                  color: colorScheme.primary,
-                  size: 28,
+              _PillGroupLabel('Subject', theme: theme),
+              ApplePillButton(
+                label: 'All',
+                selected: selectedSubject == null,
+                onTap: () => onSubjectChanged(null),
+                icon: Icons.grid_view_rounded,
+              ),
+              ...subjects.map(
+                (s) => ApplePillButton(
+                  label: s,
+                  selected: selectedSubject == s,
+                  onTap: () => onSubjectChanged(s),
                 ),
               ),
-              const SizedBox(width: 16),
-              // Content
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            lesson.title,
-                            style: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: difficultyColor.withOpacity(0.15),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            lesson.difficulty,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w500,
-                              color: difficultyColor,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      lesson.description,
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: isDark ? Colors.grey[400] : Colors.grey[600],
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.timer_outlined,
-                          size: 14,
-                          color: isDark ? Colors.grey[500] : Colors.grey[600],
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          '${lesson.estimatedDuration.inMinutes} min',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: isDark ? Colors.grey[500] : Colors.grey[600],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+              _PillGroupDivider(theme: theme),
+              _PillGroupLabel('Difficulty', theme: theme),
+              ApplePillButton(
+                label: 'All',
+                selected: selectedDifficulty == null,
+                onTap: () => onDifficultyChanged(null),
+                icon: Icons.tune_rounded,
               ),
-              const SizedBox(width: 8),
-              Icon(
-                Icons.chevron_right,
-                color: isDark ? Colors.grey[600] : Colors.grey[400],
+              ...difficulties.map(
+                (d) => ApplePillButton(
+                  label: d,
+                  selected: selectedDifficulty == d,
+                  onTap: () => onDifficultyChanged(d),
+                ),
               ),
             ],
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PillGroupDivider extends StatelessWidget {
+  final ThemeData theme;
+
+  const _PillGroupDivider({required this.theme});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = theme.colorScheme.onSurface.withOpacity(0.10);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: SizedBox(
+        height: 22,
+        child: VerticalDivider(
+          width: 14,
+          thickness: 1,
+          color: c,
         ),
       ),
     );
   }
 }
+
+class _PillGroupLabel extends StatelessWidget {
+  final String text;
+  final ThemeData theme;
+
+  const _PillGroupLabel(this.text, {required this.theme});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 2, right: 2),
+      child: Text(
+        text,
+        style: theme.textTheme.labelLarge?.copyWith(
+          color: theme.colorScheme.onSurface.withOpacity(0.65),
+          fontWeight: FontWeight.w800,
+          letterSpacing: -0.1,
+        ),
+      ),
+    );
+  }
+}
+
+class _LessonRow extends StatelessWidget {
+  final LessonListItem lesson;
+  final LessonProgressState progressState;
+  final VoidCallback onTap;
+
+  const _LessonRow({
+    required this.lesson,
+    required this.progressState,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    final subject = (lesson.subject == null || lesson.subject!.trim().isEmpty)
+        ? 'Lesson'
+        : lesson.subject!.trim();
+    final difficulty =
+        (lesson.difficulty == null || lesson.difficulty!.trim().isEmpty)
+            ? null
+            : lesson.difficulty!.trim();
+
+    final accent = _accentForProgress(progressState, isDark: isDark);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: AppleCard(
+        padding: EdgeInsets.zero,
+        frosted: true,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(18),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 46,
+                    height: 46,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.primary.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Icon(
+                      _iconForSubject(subject),
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                lesson.title,
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: -0.2,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            Text(
+                              subject,
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: theme.colorScheme.onSurface
+                                    .withOpacity(0.70),
+                              ),
+                            ),
+                            if (difficulty != null) ...[
+                              const SizedBox(width: 8),
+                              _difficultyPill(context, difficulty),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Text(
+                              'Status:',
+                              style: theme.textTheme.labelLarge?.copyWith(
+                                color: theme.colorScheme.onSurface
+                                    .withOpacity(0.62),
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -0.1,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              progressState.label,
+                              style: theme.textTheme.labelLarge?.copyWith(
+                                color: accent,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: -0.1,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Icon(
+                    Icons.chevron_right,
+                    color: isDark
+                        ? theme.colorScheme.onSurface.withOpacity(0.45)
+                        : theme.colorScheme.onSurface.withOpacity(0.35),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  static IconData _iconForSubject(String subject) {
+    final s = subject.toLowerCase();
+    if (s.contains('math')) return Icons.functions;
+    if (s.contains('phys')) return Icons.speed;
+    if (s.contains('bio')) return Icons.eco;
+    if (s.contains('chem')) return Icons.science;
+    return Icons.menu_book;
+  }
+
+  static Widget _difficultyPill(BuildContext context, String difficulty) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    Color color;
+    switch (difficulty.toLowerCase()) {
+      case 'beginner':
+        color = const Color(0xFF1A7F37);
+        break;
+      case 'intermediate':
+        color = const Color(0xFFB54708);
+        break;
+      case 'advanced':
+        color = const Color(0xFFB42318);
+        break;
+      default:
+        color = theme.colorScheme.onSurface.withOpacity(0.60);
+    }
+
+    final bg = isDark ? color.withOpacity(0.22) : color.withOpacity(0.10);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withOpacity(0.20)),
+      ),
+      child: Text(
+        difficulty,
+        style: theme.textTheme.labelMedium?.copyWith(
+          color: isDark ? color.withOpacity(0.95) : color,
+          fontWeight: FontWeight.w800,
+          letterSpacing: -0.1,
+        ),
+      ),
+    );
+  }
+
+  static Color _accentForProgress(
+    LessonProgressState state, {
+    required bool isDark,
+  }) {
+    return switch (state) {
+      LessonProgressState.notStarted =>
+        (isDark ? const Color(0xFFB0B0B6) : const Color(0xFF6B7280)),
+      LessonProgressState.inProgress =>
+        (isDark ? const Color(0xFF7CC3FF) : const Color(0xFF0B63CE)),
+      LessonProgressState.completed =>
+        (isDark ? const Color(0xFF7FE3B1) : const Color(0xFF1A7F37)),
+    };
+  }
+}
+

@@ -7,7 +7,7 @@ class LessonPipelineApi {
   final String baseUrl;
   final AuthService _authService;
 
-  LessonPipelineApi({this.baseUrl = 'http://localhost:8000'})
+  LessonPipelineApi({this.baseUrl = 'http://127.0.0.1:8000'})
       : _authService = AuthService(baseUrl: baseUrl);
 
   /// Set callback for when session expires (refresh failed).
@@ -29,7 +29,7 @@ class LessonPipelineApi {
   /// Example:
   /// ```dart
   /// final safeUrl = api.buildProxiedImageUrl('https://example.com/image.png');
-  /// // On web: http://localhost:8000/api/lesson-pipeline/image-proxy/?url=https%3A%2F%2Fexample.com%2Fimage.png
+  /// // On web: http://127.0.0.1:8000/api/lesson-pipeline/image-proxy/?url=https%3A%2F%2Fexample.com%2Fimage.png
   /// // On native: https://example.com/image.png
   /// ```
   String buildProxiedImageUrl(String? rawUrl) {
@@ -52,7 +52,13 @@ class LessonPipelineApi {
   }
 
   /// Static version for use without an instance (uses default localhost)
-  static String proxyImageUrl(String? rawUrl, {String baseUrl = 'http://localhost:8000'}) {
+  static String proxyImageUrl(
+    String? rawUrl, {
+    String baseUrl = const String.fromEnvironment(
+      'BACKEND_URL',
+      defaultValue: 'http://127.0.0.1:8000',
+    ),
+  }) {
     if (rawUrl == null || rawUrl.isEmpty) {
       return '';
     }

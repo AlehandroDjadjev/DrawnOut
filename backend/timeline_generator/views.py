@@ -42,7 +42,8 @@ def _get_images_from_lesson_pipeline(topic: str, subject: str = "General", use_e
     images = lesson_data.get('images', [])
     
     if not images:
-        raise RuntimeError(f"Lesson pipeline returned 0 images for topic: '{topic}'")
+        logger.warning(f"[LessonPipeline] Returned 0 images for topic: '{topic}'")
+        return {}
     
     logger.info(f"[LessonPipeline] Got {len(images)} images from lesson pipeline")
     
@@ -51,8 +52,8 @@ def _get_images_from_lesson_pipeline(topic: str, subject: str = "General", use_e
     # empty. Accept any image that has either a URL or a vector_id/strokes payload.
     image_lookup = {}
     for img in images:
-        tag = img.get('tag', {})
-        tag_id = tag.get('id', '')
+        tag = img.get('tag', {}) or {}
+        tag_id = tag.get('id', '') if isinstance(tag, dict) else getattr(tag, 'id', '')
         base_url = img.get('base_image_url', '') or ''
         final_url = img.get('final_image_url', '') or base_url
         vector_id = img.get('vector_id') or img.get('pipeline_id') or ''
@@ -71,13 +72,22 @@ def _get_images_from_lesson_pipeline(topic: str, subject: str = "General", use_e
             'vector_id': vector_id,
             'strokes': strokes,
             'source': 'lesson_pipeline',
-            'title': tag.get('query', topic),
-            'description': tag.get('prompt', ''),
-            'prompt': tag.get('prompt', ''),
-            'style': tag.get('style', 'diagram'),
+            'title': (tag.get('query', topic) if isinstance(tag, dict) else getattr(tag, 'query', topic)) or topic,
+            'description': (tag.get('prompt', '') if isinstance(tag, dict) else getattr(tag, 'prompt', '')) or '',
+            'prompt': (tag.get('prompt', '') if isinstance(tag, dict) else getattr(tag, 'prompt', '')) or '',
+            'style': (tag.get('style', 'diagram') if isinstance(tag, dict) else getattr(tag, 'style', 'diagram')),
+            'needs_text_to_image': not base_url,
         }
-        logger.info(f"  [{tag_id}] url={base_url[:40] or '(none)'} vector_id={vector_id or '(none)'}")
-    
+        if base_url:
+            logger.info(f"  [{tag_id}] url={base_url[:60]}... vector_id={vector_id or '(none)'}")
+        elif vector_id or strokes:
+            logger.info(f"  [{tag_id}] vector_id={vector_id or '(none)'} strokes={'yes' if strokes else 'no'}")
+        else:
+            logger.warning(f"  [{tag_id}] unresolved (no base_image_url) — will render as text-only")
+
+    if not image_lookup:
+        logger.warning(f"[LessonPipeline] 0 images resolved for topic: '{topic}' — timeline will skip sketch_image actions")
+
     return image_lookup
 
 
@@ -112,29 +122,38 @@ def _research_images_for_timeline(timeline_data: dict, topic: str, use_existing_
     if not image_requests:
         logger.info("No images to research")
         return researched
-    
+
     logger.info(f"Getting {len(image_requests)} images via lesson_pipeline...")
-    
+
     # Get images from lesson pipeline - same as save_lesson_output.py
-    image_lookup = _get_images_from_lesson_pipeline(topic, "General", use_existing_images)
-    
-    # Map lesson pipeline images to timeline image requests
-    # The lesson pipeline generates its own image IDs, so we match by position
-    pipeline_images = list(image_lookup.values())
-    
+    try:
+        image_lookup = _get_images_from_lesson_pipeline(topic, "General", use_existing_images)
+    except Exception as exc:
+        logger.warning(f"[ImageResearch] lesson_pipeline failed ({exc}) — skipping all images")
+        return researched
+
+    # Map lesson pipeline images to timeline image requests.
+    # The pipeline assigns its own tag IDs, so we fall back to positional matching.
+    pipeline_images = [v for v in image_lookup.values() if v.get('url')]  # only resolved ones
+    all_pipeline_images = list(image_lookup.values())  # includes unresolved, for metadata
+
     for i, req in enumerate(image_requests):
         img_id = req.get('id', '')
         if not img_id:
             continue
-        
-        # Use pipeline image if available (by position), otherwise first available
+
+        # Prefer an image that actually has a URL; fall back to positional
         if i < len(pipeline_images):
             img_data = pipeline_images[i]
         elif pipeline_images:
-            img_data = pipeline_images[0]  # Fallback to first image
+            img_data = pipeline_images[0]
+        elif i < len(all_pipeline_images):
+            # Unresolved — keep the metadata but no URL; frontend will skip rendering
+            img_data = all_pipeline_images[i]
         else:
-            raise RuntimeError(f"No images available for {img_id}")
-        
+            logger.warning(f"[ImageResearch] No image data for '{img_id}' — skipping")
+            continue
+
         url = img_data.get('url', '') or ''
         researched[img_id] = {
             'url': url,
@@ -147,10 +166,11 @@ def _research_images_for_timeline(timeline_data: dict, topic: str, use_existing_
             'prompt': req.get('prompt', ''),
             'placement': req.get('placement'),
             'style': req.get('style', 'diagram'),
+            'needs_text_to_image': img_data.get('needs_text_to_image', not img_data.get('url')),
         }
-        logger.info(f"  [{img_id}] url={url[:40] or '(none)'} vector_id={img_data.get('vector_id', '') or '(none)'}")
-    
-    logger.info(f"Got {len(researched)}/{len(image_requests)} images from lesson_pipeline")
+        logger.info(f"  [{img_id}] -> {(url[:60] + '...') if url and len(url) > 60 else url or '(no url — text-only)'}")
+
+    logger.info(f"Got {len(researched)}/{len(image_requests)} image entries (some may have no URL)")
     return researched
 
 

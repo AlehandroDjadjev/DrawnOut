@@ -100,7 +100,10 @@ class WhiteboardController extends ChangeNotifier {
     StrokeBuilderService? strokeBuilder,
     StrokeTimingService? timingService,
     WhiteboardBackendService? backendService,
-    String baseUrl = 'http://127.0.0.1:8000',
+    String baseUrl = const String.fromEnvironment(
+      'BACKEND_URL',
+      defaultValue: 'http://127.0.0.1:8000',
+    ),
   })  : _strokeBuilder = strokeBuilder ?? StrokeBuilderService(),
         _timingService = timingService ?? StrokeTimingService(),
         _backendService =

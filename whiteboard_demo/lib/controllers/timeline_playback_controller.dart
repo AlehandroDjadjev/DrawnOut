@@ -328,6 +328,112 @@ class TimelinePlaybackController extends ChangeNotifier {
     await _playSegment(index, gen);
   }
 
+  /// Seek to an arbitrary point in time (seconds) and begin playback.
+  ///
+  /// Finds the correct segment for the given time, seeks the audio within
+  /// that segment, and starts the playback loop from there.
+  Future<void> seekToTime(double seconds) async {
+    if (_isDisposed) return;
+    if (_timeline == null || _timeline!.segments.isEmpty) {
+      debugPrint('Cannot seekToTime: no timeline loaded');
+      return;
+    }
+
+    seconds = seconds.clamp(0.0, totalDuration);
+
+    // Find which segment contains `seconds`
+    int targetIndex = 0;
+    for (int i = 0; i < _timeline!.segments.length; i++) {
+      final seg = _timeline!.segments[i];
+      if (seconds >= seg.startTime && seconds < seg.endTime) {
+        targetIndex = i;
+        break;
+      }
+      // If past the last segment's start, clamp to the last segment
+      if (i == _timeline!.segments.length - 1) {
+        targetIndex = i;
+      }
+    }
+
+    final segment = _timeline!.segments[targetIndex];
+    final offsetInSegment = seconds - segment.startTime;
+
+    debugPrint('seekToTime($seconds) → segment $targetIndex, offset ${offsetInSegment.toStringAsFixed(1)}s');
+
+    // Invalidate the old playback loop
+    _playbackGeneration++;
+    final gen = _playbackGeneration;
+    await _audioPlayer.stop();
+    if (_isDisposed) return;
+    _stopProgressTimer();
+
+    _currentSegmentIndex = targetIndex;
+    _currentTime = seconds;
+    _isPlaying = true;
+    _isPaused = false;
+    _safeNotifyListeners();
+
+    // Play the target segment with an audio seek offset
+    await _playSegmentWithOffset(targetIndex, gen, offsetInSegment);
+  }
+
+  /// Like [_playSegment] but seeks into the audio by [offsetSeconds] for the
+  /// first segment, then continues normally from the next segment onward.
+  Future<void> _playSegmentWithOffset(int index, int generation, double offsetSeconds) async {
+    if (_isDisposed || generation != _playbackGeneration) return;
+    if (_timeline == null || index >= _timeline!.segments.length) {
+      _stopPlaybackState();
+      if (!_isDisposed) onTimelineCompleted?.call();
+      return;
+    }
+
+    _currentSegmentIndex = index;
+    final segment = _timeline!.segments[index];
+    onSegmentChanged?.call(index);
+
+    try {
+      final audioUrl = _buildAudioUrl(segment.audioFile);
+      await _audioPlayer.setUrl(audioUrl);
+      if (_isDisposed || generation != _playbackGeneration) return;
+
+      // Seek into the audio if we have a non-zero offset
+      if (offsetSeconds > 0.5) {
+        await _audioPlayer.seek(Duration(milliseconds: (offsetSeconds * 1000).round()));
+        if (_isDisposed || generation != _playbackGeneration) return;
+      }
+
+      // Fire drawing actions
+      if (onDrawingActionsTriggered != null) {
+        onDrawingActionsTriggered!(segment.drawingActions).catchError((e) {
+          debugPrint('   Drawing error: $e');
+        });
+      }
+
+      _audioPlayer.play();
+      _startProgressTimer();
+
+      await _audioPlayer.playerStateStream.firstWhere((state) =>
+          state.processingState == ProcessingState.completed ||
+          generation != _playbackGeneration);
+
+      _stopProgressTimer();
+      if (_isDisposed || generation != _playbackGeneration) return;
+
+      onSegmentChangedCompleted?.call();
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (_isDisposed || generation != _playbackGeneration) return;
+
+      // Continue normally from the next segment (no offset)
+      await _playSegment(index + 1, generation);
+    } catch (e, st) {
+      debugPrint('Error playing segment $index with offset: $e\n$st');
+      if (_isDisposed || generation != _playbackGeneration) return;
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (_isDisposed || generation != _playbackGeneration) return;
+      await _playSegment(index + 1, generation);
+    }
+  }
+
   String _buildAudioUrl(String? audioFile) {
     if (audioFile == null || audioFile.isEmpty) {
       throw Exception('No audio file for segment');
